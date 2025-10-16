@@ -1,5 +1,5 @@
-# color-sr
-DNN train framework
+# flow-hsi
+Hyperspectral imaging
 
 # usage
 usage: main.py [--help] [--hydra-help] [--version] [--cfg {job,hydra,all}] [--resolve] [--package PACKAGE]
