@@ -1,11 +1,13 @@
 import sys, pkgutil, importlib, inspect
 from torch import nn
+import torch
 from flows.ml import layers
-from . import hskan
+from . import hskan, cmkan
 from .flow import Flow
 
 
 def create_layer(name: str, params) -> nn.Module:
+    """creates module from known (imported) packages"""
     params = params or {}
     name = name.strip('. ')
     cls = sys.modules[__name__]

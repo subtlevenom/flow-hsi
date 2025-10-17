@@ -86,8 +86,9 @@ class DefaultPipeline(L.LightningModule):
         prediction = self(src)
         mae_loss = self.mae_loss(prediction, target)
         psnr_metric = self.psnr_metric(prediction, target)
-        mae_loss = mae_loss + 30 - psnr_metric
+        # mae_loss = mae_loss + 40 - psnr_metric
 
+        self.log('train_psnr', psnr_metric, prog_bar=True, logger=True)
         self.log('train_loss', mae_loss, prog_bar=True, logger=True)
         return {'loss': mae_loss}
 
@@ -96,9 +97,9 @@ class DefaultPipeline(L.LightningModule):
         prediction = self(src)
         mae_loss = self.mae_loss(prediction, target)
 
-        psnr_metric = 34 - self.psnr_metric(prediction, target)
+        psnr_metric = self.psnr_metric(prediction, target)
         ssim_metric = self.ssim_metric(prediction, target)
-        # de_metric = self.de_metric(prediction, target)
+        # mae_loss = mae_loss + 40 - psnr_metric
 
         self.log('val_psnr', psnr_metric, prog_bar=True, logger=True)
         self.log('val_ssim', ssim_metric, prog_bar=True, logger=True)

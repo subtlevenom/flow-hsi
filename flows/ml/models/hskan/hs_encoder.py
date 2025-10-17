@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange
 
 
 class HSEncoder(nn.Module):
@@ -47,6 +48,10 @@ class HSEncoder(nn.Module):
         B, C, H, W = x.shape
         v = self.value(x)
         w = self.weight(x)
-        x = F.sigmoid(self.proj(v * w))
-        x = x.view(-1, self.out_channels, H, W)
-        return x
+        x = F.sigmoid(v + self.proj(v * w))
+        return rearrange(
+            x,
+            'b (i o) h w -> (b i) o h w',
+            i=self.in_channels,
+            o=self.out_channels,
+        )

@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from einops import rearrange
 
 
 class HSDecoder(nn.Module):
@@ -31,6 +32,11 @@ class HSDecoder(nn.Module):
     def forward(self, x: torch.Tensor):
 
         B, C, H, W = x.shape
-        x = x.reshape(-1, self.mid_channels, H, W)
+        x = rearrange(
+            x,
+            '(b i) o h w -> b (i o) h w',
+            i=self.out_channels,
+            o=self.in_channels,
+        )
         x = F.sigmoid(self.proj(x))
         return x
