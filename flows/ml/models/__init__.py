@@ -1,7 +1,7 @@
 import sys, pkgutil, importlib, inspect
 from torch import nn
 from flows.ml import layers
-from . import hs, sr
+from . import hskan
 from .flow import Flow
 
 

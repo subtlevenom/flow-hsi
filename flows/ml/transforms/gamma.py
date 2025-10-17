@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from ..utils.colors.rgb import rgb_to_linear_rgb, linear_rgb_to_rgb
+from tools.utils.colors.rgb import rgb_to_linear_rgb, linear_rgb_to_rgb
 
 
 class GammaCorrection(nn.Module):

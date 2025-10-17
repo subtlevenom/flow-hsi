@@ -2,13 +2,11 @@ import torch
 from typing import List
 from functools import reduce
 from torchmetrics import Metric
-from ..utils.colors import rgb_to_lab
+from tools.utils.colors import rgb_to_lab
 
 
-def _tsplit(
-    a: torch.Tensor,
-    dtype: torch.dtype = torch.float64
-) -> torch.Tensor:
+def _tsplit(a: torch.Tensor,
+            dtype: torch.dtype = torch.float64) -> torch.Tensor:
     """
     Reshape input image [b, c, h, w] or color feature [b, f, c] to [L, a, b] format.
 
@@ -61,14 +59,12 @@ def _tsplit(
     if a.ndim <= 3:
         return torch.transpose(a, a.ndim - 1, 0)
 
-    return torch.transpose(
-        a,
-        1,
-        0
-    )
+    return torch.transpose(a, 1, 0)
 
 
-def _select(conditions: List[torch.Tensor], values: List[torch.Tensor], default: int = 0) -> torch.Tensor:
+def _select(conditions: List[torch.Tensor],
+            values: List[torch.Tensor],
+            default: int = 0) -> torch.Tensor:
     """
     Return a torch.Tensor drawn from elements in choicelist, depending on conditions.
 
@@ -109,9 +105,9 @@ def _select(conditions: List[torch.Tensor], values: List[torch.Tensor], default:
     return reduce(lambda o, a: torch.where(*a, o), zipped, default)
 
 
-def _delta_E_CIE2000(
-    Lab_1: torch.Tensor, Lab_2: torch.Tensor, textiles: bool = False
-) -> torch.Tensor:
+def _delta_E_CIE2000(Lab_1: torch.Tensor,
+                     Lab_2: torch.Tensor,
+                     textiles: bool = False) -> torch.Tensor:
     """
     Return the difference :math:`\\Delta E_{00}` between two given
     *CIE L\\*a\\*b\\** colourspace tensors using *CIE 2000* recommendation.
@@ -234,7 +230,8 @@ def _delta_E_CIE2000(
         ],
     )
 
-    delta_H_p = 2 * torch.sqrt(C_p_1_m_2) * torch.sin(torch.deg2rad(delta_h_p / 2))
+    delta_H_p = 2 * torch.sqrt(C_p_1_m_2) * torch.sin(
+        torch.deg2rad(delta_h_p / 2))
 
     L_bar_p = (L_1 + L_2) / 2
 
@@ -257,20 +254,17 @@ def _delta_E_CIE2000(
         ],
     )
 
-    T = (
-        1
-        - 0.17 * torch.cos(torch.deg2rad(h_bar_p - 30))
-        + 0.24 * torch.cos(torch.deg2rad(2 * h_bar_p))
-        + 0.32 * torch.cos(torch.deg2rad(3 * h_bar_p + 6))
-        - 0.20 * torch.cos(torch.deg2rad(4 * h_bar_p - 63))
-    )
+    T = (1 - 0.17 * torch.cos(torch.deg2rad(h_bar_p - 30)) +
+         0.24 * torch.cos(torch.deg2rad(2 * h_bar_p)) +
+         0.32 * torch.cos(torch.deg2rad(3 * h_bar_p + 6)) -
+         0.20 * torch.cos(torch.deg2rad(4 * h_bar_p - 63)))
 
-    delta_theta = 30 * torch.exp(-(((h_bar_p - 275) / 25) ** 2))
+    delta_theta = 30 * torch.exp(-(((h_bar_p - 275) / 25)**2))
 
     C_bar_p_7 = C_bar_p**7
     R_C = 2 * torch.sqrt(C_bar_p_7 / (C_bar_p_7 + 25**7))
 
-    L_bar_p_2 = (L_bar_p - 50) ** 2
+    L_bar_p_2 = (L_bar_p - 50)**2
     S_L = 1 + ((0.015 * L_bar_p_2) / torch.sqrt(20 + L_bar_p_2))
 
     S_C = 1 + 0.045 * C_bar_p
@@ -279,26 +273,29 @@ def _delta_E_CIE2000(
 
     R_T = -torch.sin(torch.deg2rad(2 * delta_theta)) * R_C
 
-    d_E = torch.sqrt(
-        (delta_L_p / (k_L * S_L)) ** 2
-        + (delta_C_p / (k_C * S_C)) ** 2
-        + (delta_H_p / (k_H * S_H)) ** 2
-        + R_T * (delta_C_p / (k_C * S_C)) * (delta_H_p / (k_H * S_H))
-    )
+    d_E = torch.sqrt((delta_L_p / (k_L * S_L))**2 +
+                     (delta_C_p / (k_C * S_C))**2 + (delta_H_p /
+                                                     (k_H * S_H))**2 + R_T *
+                     (delta_C_p / (k_C * S_C)) * (delta_H_p / (k_H * S_H)))
 
     return d_E
 
 
 class DeltaE(Metric):
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.add_state("correct", default=torch.tensor(0, dtype=torch.float64), dist_reduce_fx="sum")
-        self.add_state("total", default=torch.tensor(0, dtype=torch.long), dist_reduce_fx="sum")
+        self.add_state("correct",
+                       default=torch.tensor(0, dtype=torch.float64),
+                       dist_reduce_fx="sum")
+        self.add_state("total",
+                       default=torch.tensor(0, dtype=torch.long),
+                       dist_reduce_fx="sum")
 
     def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
         if preds.shape != target.shape:
             raise ValueError("preds and target must have the same shape")
-        
+
         preds = rgb_to_lab(preds)
         target = rgb_to_lab(target)
         de = torch.mean(_delta_E_CIE2000(preds, target), dtype=torch.float64)
