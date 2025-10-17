@@ -1,0 +1,15 @@
+from pathlib import Path
+import numpy as np
+import cv2
+
+
+def read(file: Path) -> np.ndarray:
+    """reads sRGB image [0,255]"""
+    image = cv2.imread(str(file), cv2.IMREAD_COLOR)
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+
+def write(path: Path, image: np.ndarray):
+    """Writes sRGB image [0,255]"""
+    image = cv2.cvtColor(image.astype(np.uint8), cv2.COLOR_RGB2BGR)
+    return cv2.imwrite(str(path), image)

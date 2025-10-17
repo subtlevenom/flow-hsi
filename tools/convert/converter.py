@@ -7,7 +7,7 @@ from scipy.signal.windows import gaussian
 # np.set_printoptions(threshold=sys.maxsize)
 from tools.utils.images import read
 from scipy import io
-from tools.utils.hyperspectral import hs_to_rgb
+from tools.utils.hsi import hs_to_rgb
 
 
 def convert(input_path:str, output_path:str):

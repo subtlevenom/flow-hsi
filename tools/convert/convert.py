@@ -7,10 +7,10 @@ from scipy.signal.windows import gaussian
 # np.set_printoptions(threshold=sys.maxsize)
 from tools.utils.images import read
 from scipy import io
-from tools.utils.hyperspectral import hs_to_rgb
+from tools.utils.hsi import hs_to_rgb
 
 
-def convert(input_path:str, output_path:str):
+def convert(input_path: str, output_path: str):
     """
     input_path: input hs image file or dir path
     output: output file or dir path
@@ -27,23 +27,21 @@ def convert(input_path:str, output_path:str):
         convert_file(input_path, output_path)
 
 
-
-def convert_file(input_path:Path, output_path:Path):
+def convert_file(input_path: Path, output_path: Path):
     if not input_path.exists():
         print(f'File {input_path} does not exist')
-        return 
-    
+        return
+
     try:
         hs_image = io.loadmat(input_path)['hsi']
         rgb_image = hs_to_rgb(hs_image, CHANNELS)
-    
+
     except Exception as e:
         print(f'Failed converting file {input_path} with exception {e}.')
 
-def convert_dir(input_path:Path, output_path:Path):
-    
+
+def convert_dir(input_path: Path, output_path: Path):
+
     for file in input_path.glob('*.mat'):
         hs_image = io.loadmat(file)['hsi']
         rgb_image = hs_to_rgb(hs_image, )
-
-
