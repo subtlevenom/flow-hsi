@@ -1,6 +1,6 @@
 from omegaconf import DictConfig
 from tools.utils import text
-from tools.dataset import sample
+from tools.datasets import sample
 
 
 def main(config: DictConfig) -> None:

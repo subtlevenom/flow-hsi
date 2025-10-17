@@ -157,12 +157,13 @@ def resample_field(U_complex, dx_src, dx_dst):
     return (real_s + 1j * imag_s)
 
 
-def main_circl(wavw_start, wavw_end, wave_step, spectral_filters, dx_in, dx_lenz, dx_kam, r_lenz, focal_length, lambda_for_lens, z1, z2, Nlocal, show_img_on=False, n_otobr=512, save_img_on=False):
+def main_circl(mass_amp_in, spectral_filters, dx_in, dx_lenz, dx_kam, r_lenz, focal_length, lambda_for_lens, z1, z2, Nlocal, show_img_on=False, n_otobr=512, save_img_on=False):
 
     sum_image_B=np.zeros((Nlocal, Nlocal), dtype=np.float64)
     sum_image_G=np.zeros((Nlocal, Nlocal), dtype=np.float64)
     sum_image_R=np.zeros((Nlocal, Nlocal), dtype=np.float64)
 
+    phase_in = torch.zeros((N, N), dtype=torch.float32, device=device)
 
     # Маска КРУГЛОЙ апертуры
     coords = (torch.arange(Nlocal, device=device) - Nlocal // 2).float()
@@ -171,15 +172,17 @@ def main_circl(wavw_start, wavw_end, wave_step, spectral_filters, dx_in, dx_lenz
     XL, YL = torch.meshgrid(x_l, y_l, indexing="xy")
     aperture_mask_lenz = ((XL**2 + YL**2) <= r_lenz**2).to(device)
 
-
-    wave_mass = torch.arange(wavw_start*1e-9, wavw_end*1e-9, wave_step*1e-9, device=device)
-
     for iterator_lenz in range(0, len(lambda_for_lens), 1):
         print(lambda_for_lens[iterator_lenz])
 
         lens_phase = generate_lens_phase(focal_length, lambda_for_lens[iterator_lenz] * 1e-6, dx_lenz, Nlocal=Nlocal)
 
-        for temp_lambd in wave_mass:
+
+        for temp_name_frame in mass_amp_in:
+
+            amp_in = load_grayscale(temp_name_frame, N)
+
+            temp_lambd=int(temp_name_frame.split('.')[0])
 
             field = amp_in * torch.exp(1j * phase_in)
             field = fresnel_propagation(field.type(torch.complex64), temp_lambd, z1, dx_in)
@@ -233,6 +236,7 @@ if __name__=='__main__':
 
     focal_length = 0.05  # фокусное расстояние линзы (м)
     r_lenz = 0.003
+
     z1 = focal_length * 2  # расстояние до линзы
     z2 = focal_length * 2  # расстояние до камеры
 
@@ -240,13 +244,12 @@ if __name__=='__main__':
     h = 4.38  # высота гармонической линзы
     M = 6  # число гармоник
 
-    amp_in = load_grayscale("channel_5.png", N)
-    phase_in = torch.zeros((N, N), dtype=torch.float32, device=device)
+    mass_amp_in = ["350.png","450.png","550.png","650.png","750.png","850.png"]
 
     lambda_for_lens = calc_for_lenz(n_prel, M, h)
 
     spectral_filters = get_filter_bier(lambda_for_lens, './cmv_400_graph/', show_graph_on=True)
-    main_circl(300, 800, 1, spectral_filters, dx_in, dx_lenz, dx_kam, r_lenz, focal_length, lambda_for_lens, z1, z2, N, True, 512, True)
+    main_circl(mass_amp_in, spectral_filters, dx_in, dx_lenz, dx_kam, r_lenz, focal_length, lambda_for_lens, z1, z2, N, True, 512, True)
 
 
 
