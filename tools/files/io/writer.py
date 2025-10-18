@@ -20,7 +20,8 @@ class Writer:
                     f'Parser "{suffix}" already exists. Gets replaced.')
             cls.parsers[suffix] = parser
 
-    def write(self, path: str, data: Any):
+    @classmethod
+    def write(cls, path: str, data: Any):
         """Writer data to file"""
 
         path: Path = Path(path)
@@ -29,7 +30,7 @@ class Writer:
         if path.exists():
             logger.info(f'File {path} already exists. Gets replaced.')
 
-        parser = self.parsers.get(path.suffix, None)
+        parser = cls.parsers.get(path.suffix, None)
         if parser is None:
             logger.error(f'Writer for format {format} is not found.')
             return None
