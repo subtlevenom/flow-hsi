@@ -180,9 +180,9 @@ def main_circl(mass_amp_in, spectral_filters, dx_in, dx_lenz, dx_kam, r_lenz, fo
 
         for temp_name_frame in mass_amp_in:
 
-            amp_in = load_grayscale(temp_name_frame, N)
+            amp_in = load_grayscale('Chisto_FREN/Archive/'+temp_name_frame, N)
 
-            temp_lambd=int(temp_name_frame.split('.')[0])
+            temp_lambd=int(temp_name_frame.split('.')[0])*1e-9
 
             field = amp_in * torch.exp(1j * phase_in)
             field = fresnel_propagation(field.type(torch.complex64), temp_lambd, z1, dx_in)
@@ -199,7 +199,7 @@ def main_circl(mass_amp_in, spectral_filters, dx_in, dx_lenz, dx_kam, r_lenz, fo
 
             intensity = torch.abs(field).cpu().numpy()
 
-            temp_lambd_cpu=int(temp_lambd.cpu().numpy() * 1e9)
+            temp_lambd_cpu=int(temp_lambd * 1e9)
 
             if iterator_lenz==2:
                 sum_image_B += intensity * spectral_filters[0][temp_lambd_cpu]
@@ -244,7 +244,11 @@ if __name__=='__main__':
     h = 4.38  # высота гармонической линзы
     M = 6  # число гармоник
 
-    mass_amp_in = ["350.png","450.png","550.png","650.png","750.png","850.png"]
+    for i in range(410, 700, 10):
+        print('\"'+str(i)+'.png\", ', end='')
+    print()
+
+    mass_amp_in = ["400.png", "410.png", "420.png", "430.png", "440.png", "450.png", "460.png", "470.png", "480.png", "490.png", "500.png", "510.png", "520.png", "530.png", "540.png", "550.png", "560.png", "570.png", "580.png", "590.png", "600.png", "610.png", "620.png", "630.png", "640.png", "650.png", "660.png", "670.png", "680.png", "690.png", "700.png"]
 
     lambda_for_lens = calc_for_lenz(n_prel, M, h)
 

@@ -1,17 +1,23 @@
-import cv2 as cv
+import cv2
 import numpy as np
 # import colour
-# np.set_printoptions(threshold=sys.maxsize)
 
 
-def normalize(image: np.ndarray):
-    """input image normalized [0,255]"""
-    return image / 255.
+def normalize(
+    image: np.ndarray,
+    a: float = 1.,
+    b: float = None,
+) -> np.ndarray:
+    """Normalizes image in range [a,b] or scales by a"""
 
+    normType = cv2.NORM_INF if b is None else cv2.NORM_MINMAX
 
-def denormalize(image: np.ndarray):
-    """input image normalized [0,1]"""
-    return image * 255.
+    return cv2.normalize(image,
+                         None,
+                         alpha=a,
+                         beta=b,
+                         normType=normType,
+                         dtype=cv2.CV_32F)
 
 
 def validate(image: np.ndarray):
@@ -61,23 +67,21 @@ def srgb(image: np.ndarray) -> np.ndarray:
 
 def read(path: str) -> np.ndarray:
     """Reads srgb image [0,255]"""
-    image = cv.imread(str(path), cv.IMREAD_COLOR)
-    return cv.cvtColor(image, cv.COLOR_BGR2RGB)
+    image = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
 def write(path: str, image: np.ndarray):
     """Reads srgb image [0,255]"""
-    image = cv.cvtColor(image.astype(np.uint8), cv.COLOR_RGB2BGR)
-    cv.imwrite(str(path), image)
+    image = cv2.cvtColor(image.astype(np.uint8), cv2.COLOR_RGB2BGR)
+    cv2.imwrite(str(path), image)
 
 
 def read_bayer_image(path: str):
     """Reads bayer RGGB image"""
     raw = imageio.imread(path)
-    ch_B  = raw[1::2, 1::2]
+    ch_B = raw[1::2, 1::2]
     ch_Gb = raw[0::2, 1::2]
-    ch_R  = raw[0::2, 0::2]
+    ch_R = raw[0::2, 0::2]
     ch_Gr = raw[1::2, 0::2]
     return np.dstack((ch_B, ch_Gb, ch_R, ch_Gr))
-
-
