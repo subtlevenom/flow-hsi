@@ -15,13 +15,13 @@ class Converter:
     converters:dict = {}
 
     @classmethod
-    def register_converter(cls, name, parser):
+    def register_converter(cls, name, converter):
         """Registers external parser"""
 
-        if format in cls.parsers:
+        if name in cls.converters:
             logger.warning(f'Parser {format} already exists. Gets replaced.')
 
-        cls.parsers[format] = parser
+        cls.parsers[format] = converter
 
     def write(self, path: str, data: Any):
         """Writer data to file"""

@@ -26,7 +26,7 @@ def register_converters():
 
     for importer, modname, ispkg in pkgutil.iter_modules(converters.__path__):
         module = importer.find_module(modname).load_module(modname)
-        Converter.register_converter(format, getattr(module, 'convert'))
+        Converter.register_converter(modname, getattr(module, 'convert'))
 
 
 register_converters()
