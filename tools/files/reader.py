@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 import pandas as pd
 from typing import Callable
-from .format import Format, SUFFIX, get_format
+from .format import Format, get_format
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ class Reader:
         """Registers external parser"""
 
         if format in cls.parsers:
-            logger.warning(f'Parser {format} already exists. Gets replaced.')
+            logger.info(f'Parser {format} already exists. Gets replaced.')
         cls.parsers[format] = parser
 
     # public
@@ -30,23 +30,22 @@ class Reader:
         path:Path = Path(path)
 
         if path.is_dir():
-            return self.read_dir(path, format)
+            return self.read_dir(path)
         else:
-            return self.read_file(path, format)
+            return self.read_file(path)
 
     # private
 
     def read_dir(self, path: Path, format: Format):
-        """Reads dir of given format"""
+        """Reads dir"""
 
-        return [
-            self.read_file(file, format) for file in path.glob(f'*.{format}')
-        ]
+        data = [self.read_file(f) for f in path.glob('**/*') if f.is_file()]
+        return filter(lambda v: v is not None, data)
 
-    def read_file(self, path:Path, format: Format):
+    def read_file(self, path:Path):
         """Reads file of given format"""
 
-        if not path.exists(path):
+        if not path.exists():
             logger.error(f'File {path} not found.')
             return None
 
@@ -57,7 +56,7 @@ class Reader:
 
         parser = self.parsers.get(format, None)
         if parser is None:
-            logger.error(f'Parser for format {format} is not found.')
+            logger.error(f'Reader for format {format} is not found.')
             return None
 
         try:
