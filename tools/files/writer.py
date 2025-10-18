@@ -1,10 +1,6 @@
-import os
-import shutil
 import logging
-from typing import Any
-import pandas as pd
+from typing import Any, Callable, List
 from pathlib import Path
-from .format import Format, get_format
 
 logger = logging.getLogger(__name__)
 
@@ -15,13 +11,14 @@ class Writer:
     parsers: dict = {}
 
     @classmethod
-    def register_parser(cls, format, parser):
+    def register_parser(cls, formats: List[str], parser: Callable):
         """Registers external parser"""
 
-        if format in cls.parsers:
-            logger.warning(f'Parser {format} already exists. Gets replaced.')
-
-        cls.parsers[format] = parser
+        for suffix in formats:
+            if suffix in cls.parsers:
+                logger.warning(
+                    f'Parser "{suffix}" already exists. Gets replaced.')
+            cls.parsers[suffix] = parser
 
     def write(self, path: str, data: Any):
         """Writer data to file"""
@@ -32,12 +29,7 @@ class Writer:
         if path.exists():
             logger.info(f'File {path} already exists. Gets replaced.')
 
-        format = get_format(path)
-        if format is None:
-            logger.error(f'Unknown format of {path}.')
-            return None
-
-        parser = self.parsers.get(format, None)
+        parser = self.parsers.get(path.suffix, None)
         if parser is None:
             logger.error(f'Writer for format {format} is not found.')
             return None

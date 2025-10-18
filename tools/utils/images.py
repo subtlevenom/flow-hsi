@@ -1,6 +1,6 @@
 import cv2 as cv
 import numpy as np
-import colour
+# import colour
 # np.set_printoptions(threshold=sys.maxsize)
 
 

@@ -16,7 +16,7 @@ def hs_to_rgb(hs_image: np.ndarray, channels: List[Tuple[int]]):
         window = gaussian(len, std=np.sqrt(len))
         signal = hs_image[:, :, r[0]:r[1]]
         signal = np.multiply(signal, window) / np.sum(window)
-        signal = np.sum(signal, axis=1, keepdims=True)
+        signal = np.sum(signal, axis=-1, keepdims=True)
         rgb.append(signal)
     rgb = np.concat(rgb, axis=-1)
     return rgb

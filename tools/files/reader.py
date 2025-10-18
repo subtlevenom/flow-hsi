@@ -1,10 +1,6 @@
-import os
-import glob
 import logging
 from pathlib import Path
-import pandas as pd
-from typing import Callable
-from .format import Format, get_format
+from typing import Any, Callable, List
 
 logger = logging.getLogger(__name__)
 
@@ -15,48 +11,43 @@ class Reader:
     parsers: dict = {}
 
     @classmethod
-    def register_parser(cls, format: Format, parser: Callable):
+    def register_parser(cls, formats: List[str], parser: Callable):
         """Registers external parser"""
 
-        if format in cls.parsers:
-            logger.info(f'Parser {format} already exists. Gets replaced.')
-        cls.parsers[format] = parser
+        for suffix in formats:
+            if suffix in cls.parsers:
+                logger.info(
+                    f'Parser "{suffix}" already exists. Gets replaced.')
+            cls.parsers[suffix] = parser
 
     # public
 
-    def read(self, path:str):
+    def read(self, path: str | Path) -> Any:
         """reads file(s) in path"""
 
-        path:Path = Path(path)
+        path = Path(path)
 
         if path.is_dir():
             return self.read_dir(path)
         else:
             return self.read_file(path)
 
-    # private
-
-    def read_dir(self, path: Path, format: Format):
+    def read_dir(self, path: Path) -> List[Any]:
         """Reads dir"""
 
         data = [self.read_file(f) for f in path.glob('**/*') if f.is_file()]
         return filter(lambda v: v is not None, data)
 
-    def read_file(self, path:Path):
+    def read_file(self, path: Path) -> Any:
         """Reads file of given format"""
 
         if not path.exists():
             logger.error(f'File {path} not found.')
             return None
 
-        format = get_format(path)
-        if format is None:
-            logger.error(f'Unknown format of {path}.')
-            return None
-
-        parser = self.parsers.get(format, None)
+        parser = self.parsers.get(path.suffix, None)
         if parser is None:
-            logger.error(f'Reader for format {format} is not found.')
+            logger.error(f'Reader for format "{path.suffix}" is not found.')
             return None
 
         try:

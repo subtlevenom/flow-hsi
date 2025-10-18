@@ -4,7 +4,6 @@ import logging
 from typing import Any
 import pandas as pd
 from pathlib import Path
-from .format import Format, get_format
 
 logger = logging.getLogger(__name__)
 
@@ -19,31 +18,20 @@ class Converter:
         """Registers external parser"""
 
         if name in cls.converters:
-            logger.warning(f'Parser {format} already exists. Gets replaced.')
+            logger.warning(f'Parser "{name}" already exists. Gets replaced.')
 
-        cls.parsers[format] = converter
+        cls.converters[name] = converter
 
-    def write(self, path: str, data: Any):
-        """Writer data to file"""
+    def convert(self, converter_name: str, data: Any, **kwargs):
+        """Converts data"""
 
-        path: Path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        if path.exists():
-            logger.info(f'File {path} already exists. Gets replaced.')
-
-        format = get_format(path)
-        if format is None:
-            logger.error(f'Unknown format of {path}.')
-            return None
-
-        parser = self.parsers.get(format, None)
-        if parser is None:
-            logger.error(f'Writer for format {format} is not found.')
+        converter = self.converters.get(converter_name, None)
+        if converter is None:
+            logger.error(f'Converter "{converter_name}" is not found.')
             return None
 
         try:
-            return parser(path, data)
+            return converter(data, **kwargs)
 
         except Exception as e:
             logger.error(f'Format {format} write exception: {e}.')

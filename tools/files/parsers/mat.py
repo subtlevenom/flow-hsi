@@ -2,6 +2,10 @@ from pathlib import Path
 import numpy as np
 from scipy import io
 
+__FORMATS__ = [
+    '.mat',
+]
+
 TAG = 'hsi'
 
 

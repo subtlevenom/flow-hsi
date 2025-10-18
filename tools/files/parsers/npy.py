@@ -1,6 +1,11 @@
 from pathlib import Path
 import numpy as np
 
+__FORMATS__ = [
+    '.npy',
+    '.np',
+]
+
 
 def read(file: Path) -> np.ndarray:
     """reads hyperspectral image"""

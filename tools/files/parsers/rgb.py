@@ -2,6 +2,21 @@ from pathlib import Path
 import numpy as np
 import cv2
 
+__FORMATS__ = [
+    '.bmp',
+    '.dib',
+    '.jpg',
+    '.jpeg',
+    '.jpe',
+    '.jp2',
+    '.png',
+    '.pbm',
+    '.pgm',
+    '.ppm',
+    '.tiff',
+    '.tif',
+]
+
 
 def read(file: Path) -> np.ndarray:
     """reads sRGB image [0,255]"""
