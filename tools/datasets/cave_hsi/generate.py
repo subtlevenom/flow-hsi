@@ -17,7 +17,7 @@ SOURCE = 'source'
 TARGET = 'target'
 
 
-def sample(config: DictConfig) -> None:
+def generate(config: DictConfig) -> None:
     """
     CAVE-HSI: https://ieee-dataport.org/documents/cave-hsi
     """
@@ -29,6 +29,7 @@ def sample(config: DictConfig) -> None:
         raise Exception(f'No such directory: {input_dir}')
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    input_src_files = list(Path(data.source).glob('*.mat'))
     # Copy pairs (output_dir, input_path) splitted by tasks
     splits = {}
     for name, data in config.split.items():

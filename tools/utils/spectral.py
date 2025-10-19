@@ -1,0 +1,45 @@
+from typing import List, Tuple
+import cv2 as cv
+import numpy as np
+from scipy.signal.windows import gaussian
+import spectral as spy
+# np.set_printoptions(threshold=sys.maxsize)
+
+
+def hs_to_rgb(image: np.ndarray, bands: List[Tuple[int]]=None):
+    """
+    input: hs image normalized [0,1]
+    output: rgb image normalized [0,1]
+    """
+    rgb = []
+    for r in bands:
+        len = r[1] - r[0]
+        window = gaussian(len, std=np.sqrt(len))
+        signal = image[:, :, r[0]:r[1]]
+        signal = np.multiply(signal, window) / np.sum(window)
+        signal = np.sum(signal, axis=-1, keepdims=True)
+        rgb.append(signal)
+    rgb = np.concat(rgb, axis=-1)
+    return rgb
+
+def rgb_to_hs(image: np.ndarray):
+    """xyz input image"""
+    pass
+    # sRGB = colour.RGB_COLOURSPACES["sRGB"]
+    # return sRGB.cctf_encoding(image)
+
+def dim_pca(image: np.ndarray, dim:int=3):
+    """pca"""
+
+    pc = spy.principal_components(image)
+    pc = pc.reduce(fraction=0.999)
+    img_pc = pc.transform(image)
+    return img_pc[:,:,:dim]
+
+def band_resample(image: np.ndarray, band):
+    resample = spy.BandResampler(img1.bands, bands2)
+    return resample(image)
+
+def dim_reduce(image: np.ndarray, bands: List[Tuple[int]]=None):
+    pass
+

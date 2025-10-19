@@ -1,7 +1,7 @@
 from typing import List, Tuple
 import numpy as np
 import cv2
-from tools.utils.hyperspectral import hs_to_rgb
+from tools.utils.spectral import hs_to_rgb
 
 
 def convert(image: np.ndarray, bands: List[Tuple[int]], **kwargs) -> np.ndarray:
