@@ -1,8 +1,10 @@
 from omegaconf import DictConfig
 from .files import convert
+from .datasets import sample, generate
 
 
 def main(config:DictConfig) -> None:
+
     match config.tool:
         case 'convert':
             convert(
@@ -11,4 +13,7 @@ def main(config:DictConfig) -> None:
                 suffix=config.suffix,
                 params=config.params,
             )
-    return None
+        case 'sample':
+            sample(config)
+        case 'generate':
+            generate(config)
