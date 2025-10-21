@@ -21,7 +21,7 @@ __FORMATS__ = [
 def read(file: Path) -> np.ndarray:
     """reads sRGB image [0,255]"""
     image = cv2.imread(str(file), cv2.IMREAD_COLOR)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) / 255.
+    return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
 def write(path: Path, image: np.ndarray, normalize: bool = True):

@@ -17,13 +17,13 @@ SOURCE = 'source'
 TARGET = 'target'
 
 
-def sample(config: DictConfig) -> None:
+def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> None:
     """
     CAVE-HSI: https://ieee-dataport.org/documents/cave-hsi
     """
 
-    input_dir = Path(config.input)
-    output_dir = Path(config.output)
+    input_dir = Path(input_path)
+    output_dir = Path(output_path)
 
     if not input_dir.is_dir():
         raise Exception(f'No such directory: {input_dir}')
@@ -31,7 +31,7 @@ def sample(config: DictConfig) -> None:
 
     # Copy pairs (output_dir, input_path) splitted by tasks
     splits = {}
-    for name, data in config.split.items():
+    for name, data in split.items():
         output_src_dir = output_dir.joinpath(name, SOURCE)
         output_src_dir.mkdir(parents=True, exist_ok=True)
         input_src_files = list(Path(data.source).glob('*.mat'))
@@ -64,7 +64,7 @@ def sample(config: DictConfig) -> None:
                                input_src_file=copy[0][1],
                                output_tgt_dir=copy[1][0],
                                input_tgt_file=copy[1][1],
-                               params=config.params) for copy in split_data
+                               params=params) for copy in split_data
                 ]
                 for task in split_tasks:
                     task.add_done_callback(

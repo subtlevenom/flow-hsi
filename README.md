@@ -1,8 +1,13 @@
 # flow-hsi
 Hyperspectral imaging
 
+# git lfs
+https://git-lfs.com/
+1. git lfs install
+2. git lfs track "*.pdf"
+    
 # usage
-usage: main.py [--help] [--hydra-help] [--version] [--cfg {job,hydra,all}] [--resolve] [--package PACKAGE]
+usage: python main.py [--help] [--hydra-help] [--version] [--cfg {job,hydra,all}] [--resolve] [--package PACKAGE]
                [--run] [--multirun] [--shell-completion] [--config-path CONFIG_PATH]
                [--config-name CONFIG_NAME] [--config-dir CONFIG_DIR]
                [--experimental-rerun EXPERIMENTAL_RERUN]
@@ -24,4 +29,4 @@ python main.py sample-image-data -i /data/korepanov/color-transfer/huawei/src -o
     -i - input folder containing source images
     -o - output dataset folder
     -n - scale
-    
+

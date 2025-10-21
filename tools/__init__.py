@@ -7,13 +7,8 @@ def main(config:DictConfig) -> None:
 
     match config.tool:
         case 'convert':
-            convert(
-                input_path=config.input_path,
-                output_path=config.output_path,
-                suffix=config.suffix,
-                params=config.params,
-            )
+            convert(**config)
         case 'sample':
-            sample(config)
+            sample(**config)
         case 'generate':
-            generate(config)
+            generate(**config)
