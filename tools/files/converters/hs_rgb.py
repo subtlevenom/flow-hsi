@@ -6,6 +6,7 @@ from tools.utils.spectral import hs_to_rgb
 
 def convert(image: np.ndarray, bands: List[Tuple[int]], **kwargs) -> np.ndarray:
     """converts hyperspectral image to rgb"""
-    return hs_to_rgb(image, bands)
+    rgb = hs_to_rgb(image, bands)
+    return rgb / np.max(rgb)
 
     

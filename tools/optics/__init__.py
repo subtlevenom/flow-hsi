@@ -1,7 +1,8 @@
 from pathlib import Path
 from .bayer import Bayer
 from .lens import Lens
-from .cdf import CDF
+# from .cdf_const import CDF
+from .cdf_var import CDF
 
 
 def create_cdf():

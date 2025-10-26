@@ -16,6 +16,9 @@ print(device)
 
 # TODO: pass into parameters. How???
 BANDS = np.arange(400, 710, 10)
+BLUE_MAX = 0.5
+GREEN_MAX = 0.6
+RED_MAX = 0.7
 
 
 class CDF:
@@ -46,33 +49,34 @@ class CDF:
 
     def __call__(self, image: np.ndarray, harmonics=6):
 
-        # lambda_for_lens = self.lens.get_lambda(harmonics=harmonics)
         lambda_for_lens = np.arange(0.4, 0.71, 0.01)
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
 
-        image_size_ext = 2 * image.shape[0]
-        image_shape_ext = (image_size_ext, image_size_ext)
+        image_channels = image.shape[-1]
+        image_size = image.shape[0]
+        image_shape = (image_size, image_size)
 
-        sum_image_B = np.zeros(image_shape_ext, dtype=np.float64)
-        sum_image_G = np.zeros(image_shape_ext, dtype=np.float64)
-        sum_image_R = np.zeros(image_shape_ext, dtype=np.float64)
+        sum_image_B = np.zeros(image_shape, dtype=np.float64)
+        sum_image_G = np.zeros(image_shape, dtype=np.float64)
+        sum_image_R = np.zeros(image_shape, dtype=np.float64)
 
-        phase_in = torch.zeros(image_size_ext, dtype=torch.float32, device=device)
+        phase_in = torch.zeros(image_size, dtype=torch.float32, device=device)
 
         # Aperture mask
-        aperture_mask_lens = self.lens.aperture_mask(image_size_ext, self.dx_lens)
+        aperture_mask_lens = self.lens.aperture_mask(image_size, self.dx_lens)
 
         hypercube = []
 
-        for channel_index in range(image.shape[-1]):
-            for iterator_lenz in range(0, len(lambda_for_lens), 1):
-
-                lens_phase = self.lens.lens_phase(
-                    lambda_for_lens[iterator_lenz] * 1e-6, image_size_ext,
-                    self.dx_lens)
-
+        for iterator_lenz in range(0, len(lambda_for_lens), 1):
+            sum_img = np.zeros(image_shape, dtype=np.float64)
+            lens_phase = self.lens.lens_phase(
+                lambda_for_lens[iterator_lenz] * 1e-6,
+                image_size,
+                self.dx_lens,
+            )
+            for channel_index in range(image.shape[-1]):
                 amp_in = self.scale_channel_tensor(image[:, :, channel_index],
-                                                   image_size_ext)
+                                                   image_size)
 
                 temp_lambd = int(BANDS[channel_index]) * 1e-9
 
@@ -102,26 +106,16 @@ class CDF:
 
                 temp_lambd_cpu = int(temp_lambd * 1e9)
 
-                if iterator_lenz == 2:
-                    sum_image_B += intensity * spectral_filters[0][
-                        temp_lambd_cpu]
-                elif iterator_lenz == 1:
-                    sum_image_G += intensity * spectral_filters[1][
-                        temp_lambd_cpu]
-                elif iterator_lenz == 0:
-                    sum_image_R += intensity * spectral_filters[2][
-                        temp_lambd_cpu]
+                if lambda_for_lens[iterator_lenz] < BLUE_MAX: spectral_filter = spectral_filters[0]
+                elif lambda_for_lens[iterator_lenz] < GREEN_MAX: spectral_filter = spectral_filters[1]
+                else: spectral_filter = spectral_filters[2]
+                
+                sum_img += intensity * spectral_filter[temp_lambd_cpu]
 
-            spectr_image = sum_image_B + sum_image_G + sum_image_R
-
-            sum_image_B = np.zeros(image_shape_ext, dtype=np.float64)
-            sum_image_G = np.zeros(image_shape_ext, dtype=np.float64)
-            sum_image_R = np.zeros(image_shape_ext, dtype=np.float64)
-
-            hypercube.append(cv2.resize(spectr_image, image.shape[:2]))
+            hypercube.append(sum_img)
 
         hypercube = np.stack(hypercube, dtype=np.float64).transpose(1, 2, 0)
-        return 4 * hypercube[::-1,::-1]
+        return hypercube[::-1,::-1]
 
     def scale_channel_tensor(self, img: np.ndarray,
                              image_size: int) -> torch.Tensor:
