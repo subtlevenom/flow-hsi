@@ -29,7 +29,7 @@ class HSDecoder(nn.Module):
                 kernel_size=1,
             ))
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, s, x: torch.Tensor):
 
         B, C, H, W = x.shape
         x = rearrange(
@@ -38,5 +38,5 @@ class HSDecoder(nn.Module):
             i=self.out_channels,
             o=self.in_channels,
         )
-        x = F.sigmoid(self.proj(x))
+        x = F.sigmoid(s + self.proj(x))
         return x

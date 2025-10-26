@@ -46,7 +46,8 @@ class CDF:
 
     def __call__(self, image: np.ndarray, harmonics=6):
 
-        lambda_for_lens = self.lens.get_lambda(harmonics=harmonics)
+        # lambda_for_lens = self.lens.get_lambda(harmonics=harmonics)
+        lambda_for_lens = np.arange(0.4, 0.71, 0.01)
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
 
         image_size_ext = 2 * image.shape[0]
