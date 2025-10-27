@@ -46,12 +46,9 @@ class HSEncoder(nn.Module):
     def forward(self, x: torch.Tensor):
 
         B, C, H, W = x.shape
-        v = self.value(x)
-        w = self.weight(x)
-        x = F.sigmoid(v + self.proj(v * w))
-        return rearrange(
-            x,
-            'b (i o) h w -> (b i) o h w',
-            i=self.in_channels,
-            o=self.out_channels,
-        )
+
+        a = rearrange(x, 'b c h w -> b (h w) c')
+        U,S,V = torch.pca_lowrank(a, q=4, center=False, niter=2)
+        U = rearrange(U, 'b (h w) c -> b c h w', h=H, w=W)
+
+        return U,S,V

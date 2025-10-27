@@ -15,28 +15,16 @@ class HSDecoder(nn.Module):
 
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.mid_channels = in_channels * out_channels
 
-        self.proj = nn.Sequential(
-            nn.Conv2d(
-                in_channels=self.mid_channels,
-                out_channels=self.mid_channels,
-                kernel_size=1,
-            ), nn.ReLU(),
-            nn.Conv2d(
-                in_channels=self.mid_channels,
-                out_channels=out_channels,
-                kernel_size=1,
-            ))
+    def forward(self, U: torch.Tensor, S: torch.Tensor, V: torch.Tensor):
 
-    def forward(self, s, x: torch.Tensor):
+        B, C, H, W = U.shape
 
-        B, C, H, W = x.shape
-        x = rearrange(
-            x,
-            '(b i) o h w -> b (i o) h w',
-            i=self.out_channels,
-            o=self.in_channels,
-        )
-        x = F.sigmoid(s + self.proj(x))
+        SV = S.unsqueeze(1) * V
+        U = rearrange(U, 'b c h w -> b (h w) c')
+        A = torch.bmm(U,SV.permute(0,2,1))
+        x = rearrange(A, 'b (h w) c -> b c h w', h=H,w=W)
+
         return x
+
+

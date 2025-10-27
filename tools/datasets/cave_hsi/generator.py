@@ -32,6 +32,7 @@ def generate(input_path: str, params: DictConfig) -> None:
                 gt_path.name)
             gt_image = reader.read(gt_path)
             src_image = cdf(gt_image)
+            src_image = src_image * np.max(gt_image) / np.max(src_image)
             writer.write(src_path, src_image)
         except Exception as e:
             print(f'Failed to convert {gt_path}.')

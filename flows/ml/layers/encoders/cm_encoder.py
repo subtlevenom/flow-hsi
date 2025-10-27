@@ -212,26 +212,27 @@ class Encoder2D(torch.nn.Module):
 
     def __init__(self, in_dim, out_dim, kernel_size):
         super(Encoder2D, self).__init__()
-        self.estimator = IlluminationEstimator(12, in_dim + 1, in_dim)
+        self.estimator = IlluminationEstimator(20, in_dim + 1, in_dim)
 
         self.down1 = DWTForward()  # 12 h/2
-        self.trans1 = TransformerBlock(12, 12, 12, 3, True)
         self.illu_down1 = nn.Sequential(
             nn.AvgPool2d(2),
-            nn.Conv2d(12, 12, 1),
+            nn.Conv2d(20, 16, 1),
         )
+        self.trans1 = TransformerBlock(16, 16, 16, 4, True)
 
         self.down2 = DWTForward()  # 48 h/4
-        self.trans2 = TransformerBlock(48, 48, 48, 3, True)
         self.illu_down2 = nn.Sequential(
             nn.AvgPool2d(2),
-            nn.Conv2d(12, 48, 1),
+            nn.Conv2d(16, 64, 1),
         )
+        self.trans2 = TransformerBlock(64, 64, 64, 8, True)
+
         self.up1 = nn.Upsample(scale_factor=2, mode='bilinear')
         self.up2 = nn.Upsample(scale_factor=4, mode='bilinear')
 
-        self.conv_out = nn.Sequential(LayerNorm(3 + 12 + 48),
-                                      FFN(3 + 12 + 48, out_features=out_dim))
+        self.conv_out = nn.Sequential(LayerNorm(4 + 16 + 64),
+                                      FFN(4 + 16 + 64, out_features=out_dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         illu_fea, illu_map = self.estimator(x)
