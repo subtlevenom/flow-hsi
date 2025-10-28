@@ -20,9 +20,9 @@ class HSDecoder(nn.Module):
 
         B, C, H, W = U.shape
 
-        SV = S.unsqueeze(1) * V
         U = rearrange(U, 'b c h w -> b (h w) c')
-        A = torch.bmm(U,SV.permute(0,2,1))
+        U = U * S.unsqueeze(1)
+        A = torch.bmm(U, V.permute(0,2,1))
         x = rearrange(A, 'b (h w) c -> b c h w', h=H,w=W)
 
         return x

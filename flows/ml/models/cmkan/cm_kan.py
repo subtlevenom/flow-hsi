@@ -12,6 +12,11 @@ class CmKAN(SepKAN):
     def create_encoder(self, in_channels, out_channels, **kwargs):
         return CMEncoder(in_channels, out_channels)
 
+    def forward(self, x):
+        y = super(CmKAN, self).forward(x[:,:self.in_channels])
+        x = torch.cat([y,x[:,self.out_channels:]], dim=1)
+        return x
+
 
 class LightCmKAN(CmKAN):
 

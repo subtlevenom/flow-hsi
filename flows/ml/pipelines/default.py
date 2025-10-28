@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from ..models import Flow
 from flows.core import Logger
 from ..metrics import (PSNR, SSIM, DeltaE)
+from tools.utils import models
 
 
 class DefaultPipeline(L.LightningModule):
@@ -55,6 +56,9 @@ class DefaultPipeline(L.LightningModule):
                 elif isinstance(m, nn.Linear):
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
+
+        # models.require_grad(self.model.layers.cmkan, requires_grad=False)
+        # models.require_grad(self.model.layers.s_linear, requires_grad=False)
 
         Logger.info('Initialized model weights with isp pipeline.')
 

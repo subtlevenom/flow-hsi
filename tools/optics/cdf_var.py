@@ -116,7 +116,7 @@ class CDF:
             hypercube.append(cv2.resize(spectr_image, image.shape[:2]))
 
         hypercube = np.stack(hypercube, dtype=np.float64).transpose(1, 2, 0)
-        return 4 * hypercube[::-1,::-1]
+        return hypercube[::-1,::-1]
 
     def scale_channel_tensor(self, img: np.ndarray,
                              image_size: int) -> torch.Tensor:

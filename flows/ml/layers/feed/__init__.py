@@ -4,3 +4,4 @@ from .res_se_net import ResSENet
 from .se_net import SENet
 from .linear import Linear
 from .conv_1d import Conv1d
+from .basis import Basis

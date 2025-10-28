@@ -13,7 +13,11 @@ class Linear(nn.Module):
         out_channels: List[int],
     ):
         super().__init__()
-        self.linear = nn.Linear(in_features=in_channels, out_features=out_channels)
+        self.linear = nn.Sequential(
+            nn.Linear(in_features=in_channels, out_features=31),
+            nn.Tanh(),
+            nn.Linear(in_features=31, out_features=out_channels),
+        )
 
     def forward(self, x):
         return self.linear(x)

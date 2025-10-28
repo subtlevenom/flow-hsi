@@ -31,14 +31,17 @@ class GenerateCallback(Callback):
                 pl_module.eval()
                 reconst_imgs = pl_module(self.input_imgs)
                 pl_module.train()
+
             # Plot and add to tensorboard
-            input_imgs = F.interpolate(self.input_imgs, size=self.target_imgs.shape[-2:], mode='bicubic')
-            imgs = torch.stack([input_imgs, reconst_imgs, self.target_imgs], dim=1).flatten(0, 1)
+            input_imgs = self.input_imgs[:,[5,15,25]]
+            target_imgs = self.target_imgs[:,[5,15,25]]
+            reconst_imgs = reconst_imgs[:,[5,15,25]]
+            imgs = torch.stack([input_imgs, reconst_imgs, target_imgs], dim=1).flatten(0, 1)
             grid = torchvision.utils.make_grid(imgs, nrow=3)
             # Save image
             save_path = os.path.join(self.save_dir, f"reconst_{trainer.current_epoch}.png")
             os.makedirs(self.save_dir, exist_ok=True)
-            # torchvision.utils.save_image(grid, save_path)
+            torchvision.utils.save_image(grid, save_path)
 
     def on_test_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
         dataloader = trainer.test_dataloaders
@@ -55,8 +58,11 @@ class GenerateCallback(Callback):
                 reconst_imgs = pl_module(self.input_imgs)
                 pl_module.train()
             # Plot and add to tensorboard
-            input_imgs = F.interpolate(self.input_imgs, size=self.target_imgs.shape[-2:], mode='bicubic')
-            imgs = torch.stack([input_imgs, reconst_imgs, self.target_imgs], dim=1).flatten(0, 1)
+
+            input_imgs = self.input_imgs[:,[5,15,25]]
+            target_imgs = self.target_imgs[:,[5,15,25]]
+            reconst_imgs = reconst_imgs[:,[5,15,25]]
+            imgs = torch.stack([input_imgs, reconst_imgs, target_imgs], dim=1).flatten(0, 1)
             grid = torchvision.utils.make_grid(imgs, nrow=3)
             # Save image
             save_path = os.path.join(self.save_dir, f"test_{trainer.current_epoch}.png")
