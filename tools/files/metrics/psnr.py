@@ -6,8 +6,6 @@ from tools.utils import metrics
 
 def calculate(src: np.ndarray, ref: np.ndarray, **kwargs) -> float:
     """psnr"""
-    src /= np.max(src)
-    ref /= np.max(ref)
     return metrics.psnr(src, ref)
 
     

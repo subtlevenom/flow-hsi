@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from typing import List
 from torchvision.transforms.v2 import Compose
 from flows.ml.transforms.pair_trransform import PairTransform
+from tools.files import reader
 
 
 class Dataset(Dataset):
@@ -17,14 +18,12 @@ class Dataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         path = self.paths_a[idx]
-        x = np.load(path)
-        x = (x-np.min(x))/(np.max(x)-np.min(x))
+        x = reader.read(path)
         if self.transform is not None:
             x = self.transform(x)
 
         path = self.paths_b[idx]
-        y = np.load(path)
-        y = (y-np.min(y))/(np.max(y)-np.min(y))
+        y = reader.read(path)
         if self.transform is not None:
             y = self.transform(y)
 

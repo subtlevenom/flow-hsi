@@ -58,7 +58,7 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.constant_(m.bias, 0)
 
         # models.require_grad(self.model.layers.cmkan, requires_grad=False)
-        # models.require_grad(self.model.layers.s_linear, requires_grad=False)
+        # models.require_grad(self.model.layers.basis, requires_grad=False)
 
         Logger.info('Initialized model weights with isp pipeline.')
 

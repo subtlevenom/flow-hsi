@@ -25,13 +25,42 @@ def generate(input_path: str, params: DictConfig) -> None:
         raise Exception(f'No such directory: {input_dir}')
 
     cdf = create_cdf()
+    center_crop = A.CenterCrop(height=512, width=512)
+
+    n = 0
+    src = []
+    gt = []
+    for gt_path in Path(input_dir).glob('**/*.mat'):
+        try:
+            src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(
+                gt_path.name)
+            gt_image = reader.read(gt_path)
+            gt_img = np.pad(gt_image, ((256, 256), (256, 256), (0,0)), 'constant') 
+            src_image = cdf(gt_img)
+            src_image = center_crop(image=src_image)['image']
+            # normalize
+            mx_gt = np.mean(gt_image, axis=(0,1), keepdims=True)
+            mx_src = np.mean(src_image, axis=(0,1), keepdims=True)
+            src.append(mx_src)
+            gt.append(mx_gt)
+            n += 1
+        except Exception as e:
+            print(f'Failed to convert {gt_path}.')
+
+    src = sum(src) / n
+    gt = sum(gt) / n
+    mx = gt / src
 
     for gt_path in Path(input_dir).glob('**/*.mat'):
         try:
             src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(
                 gt_path.name)
             gt_image = reader.read(gt_path)
-            src_image = 3.8 * cdf(gt_image)
+            gt_img = np.pad(gt_image, ((256, 256), (256, 256), (0,0)), 'constant') 
+            src_image = cdf(gt_img)
+            src_image = center_crop(image=src_image)['image']
+            # normalize
+            src_image = src_image * mx 
             writer.write(src_path, src_image)
         except Exception as e:
             print(f'Failed to convert {gt_path}.')
