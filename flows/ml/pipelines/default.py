@@ -93,11 +93,13 @@ class DefaultPipeline(L.LightningModule):
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
         ssim_loss = self.ssim_metric(prediction, target)
+        loss = mae_loss + 0.1 * (1.-ssim_loss)
 
+        self.log('train_mae', mae_loss, prog_bar=True, logger=True)
         self.log('train_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('train_ssim', ssim_loss, prog_bar=True, logger=True)
-        self.log('train_loss', mae_loss, prog_bar=True, logger=True)
-        return {'loss': mae_loss}
+        self.log('train_loss', loss, prog_bar=True, logger=True)
+        return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
         src, target = batch
