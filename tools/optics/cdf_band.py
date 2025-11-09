@@ -72,10 +72,6 @@ class CDF:
             axis=0,
         )
 
-        sum_image_B = np.zeros(image_shape, dtype=np.float64)
-        sum_image_G = np.zeros(image_shape, dtype=np.float64)
-        sum_image_R = np.zeros(image_shape, dtype=np.float64)
-
         phase_in = torch.zeros(image_size, dtype=torch.float32, device=DEVICE)
 
         # Aperture mask
@@ -92,16 +88,14 @@ class CDF:
                 self.dx_lens,
             )
 
-            for channel_index in range(image_channels):
+            for channel_index, channel_lambda in enumerate(BANDS):
                 channel_image = image[:,:,channel_index]
                 channel_tensor = torch.from_numpy(channel_image).to(device=DEVICE)
-
-                channel_lambda = BANDS[channel_index] * 1e-9
 
                 field = channel_tensor * torch.exp(1j * phase_in)
                 field = self.fresnel_propagation(
                     field.type(torch.complex64),
-                    channel_lambda,
+                    channel_lambda * 1e-9,
                     self.lens.z1,
                     self.dx_image,
                 )
@@ -111,7 +105,7 @@ class CDF:
                 field = field * phi_lambda
                 field = self.fresnel_propagation(
                     field.type(torch.complex64),
-                    channel_lambda,
+                    channel_lambda * 1e-9,
                     self.lens.z2,
                     self.dx_lens,
                 )
@@ -119,12 +113,12 @@ class CDF:
                 intensity = torch.abs(field).cpu().numpy()
 
                 spectral_filter = spectral_filters[lambda_index]
-                sum_img += intensity * spectral_filter[int(BANDS[channel_index])]
+                sum_img += intensity * spectral_filter[int(channel_lambda)]
 
             hyperspec.append(sum_img)
 
         hyperspec = np.stack(hyperspec, dtype=np.float64).transpose(1, 2, 0)
-        hyperspec = center_crop(image=hyperspec)['image']
+        hyperspec = center_crop(image=hyperspec[:-1,:-1])['image']
 
         return hyperspec[::-1, ::-1]
 
