@@ -35,9 +35,7 @@ def generate(input_path: str, params: DictConfig) -> None:
             src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(
                 gt_path.name)
             gt_image = reader.read(gt_path)
-            gt_img = np.pad(gt_image, ((256, 256), (256, 256), (0,0)), 'constant') 
-            src_image = cdf(gt_img)
-            src_image = center_crop(image=src_image)['image']
+            src_image = cdf(gt_image, padding=256)
             # normalize
             mx_gt = np.mean(gt_image, axis=(0,1), keepdims=True)
             mx_src = np.mean(src_image, axis=(0,1), keepdims=True)
@@ -56,9 +54,7 @@ def generate(input_path: str, params: DictConfig) -> None:
             src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(
                 gt_path.name)
             gt_image = reader.read(gt_path)
-            gt_img = np.pad(gt_image, ((256, 256), (256, 256), (0,0)), 'constant') 
-            src_image = cdf(gt_img)
-            src_image = center_crop(image=src_image)['image']
+            src_image = cdf(gt_image, padding=256)
             # normalize
             src_image = src_image * mx 
             writer.write(src_path, src_image)

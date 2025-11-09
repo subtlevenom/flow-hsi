@@ -165,6 +165,9 @@ def main_circl(
     z1,
     z2,
     Nlocal,
+    show_img_on=False,
+    n_otobr=512,
+    save_img_on=False,
 ):
 
     sum_image_B=np.zeros((Nlocal, Nlocal), dtype=np.float64)
@@ -179,6 +182,9 @@ def main_circl(
     Nlocal = amp_in.shape[0]
     #-----------------------Padding---------------------------------
     phase_in = torch.zeros((Nlocal, Nlocal), dtype=torch.float32, device=device)
+
+
+
 
 
     temp_lambd = lambda_for_one_lens * 1e-9
@@ -224,6 +230,44 @@ def main_circl(
     sum_image_R += intensity_cropped * spectral_filters[2][temp_lambd_cpu]
 
 
+
+    # if show_img_on:
+    #     cv2.imshow("Blue", cv2.resize(cv2.normalize(sum_image_B**2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8), (n_otobr,n_otobr)))
+    #     cv2.imshow("Green", cv2.resize(cv2.normalize(sum_image_G**2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8), (n_otobr,n_otobr)))
+    #     cv2.imshow("Red1", cv2.resize(cv2.normalize(sum_image_R**2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8), (n_otobr,n_otobr)))
+    #     cv2.waitKey(10)
+    '''
+    if save_img_on:
+        # cv2.imwrite("17_/Result_B"+str(lambda_for_one_lens)+".png", cv2.normalize(sum_image_B**2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
+        # cv2.imwrite("17_/Result_G"+str(lambda_for_one_lens)+".png", cv2.normalize(sum_image_G**2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
+        cv2.imwrite("17_/Result_R"+str(lambda_for_one_lens)+".png", cv2.normalize(sum_image_R**2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8))
+
+        rgb_image = cv2.merge([cv2.normalize(sum_image_B**2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8), cv2.normalize(sum_image_G**2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8), cv2.normalize(sum_image_R**2, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)])  # порядок: B, G, R
+        # cv2.imwrite('17_/Result_RGB'+str(lambda_for_one_lens)+'.png', rgb_image)
+        '''
+    if save_img_on:
+        # считаем общий min/max по всем трём каналам
+        global_min = min(sum_image_B.min(), sum_image_G.min(), sum_image_R.min())
+        global_max = max(sum_image_B.max(), sum_image_G.max(), sum_image_R.max())
+
+        # нормализация всех трёх каналов в единую шкалу [0, 255]
+        norm_B = ((sum_image_B - global_min) / (global_max - global_min) * 255).clip(0, 255).astype(np.uint8)
+        norm_G = ((sum_image_G - global_min) / (global_max - global_min) * 255).clip(0, 255).astype(np.uint8)
+        norm_R = ((sum_image_R - global_min) / (global_max - global_min) * 255).clip(0, 255).astype(np.uint8)
+
+        # сохраняем отдельно и в RGB
+        cv2.imwrite(path_to_save+f"Result_B{lambda_for_one_lens}.png", norm_B)
+        cv2.imwrite(path_to_save+f"Result_G{lambda_for_one_lens}.png", norm_G)
+        cv2.imwrite(path_to_save+f"Result_R{lambda_for_one_lens}.png", norm_R)
+
+        rgb_image = cv2.merge([norm_B, norm_G, norm_R])  # порядок: B, G, R
+        cv2.imwrite(path_to_save+f'Result_RGB{lambda_for_one_lens}.png', rgb_image)
+
+    print('END\n\n\nEND')
+    if show_img_on:
+        cv2.destroyAllWindows()
+
+
 if __name__=='__main__':
 
     N = 1024  # Размер изображения
@@ -239,18 +283,4 @@ if __name__=='__main__':
 
     spectral_filters = get_filter_bier('./cmv_400_graph/', show_graph_on=True)
     for lambda_for_one_lens in range(400, 701, 10):#ТУТ ФОКУСИРУЕМЫЕ ЛИНЗАМИ ДЛИНЫ ВОЛН
-        main_circl(
-            'Chisto_FREN/Archive/',
-            "17_/",
-            spectral_filters,
-            512,
-            dx_in,
-            dx_lenz,
-            dx_kam,
-            r_lenz,
-            focal_length,
-            lambda_for_one_lens,
-            z1,
-            z2,
-            N,
-        )
+        main_circl('Chisto_FREN/Archive/', "17_/", spectral_filters, 512, dx_in, dx_lenz, dx_kam, r_lenz, focal_length, lambda_for_one_lens, z1, z2, N, True, 512, True)
