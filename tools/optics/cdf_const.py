@@ -135,27 +135,3 @@ class CDF:
         U_f = torch.fft.fft2(U_in)
         U_out = torch.fft.ifft2(U_f * H)
         return U_out
-
-    def resample_field(self, U_complex, dx_src, dx_dst):
-        Nn = U_complex.shape[0]
-        U_real = torch.real(U_complex).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
-        U_imag = torch.imag(U_complex).unsqueeze(0).unsqueeze(0)
-        U_ch = torch.cat([U_real, U_imag], dim=1)  # (1,2,H,W)
-        coords = (torch.arange(Nn, device=DEVICE) - Nn // 2).float()
-        x_dst = coords * dx_dst
-        y_dst = coords * dx_dst
-        Xd, Yd = torch.meshgrid(
-            x_dst, y_dst, indexing='xy')  # physical coords of target grid
-        L_src = Nn * dx_src
-        Xn = Xd / (L_src / 2.0)
-        Yn = Yd / (L_src / 2.0)
-        grid = torch.stack([Xn, Yn], dim=-1)  # shape (N,N,2)
-        grid = grid.unsqueeze(0)  # (1,N,N,2)
-        sampled = F.grid_sample(U_ch,
-                                grid,
-                                mode='bilinear',
-                                padding_mode='zeros',
-                                align_corners=True)
-        real_s = sampled[0, 0]
-        imag_s = sampled[0, 1]
-        return (real_s + 1j * imag_s)
