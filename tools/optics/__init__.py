@@ -1,8 +1,8 @@
 from pathlib import Path
 from .bayer import Bayer
 from .lens import Lens
-from .cdf_band import CDF
-# from .cdf_const import CDF
+from .cdf_const import CDF
+# from .cdf_band import CDF
 # from .cdf_var import CDF
 
 
