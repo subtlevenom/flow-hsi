@@ -4,11 +4,12 @@ import cv2
 import numpy as np
 import math
 import torch.nn.functional as F
+import albumentations as A
 from .lens import Lens
 from .bayer import Bayer
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(DEVICE)
 
 # TODO: pass into parameters. How???
 BANDS = np.arange(400, 710, 10)
@@ -40,92 +41,97 @@ class CDF:
 
         # mass_amp_in = ["400.png", "410.png", "420.png", "430.png", "440.png", "450.png", "460.png", "470.png", "480.png", "490.png", "500.png", "510.png", "520.png", "530.png", "540.png", "550.png", "560.png", "570.png", "580.png", "590.png", "600.png", "610.png", "620.png", "630.png", "640.png", "650.png", "660.png", "670.png", "680.png", "690.png", "700.png"]
 
-    def __call__(self, image: np.ndarray, harmonics=6):
+    def __call__(self, image: np.ndarray, padding: int = 0, harmonics=6):
+
+        # padding/crop
+        if padding > 0:
+            center_crop = A.CenterCrop(height=image.shape[0],
+                                       width=image.shape[1])
+            pad = A.Pad(padding=padding,
+                        border_mode=cv2.BORDER_CONSTANT,
+                        fill=0)
+            image = pad(image=image)['image']
+        else:
+            center_crop = A.Sequential()
+
+        image_size = image.shape[0]
+        image_shape = (image_size, image_size)
+        image_channels = image.shape[-1]
 
         lambda_for_lens = self.lens.get_lambda(harmonics=harmonics)
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
 
-        image_size_ext = 2 * image.shape[0]
-        image_shape_ext = (image_size_ext, image_size_ext)
-
-        sum_image_B = np.zeros(image_shape_ext, dtype=np.float64)
-        sum_image_G = np.zeros(image_shape_ext, dtype=np.float64)
-        sum_image_R = np.zeros(image_shape_ext, dtype=np.float64)
-
-        phase_in = torch.zeros(image_size_ext, dtype=torch.float32, device=device)
+        phase_in = torch.zeros(image_size, dtype=torch.float32, device=DEVICE)
 
         # Aperture mask
-        aperture_mask_lens = self.lens.aperture_mask(image_size_ext, self.dx_lens)
+        aperture_mask_lens = self.lens.aperture_mask(image_size, self.dx_lens)
 
-        hypercube = []
+        hyperspec = []
 
-        for channel_index in range(image.shape[-1]):
-            for iterator_lenz in range(0, len(lambda_for_lens), 1):
+        for channel_index, channel_lambda in enumerate(BANDS):
+            channel_image = image[:, :, channel_index]
+            channel_tensor = torch.from_numpy(channel_image).to(device=DEVICE)
+
+            sum_image = np.zeros(image_shape, dtype=np.float64)
+
+            for lens_index, lens_lambda in enumerate(lambda_for_lens):
 
                 lens_phase = self.lens.lens_phase(
-                    lambda_for_lens[iterator_lenz] * 1e-6, image_size_ext,
-                    self.dx_lens)
+                    lens_lambda * 1e-6,
+                    image_size,
+                    self.dx_lens,
+                )
 
-                amp_in = self.scale_channel_tensor(image[:, :, channel_index],
-                                                   image_size_ext)
-
-                temp_lambd = int(BANDS[channel_index]) * 1e-9
-
-                field = amp_in * torch.exp(1j * phase_in)
-                field = self.fresnel_propagation(field.type(torch.complex64),
-                                                 temp_lambd, self.lens.z1,
-                                                 self.dx_image)
-                field = self.resample_field(field,
-                                            dx_src=self.dx_image,
-                                            dx_dst=self.dx_lens)
-
+                field = channel_tensor * torch.exp(1j * phase_in)
+                field = self.fresnel_propagation(
+                    field.type(torch.complex64),
+                    channel_lambda * 1e-9,
+                    self.lens.z1,
+                    self.dx_image,
+                )
+                field = self.resample_field(
+                    field,
+                    dx_src=self.dx_image,
+                    dx_dst=self.dx_lens,
+                )
                 field = field * aperture_mask_lens.type(field.dtype)
 
-                phi_lambda = lens_phase * (lambda_for_lens[iterator_lenz] *
-                                           1e-6 / temp_lambd)
+                phi_lambda = lens_phase * (lens_lambda * 1e3 / channel_lambda)
                 phi_lambda = torch.exp(1j * phi_lambda)
 
                 field = field * phi_lambda
-                field = self.fresnel_propagation(field.type(torch.complex64),
-                                                 temp_lambd, self.lens.z2,
-                                                 self.dx_lens)
-                field = self.resample_field(field,
-                                            dx_src=self.dx_lens,
-                                            dx_dst=self.dx_camera)
+                field = self.fresnel_propagation(
+                    field.type(torch.complex64),
+                    channel_lambda * 1e-9,
+                    self.lens.z2,
+                    self.dx_lens,
+                )
+                field = self.resample_field(
+                    field,
+                    dx_src=self.dx_lens,
+                    dx_dst=self.dx_camera,
+                )
 
                 intensity = torch.abs(field).cpu().numpy()
 
-                temp_lambd_cpu = int(temp_lambd * 1e9)
+                sum_image += intensity * spectral_filters[
+                    2 - lens_index][channel_lambda]
 
-                if iterator_lenz == 2:
-                    sum_image_B += intensity * spectral_filters[0][
-                        temp_lambd_cpu]
-                elif iterator_lenz == 1:
-                    sum_image_G += intensity * spectral_filters[1][
-                        temp_lambd_cpu]
-                elif iterator_lenz == 0:
-                    sum_image_R += intensity * spectral_filters[2][
-                        temp_lambd_cpu]
+            hyperspec.append(sum_image)
 
-            spectr_image = sum_image_B + sum_image_G + sum_image_R
+        hyperspec = np.stack(hyperspec, dtype=np.float64).transpose(1, 2, 0)
+        hyperspec = center_crop(image=hyperspec[2:, 3:])['image']
 
-            sum_image_B = np.zeros(image_shape_ext, dtype=np.float64)
-            sum_image_G = np.zeros(image_shape_ext, dtype=np.float64)
-            sum_image_R = np.zeros(image_shape_ext, dtype=np.float64)
-
-            hypercube.append(cv2.resize(spectr_image, image.shape[:2]))
-
-        hypercube = np.stack(hypercube, dtype=np.float64).transpose(1, 2, 0)
-        return hypercube[::-1,::-1]
+        return hyperspec[::-1, ::-1]
 
     def scale_channel_tensor(self, img: np.ndarray,
                              image_size: int) -> torch.Tensor:
         img = cv2.resize(img, (image_size, image_size),
                          interpolation=cv2.INTER_AREA)
-        return torch.from_numpy(img.astype('float32') / 255.0).to(device)
+        return torch.from_numpy(img.astype('float32') / 255.0).to(DEVICE)
 
     def generate_lens_phase(self, lambda_design, dx_len):
-        coords = (torch.arange(self.image_size, device=device) -
+        coords = (torch.arange(self.image_size, device=DEVICE) -
                   self.image_size // 2).float()
         x = coords * dx_len
         y = coords * dx_len
@@ -137,8 +143,8 @@ class CDF:
     def fresnel_propagation(self, U_in, wavelength, z, dx):
         ny, nx = U_in.shape
         k = 2 * math.pi / wavelength
-        fx = torch.fft.fftfreq(nx, d=dx).to(device)
-        fy = torch.fft.fftfreq(ny, d=dx).to(device)
+        fx = torch.fft.fftfreq(nx, d=dx).to(DEVICE)
+        fy = torch.fft.fftfreq(ny, d=dx).to(DEVICE)
         FX, FY = torch.meshgrid(fx, fy, indexing='xy')
         sqrt_arg = 1.0 - (wavelength * FX)**2 - (wavelength * FY)**2
         H = torch.exp(1j * k * z * torch.sqrt(sqrt_arg.type(torch.complex64)))
@@ -151,7 +157,7 @@ class CDF:
         U_real = torch.real(U_complex).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
         U_imag = torch.imag(U_complex).unsqueeze(0).unsqueeze(0)
         U_ch = torch.cat([U_real, U_imag], dim=1)  # (1,2,H,W)
-        coords = (torch.arange(Nn, device=device) - Nn // 2).float()
+        coords = (torch.arange(Nn, device=DEVICE) - Nn // 2).float()
         x_dst = coords * dx_dst
         y_dst = coords * dx_dst
         Xd, Yd = torch.meshgrid(

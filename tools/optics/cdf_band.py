@@ -61,16 +61,12 @@ class CDF:
         else:
             center_crop = A.Sequential()
 
-        image_channels = image.shape[-1]
         image_size = image.shape[0]
         image_shape = (image_size, image_size)
+        image_channels = image.shape[-1]
 
+        lambda_for_lens = np.array([678, 543, 452])
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
-        spectral_filters = np.repeat(
-            np.array(spectral_filters),
-            [image_channels // 3, image_channels // 3, image_channels - 2 * image_channels // 3],
-            axis=0,
-        )
 
         phase_in = torch.zeros(image_size, dtype=torch.float32, device=DEVICE)
 
@@ -79,18 +75,19 @@ class CDF:
 
         hyperspec = []
 
-        for lambda_index, lens_lambda in enumerate(BANDS):
-            sum_img = np.zeros(image_shape, dtype=np.float64)
+        for channel_index, channel_lambda in enumerate(BANDS):
+            channel_image = image[:, :, channel_index]
+            channel_tensor = torch.from_numpy(channel_image).to(device=DEVICE)
 
-            lens_phase = self.lens.lens_phase(
-                lens_lambda * 1e-9,
-                image_size,
-                self.dx_lens,
-            )
+            sum_image = np.zeros(image_shape, dtype=np.float64)
 
-            for channel_index, channel_lambda in enumerate(BANDS):
-                channel_image = image[:,:,channel_index]
-                channel_tensor = torch.from_numpy(channel_image).to(device=DEVICE)
+            for lens_index, lens_lambda in enumerate(lambda_for_lens):
+
+                lens_phase = self.lens.lens_phase(
+                    lens_lambda * 1e-9,
+                    image_size,
+                    self.dx_lens,
+                )
 
                 field = channel_tensor * torch.exp(1j * phase_in)
                 field = self.fresnel_propagation(
@@ -101,7 +98,9 @@ class CDF:
                 )
                 field = field * aperture_mask_lens.type(field.dtype)
 
-                phi_lambda = torch.exp(1j * lens_phase)
+                phi_lambda = lens_phase * (lens_lambda / channel_lambda)
+                phi_lambda = torch.exp(1j * phi_lambda)
+
                 field = field * phi_lambda
                 field = self.fresnel_propagation(
                     field.type(torch.complex64),
@@ -112,13 +111,13 @@ class CDF:
 
                 intensity = torch.abs(field).cpu().numpy()
 
-                spectral_filter = spectral_filters[lambda_index]
-                sum_img += intensity * spectral_filter[int(channel_lambda)]
+                sum_image += intensity * spectral_filters[
+                    2 - lens_index][channel_lambda]
 
-            hyperspec.append(sum_img)
+            hyperspec.append(sum_image)
 
         hyperspec = np.stack(hyperspec, dtype=np.float64).transpose(1, 2, 0)
-        hyperspec = center_crop(image=hyperspec[:-1,:-1])['image']
+        hyperspec = center_crop(image=hyperspec[2:, 3:])['image']
 
         return hyperspec[::-1, ::-1]
 
@@ -133,3 +132,27 @@ class CDF:
         U_f = torch.fft.fft2(U_in)
         U_out = torch.fft.ifft2(U_f * H)
         return U_out
+
+    def resample_field(self, U_complex, dx_src, dx_dst):
+        Nn = U_complex.shape[0]
+        U_real = torch.real(U_complex).unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
+        U_imag = torch.imag(U_complex).unsqueeze(0).unsqueeze(0)
+        U_ch = torch.cat([U_real, U_imag], dim=1)  # (1,2,H,W)
+        coords = (torch.arange(Nn, device=DEVICE) - Nn // 2).float()
+        x_dst = coords * dx_dst
+        y_dst = coords * dx_dst
+        Xd, Yd = torch.meshgrid(
+            x_dst, y_dst, indexing='xy')  # physical coords of target grid
+        L_src = Nn * dx_src
+        Xn = Xd / (L_src / 2.0)
+        Yn = Yd / (L_src / 2.0)
+        grid = torch.stack([Xn, Yn], dim=-1)  # shape (N,N,2)
+        grid = grid.unsqueeze(0)  # (1,N,N,2)
+        sampled = F.grid_sample(U_ch,
+                                grid,
+                                mode='bilinear',
+                                padding_mode='zeros',
+                                align_corners=True)
+        real_s = sampled[0, 0]
+        imag_s = sampled[0, 1]
+        return (real_s + 1j * imag_s)
