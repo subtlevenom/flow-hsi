@@ -29,7 +29,8 @@ class Bayer():
 
         except Exception as e:
             print(f'Failed reading filter at {path} with exception {e}')
-            raise RuntimeError(f'Failed reading filter at {path} with exception {e}')
+            raise RuntimeError(
+                f'Failed reading filter at {path} with exception {e}')
 
     def _read_spectral_band(self, path: Path):
         df = pd.read_csv(path, sep='\t', header=None)
@@ -48,11 +49,10 @@ class Bayer():
     def get_filters(self, resample=600, zeros=400):
         filters = []
         for band in self.bands:
-            filter = band[:,1]
+            filter = band[:, 1]
             if resample > 0:
                 filter = self._resample_band(filter, new_length=resample)
             if zeros > 0:
                 filter = self._prepend_zeros(filter, zeros=zeros)
             filters.append(filter)
         return filters
-

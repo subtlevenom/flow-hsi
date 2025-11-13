@@ -16,11 +16,11 @@ print(device)
 class Lens:
 
     def __init__(
-            self,
-            focal_length=0.05,
-            radius=0.003,
-            refractive_index=1.62,
-            height=4.38  # высота гармонической линзы
+        self,
+        focal_length,
+        radius,
+        refractive_index,
+        height,
     ):
         self.focal_length = focal_length
         self.radius = radius

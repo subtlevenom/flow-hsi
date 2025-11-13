@@ -28,9 +28,9 @@ class CDF:
         self,
         lens: Lens,
         bayer: Bayer,
-        dx_image: float = 3.5e-6,
-        dx_lens: float = 3.5e-6,
-        dx_camera: float = 3.5e-6,
+        dx_image: float = 10.0e-6,
+        dx_lens: float = 10.0e-6,
+        dx_camera: float = 10.0e-6,
     ):
         """"
         image_size = 1024 Input image size (both width and hight)
