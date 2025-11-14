@@ -10,6 +10,8 @@ def psnr(
         reduction: str = 'elementwise_mean',
 ):
     psnr = PSNR(data_range=data_range, reduction=reduction)
-    val = psnr(torch.from_numpy(src), torch.from_numpy(ref)).numpy()
+    src = torch.from_numpy(src).permute(2, 0, 1).unsqueeze(0)
+    ref = torch.from_numpy(ref).permute(2, 0, 1).unsqueeze(0)
+    val = psnr(src, ref).numpy()
     return float(val)
 
