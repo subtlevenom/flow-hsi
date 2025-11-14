@@ -112,11 +112,13 @@ class CDF:
                 sum_image_G += intensity * spectral_filters[1][channel_lambda]
                 sum_image_R += intensity * spectral_filters[2][channel_lambda]
 
-            hyperspec[lambda_for_lens[0]] = sum_image_B
-            if len(lambda_for_lens) > 1:
-                hyperspec[lambda_for_lens[1]] = sum_image_G
-            if len(lambda_for_lens) > 2:
-                hyperspec[lambda_for_lens[2]] = sum_image_R
+            def select_channel(wavelength):
+                if wavelength < 500: return sum_image_B
+                if wavelength > 600: return sum_image_R
+                return sum_image_G
+
+            for wavelength in lambda_for_lens:
+                hyperspec[wavelength] = select_channel(wavelength)
 
         sorted_keys = list(sorted(hyperspec.keys()))
         hyperspec = [hyperspec[key] for key in sorted_keys]
