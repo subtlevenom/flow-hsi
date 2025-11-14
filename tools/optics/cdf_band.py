@@ -15,11 +15,7 @@ from .bayer import Bayer
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(DEVICE)
 
-# TODO: pass into parameters. How???
 BANDS = np.arange(400, 701, 10)  # lens focusing wavelength
-MAX_BLUE = BANDS[10]
-MAX_GREEN = BANDS[20]
-MAX_RED = BANDS[-1] + 1
 
 
 class CDF:
@@ -47,7 +43,6 @@ class CDF:
         self.lens = lens
         self.bayer = bayer
         self.configs = configs
-
 
     def __call__(self, image: np.ndarray, padding: int = 0):
 
@@ -77,18 +72,22 @@ class CDF:
             lens_height = cfg["h"]
             lens_order = cfg["M"]
 
-            lambda_for_lens = self.lens.get_lambda(height=lens_height, order=lens_order)
+            lambda_for_lens = self.lens.get_lambda(height=lens_height,
+                                                   order=lens_order)
             print(f"height = {lens_height:.6f} µm,  order = {lens_order}")
 
-            phase_in = torch.zeros(image_size, dtype=torch.float32, device=DEVICE)
+            phase_in = torch.zeros(image_size,
+                                   dtype=torch.float32,
+                                   device=DEVICE)
 
-            sum_image_B=np.zeros(image_shape, dtype=np.float64)
-            sum_image_G=np.zeros(image_shape, dtype=np.float64)
-            sum_image_R=np.zeros(image_shape, dtype=np.float64)
+            sum_image_B = np.zeros(image_shape, dtype=np.float64)
+            sum_image_G = np.zeros(image_shape, dtype=np.float64)
+            sum_image_R = np.zeros(image_shape, dtype=np.float64)
 
             for channel_index, channel_lambda in enumerate(BANDS):
                 channel_image = image[:, :, channel_index]
-                channel_tensor = torch.from_numpy(channel_image).to(device=DEVICE)
+                channel_tensor = torch.from_numpy(channel_image).to(
+                    device=DEVICE)
 
                 field = channel_tensor * torch.exp(1j * phase_in)
                 field = self.fresnel_propagation(
@@ -126,7 +125,10 @@ class CDF:
         hyperspec = np.stack(hyperspec, dtype=np.float64).transpose(1, 2, 0)
         hyperspec = center_crop(image=hyperspec[2:, 3:])['image']
 
-        interpolator = interp1d(list(range(48)), hyperspec, kind='cubic', axis=-1)
+        interpolator = interp1d(list(range(48)),
+                                hyperspec,
+                                kind='cubic',
+                                axis=-1)
         hyperspec = interpolator(range(31))
 
         return hyperspec[::-1, ::-1]

@@ -69,7 +69,10 @@ class CDF:
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
         spectral_filters = np.repeat(
             np.array(spectral_filters),
-            [image_channels // 3, image_channels // 3, image_channels - 2 * image_channels // 3],
+            [
+                image_channels // 3, image_channels // 3,
+                image_channels - 2 * image_channels // 3
+            ],
             axis=0,
         )
 
@@ -116,7 +119,8 @@ class CDF:
 
                 intensity = torch.abs(field).cpu().numpy()
 
-                sum_image += intensity * spectral_filters[lens_index][channel_lambda]
+                sum_image += intensity * spectral_filters[lens_index][
+                    channel_lambda]
 
             hyperspec.append(sum_image)
 
