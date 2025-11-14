@@ -74,11 +74,11 @@ class CDF:
 
         for cfg in self.configs:
 
-            h = cfg["h"]
-            M = cfg["M"]
+            lens_height = cfg["h"]
+            lens_order = cfg["M"]
 
-            lambda_for_lens = self.lens.get_lambda(height=h, order=M)
-            print(f"height = {h:.6f} µm,  order = {M}")
+            lambda_for_lens = self.lens.get_lambda(height=lens_height, order=lens_order)
+            print(f"height = {lens_height:.6f} µm,  order = {lens_order}")
 
             phase_in = torch.zeros(image_size, dtype=torch.float32, device=DEVICE)
 
@@ -102,7 +102,7 @@ class CDF:
                     channel_lambda * 1e-9,
                     image_size,
                     self.dx_lens,
-                    h,
+                    lens_height,
                 ).to(DEVICE)
                 field = field * torch.exp(1j * lens_phase)
 

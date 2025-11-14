@@ -31,6 +31,7 @@ class CDF:
         dx_image: float,
         dx_lens: float,
         dx_camera: float,
+        **kwargs,
     ):
         """"
         image_size = 1024 Input image size (both width and hight)
