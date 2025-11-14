@@ -62,17 +62,14 @@ class CDF:
         image_channels = image.shape[-1]
 
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
-        hyperspec = []
+        hyperspec = {}
         
         for cfg in self.configs:
-
             lens_height = cfg["h"]
             lens_order = cfg["M"]
 
             lambda_for_lens = self.lens.get_lambda(height=lens_height,
                                                    order=lens_order)
-            print(f"height = {lens_height:.6f} µm, order = {lens_order}")
-
             phase_in = torch.zeros(image_size,
                                    dtype=torch.float32,
                                    device=DEVICE)
@@ -115,20 +112,31 @@ class CDF:
                 sum_image_G += intensity * spectral_filters[1][channel_lambda]
                 sum_image_R += intensity * spectral_filters[2][channel_lambda]
 
-            hyperspec.append(sum_image_B)
-            hyperspec.append(sum_image_G)
-            hyperspec.append(sum_image_R)
+            def select_channel(wavelength):
+                if wavelength < 500: return sum_image_B
+                if wavelength > 600: return sum_image_R
+                return sum_image_G
 
-        hyperspec = np.stack(hyperspec, dtype=np.float64).transpose(1, 2, 0)
+            for wavelength in lambda_for_lens:
+                hyperspec[wavelength] = select_channel(wavelength)
+
+        hyperspec = {key: hyperspec[key] for key in sorted(hyperspec.keys())}
+        
+        original_wavelengths = np.array(list(hyperspec.keys()), dtype=np.float64)
+        hyperspec_cube = np.stack([hyperspec[key] for key in original_wavelengths],
+                                  axis=-1)
+
+        new_wavelengths = np.arange(400, 701, 10, dtype=np.float64)
+
+        interpolator = interp1d(original_wavelengths,
+                                hyperspec_cube,
+                                axis=-1,
+                                kind='linear',
+                                bounds_error=False,
+                                fill_value="extrapolate")
+        hyperspec = interpolator(new_wavelengths)
+        
         hyperspec = center_crop(image=hyperspec[2:, 3:])['image']
-
-        # 48 to 31 channels interpolation
-        interpolator = interp1d(list(range(48)),
-                                hyperspec,
-                                kind='cubic',
-                                axis=-1)
-        hyperspec = interpolator(range(31))
-
         return hyperspec[::-1, ::-1]
 
     def fresnel_propagation(self, U_in, wavelength, z, dx):
