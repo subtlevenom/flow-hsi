@@ -62,11 +62,8 @@ class CDF:
         image_channels = image.shape[-1]
 
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
-
         hyperspec = []
-
-        ############################
-
+        
         for cfg in self.configs:
 
             lens_height = cfg["h"]
@@ -74,7 +71,7 @@ class CDF:
 
             lambda_for_lens = self.lens.get_lambda(height=lens_height,
                                                    order=lens_order)
-            print(f"height = {lens_height:.6f} µm,  order = {lens_order}")
+            print(f"height = {lens_height:.6f} µm, order = {lens_order}")
 
             phase_in = torch.zeros(image_size,
                                    dtype=torch.float32,
@@ -125,6 +122,7 @@ class CDF:
         hyperspec = np.stack(hyperspec, dtype=np.float64).transpose(1, 2, 0)
         hyperspec = center_crop(image=hyperspec[2:, 3:])['image']
 
+        # 48 to 31 channels interpolation
         interpolator = interp1d(list(range(48)),
                                 hyperspec,
                                 kind='cubic',
