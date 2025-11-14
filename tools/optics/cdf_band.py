@@ -28,9 +28,10 @@ class CDF:
         self,
         lens: Lens,
         bayer: Bayer,
-        dx_image: float = 10.0e-6,
-        dx_lens: float = 10.0e-6,
-        dx_camera: float = 10.0e-6,
+        configs: list,
+        dx_image: float,
+        dx_lens: float,
+        dx_camera: float,
     ):
         """"
         image_size = 1024 Input image size (both width and hight)
@@ -45,10 +46,10 @@ class CDF:
 
         self.lens = lens
         self.bayer = bayer
+        self.configs = configs
 
-        # mass_amp_in = ["400.png", "410.png", "420.png", "430.png", "440.png", "450.png", "460.png", "470.png", "480.png", "490.png", "500.png", "510.png", "520.png", "530.png", "540.png", "550.png", "560.png", "570.png", "580.png", "590.png", "600.png", "610.png", "620.png", "630.png", "640.png", "650.png", "660.png", "670.png", "680.png", "690.png", "700.png"]
 
-    def __call__(self, image: np.ndarray, padding: int = 0, harmonics=6):
+    def __call__(self, image: np.ndarray, padding: int = 0):
 
         # padding/crop
         if padding > 0:
@@ -66,32 +67,28 @@ class CDF:
         image_channels = image.shape[-1]
 
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
-        spectral_filters = np.repeat(
-            np.array(spectral_filters),
-            [image_channels // 3, image_channels // 3, image_channels - 2 * image_channels // 3],
-            axis=0,
-        )
-
-        phase_in = torch.zeros(image_size, dtype=torch.float32, device=DEVICE)
-
-        # Aperture mask
-        aperture_mask_lens = self.lens.aperture_mask(image_size, self.dx_lens)
 
         hyperspec = []
 
-        for channel_index, channel_lambda in enumerate(BANDS):
-            channel_image = image[:, :, channel_index]
-            channel_tensor = torch.from_numpy(channel_image).to(device=DEVICE)
+        ############################
 
-            sum_image = np.zeros(image_shape, dtype=np.float64)
+        for cfg in self.configs:
 
-            for lens_index, lens_lambda in enumerate(BANDS):
+            h = cfg["h"]
+            M = cfg["M"]
 
-                lens_phase = self.lens.lens_phase(
-                    lens_lambda * 1e-9,
-                    image_size,
-                    self.dx_lens,
-                )
+            lambda_for_lens = self.lens.get_lambda(height=h, order=M)
+            print(f"height = {h:.6f} µm,  order = {M}")
+
+            phase_in = torch.zeros(image_size, dtype=torch.float32, device=DEVICE)
+
+            sum_image_B=np.zeros(image_shape, dtype=np.float64)
+            sum_image_G=np.zeros(image_shape, dtype=np.float64)
+            sum_image_R=np.zeros(image_shape, dtype=np.float64)
+
+            for channel_index, channel_lambda in enumerate(BANDS):
+                channel_image = image[:, :, channel_index]
+                channel_tensor = torch.from_numpy(channel_image).to(device=DEVICE)
 
                 field = channel_tensor * torch.exp(1j * phase_in)
                 field = self.fresnel_propagation(
@@ -100,27 +97,37 @@ class CDF:
                     self.lens.z1,
                     self.dx_image,
                 )
-                field = field * aperture_mask_lens.type(field.dtype)
 
-                phi_lambda = lens_phase * (lens_lambda / channel_lambda)
-                phi_lambda = torch.exp(1j * phi_lambda)
+                lens_phase = self.lens.harmonic_lens_phase(
+                    channel_lambda * 1e-9,
+                    image_size,
+                    self.dx_lens,
+                    h,
+                ).to(DEVICE)
+                field = field * torch.exp(1j * lens_phase)
 
-                field = field * phi_lambda
                 field = self.fresnel_propagation(
                     field.type(torch.complex64),
                     channel_lambda * 1e-9,
                     self.lens.z2,
-                    self.dx_lens,
+                    self.dx_camera,
                 )
 
-                intensity = torch.abs(field).cpu().numpy()
+                intensity = (torch.abs(field)**2).cpu().numpy()
 
-                sum_image += intensity * spectral_filters[lens_index][channel_lambda]
+                sum_image_B += intensity * spectral_filters[0][channel_lambda]
+                sum_image_G += intensity * spectral_filters[1][channel_lambda]
+                sum_image_R += intensity * spectral_filters[2][channel_lambda]
 
-            hyperspec.append(sum_image)
+            hyperspec.append(sum_image_B)
+            hyperspec.append(sum_image_G)
+            hyperspec.append(sum_image_R)
 
         hyperspec = np.stack(hyperspec, dtype=np.float64).transpose(1, 2, 0)
         hyperspec = center_crop(image=hyperspec[2:, 3:])['image']
+
+        interpolator = interp1d(list(range(48)), hyperspec, kind='cubic', axis=-1)
+        hyperspec = interpolator(range(31))
 
         return hyperspec[::-1, ::-1]
 

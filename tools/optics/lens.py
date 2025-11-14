@@ -29,14 +29,16 @@ class Lens:
 
         self.z1 = focal_length * 2  # distance to lens
         self.z2 = focal_length * 2  # distance to camera
-        self.refractive_power = (self.refractive_index - 1) * self.height
 
-    def get_lambda(self, harmonics: int = 6):
-        lens_lambda = []
-        for m in range(1, harmonics + 1):
-            if int((self.refractive_power / m) * 1e3) < 800:
-                lens_lambda.append(self.refractive_power / m)
-        return lens_lambda
+    def get_lambda(self, height:float, order: int = 6):
+        lambda_for_lens = []
+        for m in range(1, order + 1):
+            refraction = (self.refractive_index - 1) * height / order
+            lambd = round(refraction * 1e3, 0)
+            if lambd > 400 and lambd < 800:
+                lambda_for_lens.append(lambd)
+        lambda_for_lens.reverse()
+        return lambda_for_lens
 
     def aperture_mesh(self, image_size: int, dx: float) -> torch.Tensor:
         """aperture mesh"""
@@ -56,11 +58,17 @@ class Lens:
         aperture_mask = (aperture_mesh <= self.radius**2)
         return aperture_mask  #.to(device)
 
-    def lens_phase(self, lambda_design, image_size: int,
-                   dx: float) -> torch.Tensor:
+    def lens_phase(self, lambda_design, image_size: int, dx: float) -> torch.Tensor:
         """lens phase"""
 
         aperture_mesh = self.aperture_mesh(image_size, dx)
-        phi_design = -math.pi / (lambda_design *
-                                 self.focal_length) * aperture_mesh
+        phi_design = -math.pi / (lambda_design * self.focal_length) * aperture_mesh
         return phi_design
+
+    def harmonic_lens_phase(self, wavelength, image_size: int, dx: float, height) -> torch.Tensor:
+        """harmonic lens phase"""
+
+        phi_parabolic = self.lens_phase(wavelength, image_size, dx)
+        phi_max = 2 * math.pi * (self.refractive_index - 1) * height / wavelength
+        phi_harmonic = torch.remainder(phi_parabolic, phi_max)
+        return phi_harmonic

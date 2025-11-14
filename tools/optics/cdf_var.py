@@ -58,7 +58,7 @@ class CDF:
         image_shape = (image_size, image_size)
         image_channels = image.shape[-1]
 
-        lambda_for_lens = self.lens.get_lambda(harmonics=harmonics)
+        lambda_for_lens = self.lens.get_lambda(order=harmonics)
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
 
         phase_in = torch.zeros(image_size, dtype=torch.float32, device=DEVICE)

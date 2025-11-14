@@ -14,7 +14,7 @@ from tools.optics import create_cdf
 from tools.files import reader, writer
 
 
-def generate(input_path: str, params: DictConfig) -> None:
+def generate(input_path: str, params: DictConfig, optics: DictConfig, **kwargs) -> None:
     """
     CAVE-HSI: https://ieee-dataport.org/documents/cave-hsi
     """
@@ -24,7 +24,7 @@ def generate(input_path: str, params: DictConfig) -> None:
     if not input_dir.is_dir():
         raise Exception(f'No such directory: {input_dir}')
 
-    cdf = create_cdf()
+    cdf = create_cdf(optics)
     center_crop = A.CenterCrop(height=512, width=512)
 
     n = 0

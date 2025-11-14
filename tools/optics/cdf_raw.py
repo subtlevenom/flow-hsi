@@ -151,32 +151,34 @@ def fresnel_propagation(u0, wavelength, z, dx):
 
 
 
-def main_circl(path_to_save, dataset_wave, mass_amp_in, h_lenz, n_lenz, spectral_filters, dx_in, dx_lenz, dx_kam, r_lenz, focal_length, lambda_for_lens, z1, z2, N, N_padding, Nlocal, show_img_on=False, n_otobr=512, save_img_on=False):
+def main_circl(
+    path_to_save,
+    dataset_wave,
+    mass_amp_in,
+    h_lenz,
+    n_lenz,
+    spectral_filters,
+    dx_in,
+    dx_lenz,
+    dx_kam,
+    r_lenz,
+    focal_length,
+    lambda_for_lens,
+    z1,
+    z2,
+    N,
+    N_padding,
+    Nlocal,
+    show_img_on=False,
+    n_otobr=512,
+    save_img_on=False,
+):
 
     sum_image_B=np.zeros((N, N), dtype=np.float64)
     sum_image_G=np.zeros((N, N), dtype=np.float64)
     sum_image_R=np.zeros((N, N), dtype=np.float64)
 
-    # amp_in = load_grayscale(path_to_arc+str(mass_amp_in[0]), N)
-    # -----------------------Padding---------------------------------
-    # amp_in = F.pad(amp_in, (N_padding, N_padding, N_padding, N_padding), mode='constant', value=0)
-    # Nlocal = amp_in.shape[0]
-    # -----------------------Padding---------------------------------
-
     phase_in = torch.zeros((Nlocal, Nlocal), dtype=torch.float32, device=device)
-
-    # Маска КРУГЛОЙ апертуры
-    # coords = (torch.arange(Nlocal, device=device) - Nlocal // 2).float()
-    # x_l = coords * dx_lenz
-    # y_l = coords * dx_lenz
-    # XL, YL = torch.meshgrid(x_l, y_l, indexing="xy")
-    # aperture_mask_lenz = ((XL**2 + YL**2) <= r_lenz**2).to(device)
-
-    # for iterator_lenz in range(0, len(lambda_for_lens), 1):
-    #     print(f'lenz number {iterator_lenz} and wave nm: {lambda_for_lens[iterator_lenz]} ')
-
-        # lens_phase = generate_lens_phase(focal_length, lambda_for_lens[iterator_lenz] * 1e-9, dx_lenz, Nlocal=Nlocal)
-
 
     for temp_name_frame in mass_amp_in:
 
@@ -187,7 +189,14 @@ def main_circl(path_to_save, dataset_wave, mass_amp_in, h_lenz, n_lenz, spectral
         field = amp_in * torch.exp(1j * phase_in)
         field = fresnel_propagation(field.type(torch.complex64), temp_lambd, z1, dx_in)
 
-        lens_phase = generate_harmonic_lens_phase(focal_length, temp_lambd, dx_lenz, Nlocal, h_lenz, n_lenz).to(device)
+        lens_phase = generate_harmonic_lens_phase(
+            focal_length,
+            temp_lambd,
+            dx_lenz,
+            Nlocal,
+            h_lenz,
+            n_lenz,
+        ).to(device)
         field = field * torch.exp(1j * lens_phase)
 
         field = fresnel_propagation(field.type(torch.complex64), temp_lambd, z2, dx_kam)
@@ -207,13 +216,6 @@ def main_circl(path_to_save, dataset_wave, mass_amp_in, h_lenz, n_lenz, spectral
         sum_image_B += intensity_cropped * spectral_filters[0][temp_lambd_cpu]
         sum_image_G += intensity_cropped * spectral_filters[1][temp_lambd_cpu]
         sum_image_R += intensity_cropped * spectral_filters[2][temp_lambd_cpu]
-
-        if show_img_on:
-            cv2.imshow("All", cv2.resize(cv2.normalize(intensity_cropped, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8), (n_otobr,n_otobr)))
-            cv2.imshow("Blue", cv2.resize(cv2.normalize(sum_image_B, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8), (n_otobr,n_otobr)))
-            cv2.imshow("Green", cv2.resize(cv2.normalize(sum_image_G, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8), (n_otobr,n_otobr)))
-            cv2.imshow("Red1", cv2.resize(cv2.normalize(sum_image_R, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8), (n_otobr,n_otobr)))
-            cv2.waitKey(10)
 
     results.append((path_to_save+f"/{lambda_for_lens[0]} B.png", sum_image_B))
     if len(lambda_for_lens) > 1:

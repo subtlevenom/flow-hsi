@@ -30,3 +30,7 @@ python main.py sample-image-data -i /data/korepanov/color-transfer/huawei/src -o
     -o - output dataset folder
     -n - scale
 
+# Examples
+
+$ python main.py +flows@_here_=train 
+$ python main.py +flows@_here_=train task=test

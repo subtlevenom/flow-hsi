@@ -21,9 +21,10 @@ def generate(
     type: str,
     input_path: str,
     params: DictConfig = None,
+    optics: DictConfig = None,
     **kwargs,
 ) -> None:
 
     match type:
         case 'cave-hsi':
-            generator.generate(input_path, params)
+            generator.generate(input_path, params, optics)
