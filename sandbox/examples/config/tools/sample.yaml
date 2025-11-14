@@ -1,0 +1,16 @@
+task: tools
+tool: sample
+type: cave-hsi
+input_path: /data/korepanov/CAVE-HSI
+output_path: .data/cave-hsi
+split:
+  train:
+    source: ${input_path}/Train/SRC
+    target: ${input_path}/Train/GT
+  val: 
+    source: ${input_path}/Test/SRC
+    target: ${input_path}/Test/GT
+params:
+  crop_size:  256
+  n_crops: 100
+seed: 43

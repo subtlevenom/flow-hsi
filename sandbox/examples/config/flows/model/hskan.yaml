@@ -1,0 +1,49 @@
+name: flow
+params:
+  metadata:
+
+    - layer: encoder
+      inputs:
+        - image
+      outputs:
+        - u
+        - s
+        - v
+
+    - layer: cmkan
+      inputs:
+        - u
+      outputs:
+        - uu
+
+    - layer: decoder
+      inputs:
+        - image
+        - uu
+        - s
+        - v
+      outputs:
+        - result
+
+  layers:
+
+    encoder:
+      model: hskan.PCAEncoder
+      params:
+        in_channels: 31
+        out_channels: 3
+
+    cmkan:
+      model: cmkan.CmKAN
+      params:
+        in_channels: 3
+        out_channels: 3
+        grid_range:
+          - -1.0
+          - 1.0
+
+    decoder:
+      model: hskan.PCADecoder
+      params:
+        in_channels: 3
+        out_channels: 31

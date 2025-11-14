@@ -1,0 +1,15 @@
+task: predict
+experiment: hs.kan
+save_dir: .experiments
+accelerator: gpu
+devices: [0]
+resume: True
+epochs: 1200
+save_freq: 1
+visualize_freq: 1
+source_path: /data/korepanov/CAVE-HSI/Test/GT
+target_path: /data/korepanov/CAVE-HSI/Test/SRC
+
+defaults:
+  - model: hskan
+  - _self_

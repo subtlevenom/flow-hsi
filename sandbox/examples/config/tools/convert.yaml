@@ -1,0 +1,17 @@
+task: tools
+tool: convert
+input_path: /data/korepanov/CAVE-HSI/Test/SRC/pompoms.mat
+output_path: .experiments/temp/rgb/src_pompoms.png
+params:
+  converter: hs_rgb
+  format: .png
+  bands:
+    -
+      - 21
+      - 31
+    -
+      - 11
+      - 21
+    -
+      - 0
+      - 11

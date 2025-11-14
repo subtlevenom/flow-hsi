@@ -1,0 +1,16 @@
+name: cave_hsi
+params:
+  train:
+    source: '.data/cave-hsi/train/source'
+    target: '.data/cave-hsi/train/target'
+    batch_size: 4
+  val:
+    source: '.data/cave-hsi/val/source'
+    target: '.data/cave-hsi/val/target'
+    batch_size: 4
+  test:
+    source: '.data/cave-hsi/val/source'
+    target: '.data/cave-hsi/val/target'
+    batch_size: 1
+  num_workers: 12
+  seed: 43

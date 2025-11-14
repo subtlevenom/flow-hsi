@@ -1,0 +1,180 @@
+params: 
+  n_prel: 1.62
+  h_range:
+    - 2.0
+    - 7.0
+  M_list:
+    - 6
+  tol: 0.003
+  h_quant: 1e-06
+
+targets:
+  - 0.4
+  - 0.41
+  - 0.42
+  - 0.43
+  - 0.44
+  - 0.45
+  - 0.46
+  - 0.47
+  - 0.48
+  - 0.49
+  - 0.5
+  - 0.51
+  - 0.52
+  - 0.53
+  - 0.54
+  - 0.55
+  - 0.56
+  - 0.57
+  - 0.58
+  - 0.59
+  - 0.6
+  - 0.61
+  - 0.62
+  - 0.63
+  - 0.64
+  - 0.65
+  - 0.66
+  - 0.67
+  - 0.68
+  - 0.69
+  - 0.7
+
+selected_configs:
+
+  - h: 3.241935
+    M: 6
+    covers:
+      - lambda: 0.4
+        m: 5
+      - lambda: 0.5
+        m: 4
+      - lambda: 0.67
+        m: 3
+
+  - h: 3.290323
+    M: 6
+    covers:
+      - lambda: 0.41
+        m: 5
+      - lambda: 0.51
+        m: 4
+      - lambda: 0.68
+        m: 3
+
+  - h: 4.258065
+    M: 6
+    covers:
+      - lambda: 0.44
+        m: 6
+      - lambda: 0.53
+        m: 5
+      - lambda: 0.66
+        m: 4
+
+  - h: 4.435484
+    M: 6
+    covers:
+      - lambda: 0.46
+        m: 6
+      - lambda: 0.55
+        m: 5
+      - lambda: 0.69
+        m: 4
+
+  - h: 2.032258
+    M: 6
+    covers:
+      - lambda: 0.42
+        m: 3
+      - lambda: 0.63
+        m: 2
+
+  - h: 2.7580649999999998
+    M: 6
+    covers:
+      - lambda: 0.43
+        m: 4
+      - lambda: 0.57
+        m: 3
+
+  - h: 2.903226
+    M: 6
+    covers:
+      - lambda: 0.45
+        m: 4
+      - lambda: 0.6
+        m: 3
+
+  - h: 3.096774
+    M: 6
+    covers:
+      - lambda: 0.48
+        m: 4
+      - lambda: 0.64
+        m: 3
+
+  - h: 3.145161
+    M: 6
+    covers:
+      - lambda: 0.49
+        m: 4
+      - lambda: 0.65
+        m: 3
+
+  - h: 3.790323
+    M: 6
+    covers:
+      - lambda: 0.47
+        m: 5
+      - lambda: 0.59
+        m: 4
+
+  - h: 4.516128999999999
+    M: 6
+    covers:
+      - lambda: 0.56
+        m: 5
+      - lambda: 0.7
+        m: 4
+
+  - h: 2.516129
+    M: 6
+    covers:
+      - lambda: 0.52
+        m: 3
+
+  - h: 2.6129029999999998
+    M: 6
+    covers:
+      - lambda: 0.54
+        m: 3
+
+  - h: 2.8064519999999997
+    M: 6
+    covers:
+      - lambda: 0.58
+        m: 3
+
+  - h: 2.951613
+    M: 6
+    covers:
+      - lambda: 0.46
+        m: 4
+      - lambda: 0.61
+        m: 3
+
+  - h: 3.0
+    M: 6
+    covers:
+      - lambda: 0.62
+        m: 3
+
+uncovered_targets: []
+stats:
+    num_targets: 31
+    covered: 31
+    num_selected_configs: 16
+    num_candidates: 110
+

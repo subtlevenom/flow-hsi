@@ -215,4 +215,7 @@ __marimo__/
 *.yaml
 !config.example.yaml
 
+!sandbox/**/*.yaml
+!sandbox/**/*.json
+
 .DS_Store

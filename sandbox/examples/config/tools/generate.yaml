@@ -1,0 +1,11 @@
+task: tools
+tool: generate
+type: cave-hsi
+input_path: /data/korepanov/CAVE-HSI
+params: 
+  tag: SRC
+seed: 43
+
+defaults:
+  - optics: real
+  - _self_

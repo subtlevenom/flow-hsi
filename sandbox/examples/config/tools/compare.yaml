@@ -1,0 +1,7 @@
+task: tools
+tool: compare
+src_path: /data/korepanov/CAVE-HSI/Test/SRC
+ref_path: /data/korepanov/CAVE-HSI/Test/GT
+params:
+  metrics: psnr
+  norm: False
