@@ -70,7 +70,6 @@ class CDF:
 
             lambda_for_lens = self.lens.get_lambda(height=lens_height,
                                                    order=lens_order)
-
             phase_in = torch.zeros(image_size,
                                    dtype=torch.float32,
                                    device=DEVICE)
@@ -78,7 +77,6 @@ class CDF:
             sum_image_B = np.zeros(image_shape, dtype=np.float64)
             sum_image_G = np.zeros(image_shape, dtype=np.float64)
             sum_image_R = np.zeros(image_shape, dtype=np.float64)
-            print(sum_image_B.shape)
 
             for channel_index, channel_lambda in enumerate(BANDS):
                 channel_image = image[:, :, channel_index]

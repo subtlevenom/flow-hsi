@@ -31,6 +31,7 @@ class Lens:
         self.z2 = focal_length * 2  # distance to camera
 
     def get_lambda(self, height:float = None, order: int = 6):
+        height = height or self.height
         lambda_for_lens = []
         for m in range(1, order + 1):
             refraction = (self.refractive_index - 1) * height / m
