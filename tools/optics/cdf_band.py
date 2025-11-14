@@ -44,7 +44,7 @@ class CDF:
         self.bayer = bayer
         self.configs = configs
 
-    def __call__(self, image: np.ndarray, padding: int = 1):
+    def __call__(self, image: np.ndarray, padding: int = 0):
 
         # padding/crop
         if padding > 0:
