@@ -112,24 +112,22 @@ class CDF:
                 sum_image_G += intensity * spectral_filters[1][channel_lambda]
                 sum_image_R += intensity * spectral_filters[2][channel_lambda]
 
-            def select_channel(wavelength):
-                if wavelength < 500: return sum_image_B
-                if wavelength > 600: return sum_image_R
-                return sum_image_G
+            hyperspec[lambda_for_lens[0]] = sum_image_B
+            if len(lambda_for_lens) > 1:
+                hyperspec[lambda_for_lens[1]] = sum_image_G
+            if len(lambda_for_lens) > 2:
+                hyperspec[lambda_for_lens[2]] = sum_image_R
 
-            for wavelength in lambda_for_lens:
-                hyperspec[wavelength] = select_channel(wavelength)
+        sorted_keys = list(sorted(hyperspec.keys()))
+        hyperspec = [hyperspec[key] for key in sorted_keys]
 
-        hyperspec = {key: hyperspec[key] for key in sorted(hyperspec.keys())}
-        
-        original_wavelengths = np.array(list(hyperspec.keys()), dtype=np.float64)
-        hyperspec_cube = np.stack([hyperspec[key] for key in original_wavelengths],
-                                  axis=-1)
+        hyperspec = np.stack(hyperspec, axis=-1)
 
+        original_wavelengths = np.array(sorted_keys, dtype=np.float64)
         new_wavelengths = np.arange(400, 701, 10, dtype=np.float64)
 
         interpolator = interp1d(original_wavelengths,
-                                hyperspec_cube,
+                                hyperspec,
                                 axis=-1,
                                 kind='linear',
                                 bounds_error=False,
