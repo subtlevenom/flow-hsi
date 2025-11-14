@@ -31,11 +31,10 @@ class Lens:
         self.z2 = focal_length * 2  # distance to camera
 
     def get_lambda(self, height:float = None, order: int = 6):
-        height = height or self.height
         lambda_for_lens = []
         for m in range(1, order + 1):
-            refraction = (self.refractive_index - 1) * height / order
-            lambd = round(refraction * 1e3, 0)
+            refraction = (self.refractive_index - 1) * height / m
+            lambd = round(refraction * 1e3, 2)
             if lambd > 400 and lambd < 800:
                 lambda_for_lens.append(lambd)
         lambda_for_lens.reverse()
