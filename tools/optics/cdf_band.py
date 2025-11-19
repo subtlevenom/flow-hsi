@@ -1,3 +1,4 @@
+from sympy import hyper
 import torch
 import torch.fft
 import cv2
@@ -11,6 +12,7 @@ import torch.nn.functional as F
 from scipy.io import savemat
 from .lens import Lens
 from .bayer import Bayer
+from tqdm import tqdm
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(DEVICE)
@@ -62,9 +64,10 @@ class CDF:
         image_channels = image.shape[-1]
 
         spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
+        image = np.sqrt(image)
         hyperspec = {}
         
-        for cfg in self.configs:
+        for cfg in tqdm(self.configs):
             lens_height = cfg["h"]
             lens_order = cfg["M"]
 
