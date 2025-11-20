@@ -30,6 +30,25 @@ def generate(input_path: str, params: DictConfig, optics: DictConfig, **kwargs) 
     n = 0
     src = []
     gt = []
+    # for gt_path in Path(input_dir).glob('**/*.mat'):
+    #     try:
+    #         src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(
+    #             gt_path.name)
+    #         gt_image = reader.read(gt_path)
+    #         src_image = cdf(gt_image, padding=256)
+    #         # normalize
+    #         mx_gt = np.mean(gt_image, axis=(0,1), keepdims=True)
+    #         mx_src = np.mean(src_image, axis=(0,1), keepdims=True)
+    #         src.append(mx_src)
+    #         gt.append(mx_gt)
+    #         n += 1
+    #     except Exception as e:
+    #         print(f'Failed to convert {gt_path}.')
+
+    # src = sum(src) / n
+    # gt = sum(gt) / n
+    # mx = gt / src
+
     for gt_path in Path(input_dir).glob('**/*.mat'):
         try:
             src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(
@@ -37,26 +56,8 @@ def generate(input_path: str, params: DictConfig, optics: DictConfig, **kwargs) 
             gt_image = reader.read(gt_path)
             src_image = cdf(gt_image, padding=256)
             # normalize
-            mx_gt = np.mean(gt_image, axis=(0,1), keepdims=True)
-            mx_src = np.mean(src_image, axis=(0,1), keepdims=True)
-            src.append(mx_src)
-            gt.append(mx_gt)
-            n += 1
-        except Exception as e:
-            print(f'Failed to convert {gt_path}.')
-
-    src = sum(src) / n
-    gt = sum(gt) / n
-    mx = gt / src
-
-    for gt_path in Path(input_dir).glob('**/*.mat'):
-        try:
-            src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(
-                gt_path.name)
-            gt_image = reader.read(gt_path)
-            src_image = cdf(gt_image, padding=256)
-            # normalize
-            src_image = src_image * mx 
+            src_max, src_min = src_image.max(), src_image.min()
+            src_image = ((src_image - src_min) / (src_max - src_min) * 65535).clip(0, 65535).astype(np.uint16)
             writer.write(src_path, src_image)
         except Exception as e:
             print(f'Failed to convert {gt_path}.')
