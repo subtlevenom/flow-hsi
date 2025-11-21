@@ -36,7 +36,7 @@ class Lens:
         for m in range(1, order + 1):
             refraction = (self.refractive_index - 1) * height / m
             lambd = round(refraction * 1e3, 2)
-            if lambd > 400 and lambd < 800:
+            if lambd > 400 and lambd < 900:
                 lambda_for_lens.append(lambd)
         lambda_for_lens.reverse()
         return lambda_for_lens
