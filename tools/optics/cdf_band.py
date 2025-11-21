@@ -244,7 +244,7 @@ class CDF:
             cube = np.zeros_like(cube)
 
         cube = (cube * 65535.0).clip(0, 65535).astype(np.uint16)
-        cube = np.rot90(cube, 2, axes=(1,2))
+        cube = np.rot90(cube.transpose(1,0,2), 2, axes=(1,2)).transpose(1,2,0)
         return cube
 
 

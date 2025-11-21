@@ -21,9 +21,7 @@ def generate(input_path: str, params: DictConfig, optics: DictConfig, **kwargs) 
         try:
             src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(
                 gt_path.name)
-            #gt_image = reader.read(gt_path)
-            src_image = cdf(gt_path, padding=512)
-            
+            src_image = cdf(gt_path, padding=params.padding)
             writer.write(src_path, src_image)
         except Exception as e:
             print(f'Failed to convert {gt_path}: {e}.')

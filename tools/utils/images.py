@@ -10,14 +10,16 @@ def normalize(
 ) -> np.ndarray:
     """Normalizes image in range [a,b] or scales by a"""
 
-    normType = cv2.NORM_INF if b is None else cv2.NORM_MINMAX
+    norm_type = cv2.NORM_INF if b is None else cv2.NORM_MINMAX
 
-    return cv2.normalize(image,
-                         None,
-                         alpha=a,
-                         beta=b,
-                         normType=normType,
-                         dtype=cv2.CV_32F)
+    return cv2.normalize(
+        src=image,
+        dst=None,
+        alpha=a,
+        beta=b,
+        norm_type=norm_type,
+        dtype=cv2.CV_32F,
+    )
 
 
 def validate(image: np.ndarray):
