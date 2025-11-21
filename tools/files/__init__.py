@@ -2,6 +2,8 @@ from pathlib import Path
 from typing import Any, List
 from omegaconf import DictConfig
 import numpy as np
+
+from tools.utils import images
 from .iterators import files
 from . import reader, writer, converter, comparer
 
@@ -24,7 +26,7 @@ def convert(
     output_path: Path = Path(output_path)
 
     def convert_file(input_file, output_file, params):
-        data = reader.read(input_file)
+        data = images.normalize(reader.read(input_file))
         data = converter.convert(data=data, **params)
         data = writer.write(output_file, data)
 
@@ -73,8 +75,8 @@ def compare(
     ref_path: Path = Path(ref_path)
 
     def compare_file(src_file, ref_file, params):
-        src = reader.read(src_file)
-        ref = reader.read(ref_file)
+        src = images.normalize(reader.read(src_file))
+        ref = images.normalize(reader.read(ref_file))
         return comparer.compare(src=src, ref=ref, **params)
 
     if src_path.is_file():
