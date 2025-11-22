@@ -13,6 +13,7 @@ from scipy.io import savemat
 from .lens import Lens
 from .bayer import Bayer
 from tqdm import tqdm
+from tools.utils import images
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(DEVICE)
@@ -46,6 +47,9 @@ class CDF:
         self.bayer = bayer
         self.configs = configs
 
+        spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
+        self.spectral_filters = np.stack(spectral_filters, axis=0).astype(np.float64) / 50.0
+
     def __call__(self, image: np.ndarray, padding: int = 0):
 
         # padding/crop
@@ -63,14 +67,12 @@ class CDF:
         image_shape = (image_size, image_size)
         image_channels = image.shape[-1]
 
-        spectral_filters = self.bayer.get_filters(resample=600, zeros=400)
         image = np.sqrt(image)
         hyperspec = {}
         
         for cfg in tqdm(self.configs):
             lens_height = cfg["h"]
             lens_order = cfg["M"]
-
             lambda_for_lens = self.lens.get_lambda(height=lens_height,
                                                    order=lens_order)
             phase_in = torch.zeros(image_size,
@@ -85,35 +87,40 @@ class CDF:
                 channel_image = image[:, :, channel_index]
                 channel_tensor = torch.from_numpy(channel_image).to(
                     device=DEVICE)
+                channel_lambda_m = channel_lambda * 1e-9
 
                 field = channel_tensor * torch.exp(1j * phase_in)
                 field = self.fresnel_propagation(
                     field.type(torch.complex64),
-                    channel_lambda * 1e-9,
+                    channel_lambda_m,
                     self.lens.z1,
                     self.dx_image,
                 )
 
                 lens_phase = self.lens.harmonic_lens_phase(
-                    channel_lambda * 1e-9,
+                    channel_lambda_m,
                     image_size,
                     self.dx_lens,
                     lens_height,
                 ).to(DEVICE)
-                field = field * torch.exp(1j * lens_phase)
 
+                field = field * torch.exp(1j * lens_phase)
                 field = self.fresnel_propagation(
                     field.type(torch.complex64),
-                    channel_lambda * 1e-9,
+                    channel_lambda_m,
                     self.lens.z2,
                     self.dx_camera,
                 )
 
                 intensity = (torch.abs(field)**2).cpu().numpy()
+                intensity = images.normalize(intensity, a=0., b=1.)
 
-                sum_image_B += intensity * spectral_filters[0][channel_lambda]
-                sum_image_G += intensity * spectral_filters[1][channel_lambda]
-                sum_image_R += intensity * spectral_filters[2][channel_lambda]
+                scale = np.mean(channel_image) / np.mean(intensity)
+                intensity = intensity * scale
+
+                sum_image_B += intensity * self.spectral_filters[0][channel_lambda]
+                sum_image_G += intensity * self.spectral_filters[1][channel_lambda]
+                sum_image_R += intensity * self.spectral_filters[2][channel_lambda]
 
             def select_channel(wavelength):
                 if wavelength < 500: return sum_image_B
