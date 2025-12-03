@@ -57,8 +57,15 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
 
+        # MODEL_PATH = '.experiments/cmkan/logs/checkpoints/epoch=447-val_loss=2.05.ckpt'
+        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        # models.load_model(self.model.layers.cmkan, 'model.layers.cmkan', MODEL_PATH)
+        # models.load_model(self.model.layers.decoder, 'model.layers.decoder', MODEL_PATH)
+        # models.require_grad(self.model.layers.encoder, requires_grad=False)
         # models.require_grad(self.model.layers.cmkan, requires_grad=False)
-        # models.require_grad(self.model.layers.basis, requires_grad=False)
+        # models.require_grad(self.model.layers.decoder, requires_grad=False)
+        # nn.init.constant_(self.model.layers.sink.a, 1.)
+        # nn.init.constant_(self.model.layers.sink.b, 0.)
 
         Logger.info('Initialized model weights with isp pipeline.')
 

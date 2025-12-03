@@ -20,6 +20,13 @@ from tools.utils import models
 from tools.files.iterators import files
 from tools.files import reader
 from flows.ml.metrics import (PSNR, SSIM, DeltaE)
+from torchvision.transforms.v2 import (
+    Compose,
+    ToImage,
+    ToDtype,
+    CenterCrop,
+    RandomCrop,
+)
 
 
 
@@ -33,6 +40,10 @@ def main(config: DictConfig) -> None:
     models.load_model(model, 'model', checkpoint_path)
 
     psnr = PSNR(data_range=(0, 1))
+    transform = Compose([
+        ToImage(),
+        ToDtype(dtype=torch.float32, scale=True),
+    ])
 
     metrics = []
 
@@ -40,14 +51,13 @@ def main(config: DictConfig) -> None:
         tgt_file = tgt_path.joinpath(src_file.name)
 
         src = reader.read(src_file)
-        src = torch.from_numpy(src).to(torch.float32).unsqueeze(0)
-        src = src.permute(0,3,1,2)
+        src = transform(src).unsqueeze(0)
 
         tgt = reader.read(tgt_file)
-        tgt = torch.from_numpy(tgt).to(torch.float32).unsqueeze(0)
-        tgt = tgt.permute(0,3,1,2)
+        tgt = transform(tgt).unsqueeze(0)
         
         pred = model(image=src)['result']
+        pred = torch.clamp(pred, 0., 1.)
 
         val = psnr(pred,tgt)
         metrics.append(val)

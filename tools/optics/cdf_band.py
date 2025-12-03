@@ -123,6 +123,10 @@ class CDF:
                 sum_image_R += intensity * self.spectral_filters[2][channel_lambda]
 
             def select_channel(wavelength):
+                # b = np.exp(-0.5 * ((wavelength-445) / 33)**2)
+                # g = np.exp(-0.5 * ((wavelength-535) / 52)**2)
+                # r = np.exp(-0.5 * ((wavelength-575) / 52)**2)
+                # return (b * sum_image_B + g * sum_image_G + r * sum_image_R) / (b + g + r)
                 if wavelength < 500: return sum_image_B
                 if wavelength > 600: return sum_image_R
                 return sum_image_G

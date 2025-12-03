@@ -16,12 +16,13 @@ class HSDecoder(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        self.proj = nn.ConvTranspose2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=1,
-        )
-
-    def forward(self, x: torch.Tensor, y: torch.Tensor):
-
-        return x + self.proj(y)
+    def forward(self, x: torch.Tensor):
+        x = rearrange(x,
+                      '(b n) c h w -> b (n c) h w',
+                      n=self.out_channels,
+                      c=self.in_channels)
+        x1 = x[:,:self.out_channels]
+        x2 = x[:,self.out_channels:2 * self.out_channels]
+        x3 = x[:,2 * self.out_channels:]
+        x = (x1 + x2 + x3) / 3.
+        return x

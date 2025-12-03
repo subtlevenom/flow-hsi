@@ -16,12 +16,10 @@ class HSEncoder(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        self.proj = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=1,
-        )
-
     def forward(self, x: torch.Tensor):
-        x = self.proj(x)
-        return F.tanh(x)
+        x = torch.cat([x, x, x], dim=1)
+        x = rearrange(x,
+                      'b (n c) h w -> (b n) c h w',
+                      n=self.in_channels,
+                      c=self.out_channels)
+        return x
