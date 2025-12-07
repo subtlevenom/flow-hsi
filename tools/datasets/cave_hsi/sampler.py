@@ -9,6 +9,8 @@ import imageio
 import albumentations as A
 from omegaconf import DictConfig
 from tools.utils.concurrent import concurrent
+from tools.utils import images
+from tools.files import reader
 from scipy import io
 
 THREADS = 1
@@ -34,20 +36,21 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
     for name, data in split.items():
         output_src_dir = output_dir.joinpath(name, SOURCE)
         output_src_dir.mkdir(parents=True, exist_ok=True)
-        input_src_files = list(Path(data.source).glob('*.mat'))
+        input_src_files = list(Path(data.source).glob('*.npy'))
 
         output_tgt_dir = output_dir.joinpath(name, TARGET)
         output_tgt_dir.mkdir(parents=True, exist_ok=True)
         input_tgt_files = list(Path(data.target).glob('*.mat'))
 
         # filter out unique names
-        filenames = set([f.name for f in input_src_files]) & set(
-            [f.name for f in input_tgt_files])
+        filenames = set([f.stem for f in input_src_files]) & set(
+            [f.stem for f in input_tgt_files])
 
-        src_files = [(output_src_dir, f) for f in input_src_files
-                     if f.name in filenames]
-        tgt_files = [(output_tgt_dir, f) for f in input_tgt_files
-                     if f.name in filenames]
+        input_src_files = {f.stem: f for f in input_src_files}
+        input_tgt_files = {f.stem: f for f in input_tgt_files}
+
+        src_files = [(output_src_dir, input_src_files[f]) for f in filenames]
+        tgt_files = [(output_tgt_dir, input_tgt_files[f]) for f in filenames]
 
         splits[name] = list(zip(src_files, tgt_files))
 
@@ -95,8 +98,21 @@ def _copy_data(
                                                               width=crop_size)
     n_crops = 1 if random_crop is None else params.get('n_crops', 1)
 
-    src_image = io.loadmat(input_src_file)['hsi']
-    tgt_image = io.loadmat(input_tgt_file)['hsi']
+    src_image = reader.read(input_src_file) #io.loadmat(input_src_file)['hsi']
+    tgt_image = reader.read(input_tgt_file) # io.loadmat(input_tgt_file)['hsi']
+
+    # normalize by channels (a white point)
+    
+    tgt_sum = np.sum(tgt_image, axis=-1)
+    idx = np.argmax(tgt_sum)
+    i = idx // tgt_sum.shape[1]
+    j = idx % tgt_sum.shape[1]
+    a = tgt_image[i:i+1, j:j+1]
+    b = src_image[i:i+1, j:j+1]
+    # a = np.max(tgt_image, axis=(0,1), keepdims=True)
+    # b = np.max(src_image, axis=(0,1), keepdims=True)
+    src_image = src_image * a / b
+
     for i in range(n_crops):
         try:
             if random_crop:

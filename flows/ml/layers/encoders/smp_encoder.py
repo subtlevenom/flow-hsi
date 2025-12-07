@@ -17,7 +17,7 @@ class SmpEncoder(nn.Module):
         backbone: str = 'efficientnet-b2',
         in_channels: int = 3,
         out_channels: int = 3,
-        feat_channels: int = 289,
+        feat_channels: int = None,
         layers: int = 5,
         activation: str = 'sigmoid',
         features_only: bool = False,
@@ -41,6 +41,9 @@ class SmpEncoder(nn.Module):
         )
 
         hidden_channels = self.model.encoder.out_channels[-1]
+
+        if feat_channels is None:
+            feat_channels = hidden_channels
 
         if feat_channels == hidden_channels:
             self.out_proj = nn.Sequential()

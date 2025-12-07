@@ -1,8 +1,10 @@
+import os
 import torch
 from torch import nn
 import lightning as L
 from torch import optim
 import torch.nn.functional as F
+import torchvision
 from ..models import Flow
 from flows.core import Logger
 from ..metrics import (PSNR, SSIM, DeltaE)
@@ -100,7 +102,7 @@ class DefaultPipeline(L.LightningModule):
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
         ssim_loss = self.ssim_metric(prediction, target)
-        loss = mae_loss #+ 0.15 * (1.-ssim_loss) #+ 0.2 * (40. - psnr_loss)
+        loss = mae_loss + 0.15 * (1.-ssim_loss) #+ 0.2 * (40. - psnr_loss)
 
         self.log('train_mae', mae_loss, prog_bar=True, logger=True)
         self.log('train_psnr', psnr_loss, prog_bar=True, logger=True)
@@ -115,12 +117,12 @@ class DefaultPipeline(L.LightningModule):
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
         ssim_loss = self.ssim_metric(prediction, target)
-        de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
+        # de_loss = self.de_metric(prediction, target)
 
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('val_ssim', ssim_loss, prog_bar=True, logger=True)
-        self.log('val_loss', de_loss, prog_bar=True, logger=True)
-        return {'loss': de_loss}
+        self.log('val_loss', mae_loss, prog_bar=True, logger=True)
+        return {'loss': mae_loss}
 
     def test_step(self, batch, batch_idx):
         src, target = batch
