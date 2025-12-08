@@ -31,6 +31,10 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
         raise Exception(f'No such directory: {input_dir}')
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    norm_filenames = []
+    norm_src_files = {}
+    norm_tgt_files = {}
+
     # Copy pairs (output_dir, input_path) splitted by tasks
     splits = {}
     for name, data in split.items():
@@ -54,6 +58,27 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
 
         splits[name] = list(zip(src_files, tgt_files))
 
+        # norm
+        norm_filenames.extend(filenames)
+        norm_src_files = norm_src_files | input_src_files
+        norm_tgt_files = norm_tgt_files | input_tgt_files
+
+    # normalization
+    norm = {}
+    for filename in norm_filenames:
+        src_file = norm_src_files[filename]
+        tgt_file = norm_tgt_files[filename]
+        src_img = reader.read(src_file)
+        tgt_img = reader.read(tgt_file)
+        m, c = [], []
+        for n in range(src_img.shape[-1]):
+            x = src_img[:,:,n].ravel()
+            y = tgt_img[:,:,n].ravel()
+            _m, _c = np.polyfit(x, y, 1)
+            m.append(_m)
+            c.append(_c)
+        norm[filename] = (np.array(m),np.array(c))
+
     # Copy concurrent
     tasks = []
     with Progress() as progress:
@@ -65,8 +90,9 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
                     _copy_data(executor,
                                output_src_dir=copy[0][0],
                                input_src_file=copy[0][1],
-                               output_tgt_dir=copy[1][0],
-                               input_tgt_file=copy[1][1],
+                               output_ref_dir=copy[1][0],
+                               input_ref_file=copy[1][1],
+                               norm=norm,
                                params=params) for copy in split_data
                 ]
                 for task in split_tasks:
@@ -84,13 +110,14 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
 def _copy_data(
     output_src_dir: Path,
     input_src_file: Path,
-    output_tgt_dir: Path,
-    input_tgt_file: Path,
+    output_ref_dir: Path,
+    input_ref_file: Path,
+    norm: tuple,
     params,
 ):
     if not input_src_file.is_file():
         raise Exception('No source file')
-    if not input_tgt_file.is_file():
+    if not input_ref_file.is_file():
         raise Exception('No source file')
 
     crop_size = params.get('crop_size', None)
@@ -98,26 +125,18 @@ def _copy_data(
                                                               width=crop_size)
     n_crops = 1 if random_crop is None else params.get('n_crops', 1)
 
-    src_image = reader.read(input_src_file) #io.loadmat(input_src_file)['hsi']
-    tgt_image = reader.read(input_tgt_file) # io.loadmat(input_tgt_file)['hsi']
+    src_image = reader.read(input_src_file)
+    ref_image = reader.read(input_ref_file)
 
     # normalize by channels (a white point)
-    
-    tgt_sum = np.sum(tgt_image, axis=-1)
-    idx = np.argmax(tgt_sum)
-    i = idx // tgt_sum.shape[1]
-    j = idx % tgt_sum.shape[1]
-    a = tgt_image[i:i+1, j:j+1]
-    b = src_image[i:i+1, j:j+1]
-    # a = np.max(tgt_image, axis=(0,1), keepdims=True)
-    # b = np.max(src_image, axis=(0,1), keepdims=True)
-    src_image = src_image * a / b
+
+    src_image = norm[input_src_file.stem][0] * src_image +  norm[input_src_file.stem][1]
 
     for i in range(n_crops):
         try:
             if random_crop:
                 save_name = input_src_file.stem + f'_{i}'
-                img = np.concat([src_image, tgt_image], axis=-1)
+                img = np.concat([src_image, ref_image], axis=-1)
                 img = random_crop(image=img)['image']
                 img = np.split(img, 2, axis=-1)
                 src_img = img[0]
@@ -125,10 +144,10 @@ def _copy_data(
             else:
                 save_name = input_src_file.stem
                 src_img = src_image
-                tgt_img = tgt_image
+                tgt_img = ref_image
             save_src_path = output_src_dir.joinpath(save_name)
             np.save(save_src_path, src_img)
-            save_tgt_path = output_tgt_dir.joinpath(save_name)
+            save_tgt_path = output_ref_dir.joinpath(save_name)
             np.save(save_tgt_path, tgt_img)
         except Exception as e:
             print(e)

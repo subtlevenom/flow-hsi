@@ -75,8 +75,8 @@ def compare(
     ref_path: Path = Path(ref_path)
 
     def compare_file(src_file, ref_file, params):
-        src = images.normalize(reader.read(src_file))
-        ref = images.normalize(reader.read(ref_file))
+        src = reader.read(src_file)
+        ref = reader.read(ref_file)
         return comparer.compare(src=src, ref=ref, **params)
 
     if src_path.is_file():
@@ -85,8 +85,14 @@ def compare(
     else:
         avg = 0
         n = 0
-        for src_file in files(src_path):
-            ref_file = ref_path.joinpath(src_file.name)
+
+        src_files = {f.stem: f for f in files(src_path)}
+        ref_files = {f.stem: f for f in files(ref_path)}
+        filenames = set(src_files.keys()) & set(ref_files.keys())
+
+        for file in filenames:
+            src_file = src_files[file]
+            ref_file = ref_files[file]
             val = compare_file(src_file, ref_file, params)
             print(f'{src_file.name}: {val}')
             avg += val
