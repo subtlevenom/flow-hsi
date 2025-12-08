@@ -44,7 +44,7 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
 
         output_tgt_dir = output_dir.joinpath(name, TARGET)
         output_tgt_dir.mkdir(parents=True, exist_ok=True)
-        input_tgt_files = list(Path(data.target).glob('*.mat'))
+        input_tgt_files = list(Path(data.target).glob('*.npy'))
 
         # filter out unique names
         filenames = set([f.stem for f in input_src_files]) & set(
@@ -63,21 +63,23 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
         norm_src_files = norm_src_files | input_src_files
         norm_tgt_files = norm_tgt_files | input_tgt_files
 
-    # normalization
-    norm = {}
-    for filename in norm_filenames:
-        src_file = norm_src_files[filename]
-        tgt_file = norm_tgt_files[filename]
-        src_img = reader.read(src_file)
-        tgt_img = reader.read(tgt_file)
-        m, c = [], []
-        for n in range(src_img.shape[-1]):
-            x = src_img[:,:,n].ravel()
-            y = tgt_img[:,:,n].ravel()
-            _m, _c = np.polyfit(x, y, 1)
-            m.append(_m)
-            c.append(_c)
-        norm[filename] = (np.array(m),np.array(c))
+    norm = None
+    if False:
+        # normalization
+        norm = {}
+        for filename in norm_filenames:
+            src_file = norm_src_files[filename]
+            tgt_file = norm_tgt_files[filename]
+            src_img = reader.read(src_file)
+            tgt_img = reader.read(tgt_file)
+            m, c = [], []
+            for n in range(src_img.shape[-1]):
+                x = src_img[:,:,n].ravel()
+                y = tgt_img[:,:,n].ravel()
+                _m, _c = np.polyfit(x, y, 1)
+                m.append(_m)
+                c.append(_c)
+            norm[filename] = (np.array(m),np.array(c))
 
     # Copy concurrent
     tasks = []
@@ -130,7 +132,8 @@ def _copy_data(
 
     # normalize by channels (a white point)
 
-    src_image = norm[input_src_file.stem][0] * src_image +  norm[input_src_file.stem][1]
+    if norm is not None:
+        src_image = norm[input_src_file.stem][0] * src_image +  norm[input_src_file.stem][1]
 
     for i in range(n_crops):
         try:
