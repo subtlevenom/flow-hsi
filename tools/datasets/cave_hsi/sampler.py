@@ -44,7 +44,7 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
 
         output_tgt_dir = output_dir.joinpath(name, TARGET)
         output_tgt_dir.mkdir(parents=True, exist_ok=True)
-        input_tgt_files = list(Path(data.target).glob('*.npy'))
+        input_tgt_files = list(Path(data.target).glob('*.mat'))
 
         # filter out unique names
         filenames = set([f.stem for f in input_src_files]) & set(
@@ -64,22 +64,29 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
         norm_tgt_files = norm_tgt_files | input_tgt_files
 
     norm = None
-    if False:
+    if True:
         # normalization
-        norm = {}
+        src, tgt = [],[]
         for filename in norm_filenames:
             src_file = norm_src_files[filename]
             tgt_file = norm_tgt_files[filename]
             src_img = reader.read(src_file)
             tgt_img = reader.read(tgt_file)
-            m, c = [], []
-            for n in range(src_img.shape[-1]):
-                x = src_img[:,:,n].ravel()
-                y = tgt_img[:,:,n].ravel()
-                _m, _c = np.polyfit(x, y, 1)
-                m.append(_m)
-                c.append(_c)
-            norm[filename] = (np.array(m),np.array(c))
+
+            src.append(src_img.reshape(-1, src_img.shape[-1]))
+            tgt.append(tgt_img.reshape(-1, tgt_img.shape[-1]))
+
+        src = np.concat(src, axis=0)
+        tgt = np.concat(tgt, axis=0)
+
+        m,c = [],[]
+        for n in range(src.shape[-1]):
+            x = src[...,n]
+            y = tgt[...,n]
+            _m, _c = np.polyfit(x, y, 1)
+            m.append(_m)
+            c.append(_c)
+        norm = (np.array(m),np.array(c))
 
     # Copy concurrent
     tasks = []
@@ -133,7 +140,7 @@ def _copy_data(
     # normalize by channels (a white point)
 
     if norm is not None:
-        src_image = norm[input_src_file.stem][0] * src_image +  norm[input_src_file.stem][1]
+        src_image = norm[0] * src_image + norm[1]
 
     for i in range(n_crops):
         try:
