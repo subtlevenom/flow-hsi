@@ -44,7 +44,7 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
 
         output_tgt_dir = output_dir.joinpath(name, TARGET)
         output_tgt_dir.mkdir(parents=True, exist_ok=True)
-        input_tgt_files = list(Path(data.target).glob('*.mat'))
+        input_tgt_files = list(Path(data.target).glob('*.npy'))
 
         # filter out unique names
         filenames = set([f.stem for f in input_src_files]) & set(
@@ -64,7 +64,7 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
         norm_tgt_files = norm_tgt_files | input_tgt_files
 
     norm = None
-    if True:
+    if False:
         # normalization
         src, tgt = [],[]
         for filename in norm_filenames:
@@ -76,8 +76,8 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
             src.append(src_img.reshape(-1, src_img.shape[-1]))
             tgt.append(tgt_img.reshape(-1, tgt_img.shape[-1]))
 
-        src = np.concat(src, axis=0)
-        tgt = np.concat(tgt, axis=0)
+        src = np.concat(src, axis=0) # n x 31
+        tgt = np.concat(tgt, axis=0) # n x 31
 
         m,c = [],[]
         for n in range(src.shape[-1]):
