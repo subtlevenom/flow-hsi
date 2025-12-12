@@ -48,20 +48,23 @@ def main(config: DictConfig) -> None:
     metrics = []
 
     for src_file in files(src_path):
-        tgt_file = tgt_path.joinpath(src_file.name)
+        try:
+            tgt_file = tgt_path.joinpath(src_file.name).with_suffix('.mat')
 
-        src = reader.read(src_file)
-        src = transform(src).unsqueeze(0)
+            src = reader.read(src_file)
+            src = transform(src).unsqueeze(0)
 
-        tgt = reader.read(tgt_file)
-        tgt = transform(tgt).unsqueeze(0)
-        
-        pred = model(image=src)['result']
-        pred = torch.clamp(pred, 0., 1.)
+            tgt = reader.read(tgt_file)
+            tgt = transform(tgt).unsqueeze(0)
+            
+            pred = model(image=src)['result']
+            pred = torch.clamp(pred, 0., 1.)
 
-        val = psnr(pred,tgt)
-        metrics.append(val)
-        print(f'{src_file.stem}: {val}')
+            val = psnr(pred,tgt)
+            metrics.append(val)
+            print(f'{src_file.stem}: {val}')
+        except Exception as e:
+            print(f'Skip {src_file.stem} with exception {e}')
 
     print(f'AVG: {sum(metrics) / len(metrics)}')
 

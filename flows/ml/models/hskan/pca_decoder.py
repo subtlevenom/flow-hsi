@@ -18,7 +18,6 @@ class PCADecoder(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,
         u: torch.Tensor,
         s: torch.Tensor,
         v: torch.Tensor,
@@ -30,4 +29,4 @@ class PCADecoder(nn.Module):
         a = torch.bmm(u, v.permute(0,2,1))
         y = rearrange(a, 'b (h w) c -> b c h w', h=H,w=W)
 
-        return x + y
+        return y
