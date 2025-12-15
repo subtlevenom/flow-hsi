@@ -1,3 +1,5 @@
+from .hs_conv import HSConv
+from .hs_kan import HSKAN
 from .hs_encoder import HSEncoder
 from .hs_decoder import HSDecoder
 from .pca_encoder import PCAEncoder

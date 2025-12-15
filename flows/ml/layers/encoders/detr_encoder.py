@@ -15,7 +15,7 @@ class DETREncoder(nn.Module):
 
     def __init__(
         self,
-        backbone: str = 'efficientnet-b2',
+        backbone: str = 'efficientnet_b2',
         in_channels: int = 3,
         out_channels: int = 489,
         feature_dim: int = 7,

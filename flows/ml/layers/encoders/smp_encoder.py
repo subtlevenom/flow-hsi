@@ -21,6 +21,7 @@ class SmpEncoder(nn.Module):
         layers: int = 5,
         activation: str = 'sigmoid',
         features_only: bool = False,
+        classes_only: bool = False,
         **kwargs,
     ):
         super(SmpEncoder, self).__init__()
@@ -29,6 +30,7 @@ class SmpEncoder(nn.Module):
         self.out_channels = out_channels
         self.feat_channels = feat_channels
         self.features_only = features_only
+        self.classes_only = classes_only
 
         self.model = smp.create_model(
             arch=arch,
@@ -72,4 +74,7 @@ class SmpEncoder(nn.Module):
             return x
 
         y = self.decode(f)
+        if self.classes_only:
+            return y
+
         return x, y
