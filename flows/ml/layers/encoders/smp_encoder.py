@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Sequence
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -22,6 +22,7 @@ class SmpEncoder(nn.Module):
         activation: str = 'sigmoid',
         features_only: bool = False,
         classes_only: bool = False,
+        decoder_channels: Sequence[int] = (256, 128, 64, 32, 16),
         **kwargs,
     ):
         super(SmpEncoder, self).__init__()
@@ -40,6 +41,7 @@ class SmpEncoder(nn.Module):
             activation=activation,
             in_channels=in_channels,
             classes=out_channels,
+            decoder_channels=decoder_channels,
         )
 
         hidden_channels = self.model.encoder.out_channels[-1]
