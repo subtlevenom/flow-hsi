@@ -4,6 +4,20 @@ from . import cave_hsi
 from . import icvl
 
 
+def adapt(
+    type: str,
+    input_path: str,
+    output_path: str,
+    params: DictConfig,
+    **kwargs,
+) -> None:
+
+    match type:
+        case 'cave-hsi':
+            cave_hsi.adapter.adapt(input_path, output_path, params)
+        case 'icvl':
+            icvl.adapter.adapt(input_path, output_path, params)
+
 def sample(
     type: str,
     input_path: str,
@@ -30,4 +44,6 @@ def generate(
 
     match type:
         case 'cave-hsi':
-            generator.generate(input_path, params, optics)
+            cave_hsi.generator.generate(input_path, params, optics)
+        case 'icvl':
+            icvl.generator.generate(input_path, params, optics)
