@@ -5,7 +5,7 @@ from .parsers import register_parsers
 parsers: dict = {}
 
 
-def write(path: str | Path, data: Any):
+def write(path: str | Path, data: Any, format:str = None):
     """Writer data to file"""
 
     path = Path(path)
@@ -14,7 +14,7 @@ def write(path: str | Path, data: Any):
     if path.exists():
         print(f'File {path} already exists. Gets replaced.')
 
-    parser = parsers.get(path.suffix, None)
+    parser = parsers.get(format or path.suffix, None)
     if parser is None:
         print(f'Writer for format {format} is not found.')
         return None

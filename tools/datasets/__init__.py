@@ -1,6 +1,7 @@
 from omegaconf import DictConfig
 from tools.utils import text
-from .cave_hsi import sampler, generator
+from . import cave_hsi
+from . import icvl
 
 
 def sample(
@@ -14,7 +15,9 @@ def sample(
 
     match type:
         case 'cave-hsi':
-            sampler.sample(input_path, output_path, split, params)
+            cave_hsi.sampler.sample(input_path, output_path, split, params)
+        case 'icvl':
+            icvl.sampler.sample(input_path, output_path, split, params)
 
 
 def generate(

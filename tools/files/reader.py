@@ -6,7 +6,7 @@ from .parsers import register_parsers
 parsers: dict = {}
 
 
-def read(path: str | Path) -> Any:
+def read(path: str | Path, format:str = None) -> Any:
     """Reads file"""
 
     path = Path(path)
@@ -15,7 +15,7 @@ def read(path: str | Path) -> Any:
         print(f'File {path} not found.')
         return None
 
-    parser = parsers.get(path.suffix, None)
+    parser = parsers.get(format or path.suffix, None)
     if parser is None:
         print(f'Reader for format "{path.suffix}" is not found.')
         return None

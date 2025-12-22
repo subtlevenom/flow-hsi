@@ -60,7 +60,8 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.constant_(m.bias, 0)
 
         # MODEL_PATH = '.experiments/cmkan/logs/checkpoints/epoch=2266-val_loss=0.01.ckpt'
-        # models.load_model(self.model.layers.cmkan, 'model.layers.cmkan', MODEL_PATH)
+        # MODEL_PATH = '/data/korepanov/models/cmkan.weighted/logs/checkpoints/last.ckpt'
+        # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
         # models.require_grad(self.model.layers.cmkan, requires_grad=False)
 
         Logger.info('Initialized model weights with isp pipeline.')
