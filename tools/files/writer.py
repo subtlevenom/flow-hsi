@@ -5,7 +5,7 @@ from .parsers import register_parsers
 parsers: dict = {}
 
 
-def write(path: str | Path, data: Any, format:str = None):
+def write(path: str | Path, data: Any, format:str = None, **kwargs):
     """Writer data to file"""
 
     path = Path(path)

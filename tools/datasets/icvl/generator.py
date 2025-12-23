@@ -6,34 +6,48 @@ import cv2
 import random
 import numpy as np
 import imageio
-from scipy import io
 import albumentations as A
 from omegaconf import DictConfig
 from tools.utils.concurrent import concurrent
-from tools.optics import create_cdf
-from tools.files import reader, writer
+from tools.utils import images
+from tools.files import reader
+from scipy import io
+
+THREADS = 1
+
+MAT_TYPE = 'icvl'
+HSI_SUFFICES = {'.mat','.npy'}
+INPUT = 'input'
+OUTPUT = 'output'
 
 
-def generate(input_path: str, params: DictConfig, optics: DictConfig, **kwargs) -> None:
+def generate(split:dict, params:DictConfig, **kwargs) -> None:
     """
-    CAVE-HSI: https://ieee-dataport.org/documents/cave-hsi
+    ICVL: 
     """
 
-    input_dir = Path(input_path)
+    common_filestems = None
+    for name, data in split.items():
+        input_files = [f for f in Path(data.input).glob('*.*') if f.suffix in HSI_SUFFICES]
+        input_set = set([f.stem.replace('_gyper','') for f in input_files])
+        if common_filestems is None:
+            common_filestems = input_set
+        else:
+            common_filestems = common_filestems & input_set
 
-    if not input_dir.is_dir():
-        raise Exception(f'No such directory: {input_dir}')
+    # Copy files, convert to npy
+    for name, data in split.items():
+        input_files = [f for f in Path(data[INPUT]).glob('*.*') if f.suffix in HSI_SUFFICES and f.stem.replace('_gyper','') in common_filestems]
+        output_dir = Path(data[OUTPUT])
 
-    cdf = create_cdf(optics)
+        for file in input_files:
+            try:
+                if file.suffix == '.mat':
+                    hsi = reader.read(file, MAT_TYPE)
+                else:
+                    hsi = reader.read(file)
+                output_path = output_dir.joinpath(file.name.replace('_gyper','')).with_suffix('.npy')
+                np.save(output_path, hsi)
 
-    for gt_path in Path(input_dir).glob('**/*.mat'):
-        try:
-            src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(gt_path.name)
-            gt_image = reader.read(gt_path)
-            src_image = cdf(gt_image, padding=params.padding)
-            # normalize
-            src_max, src_min = src_image.max(), src_image.min()
-            src_image = (src_image - src_min) / (src_max - src_min) # * 65535).clip(0, 65535).astype(np.uint16)
-            writer.write(src_path, src_image)
-        except Exception as e:
-            print(f'Failed to convert {gt_path}.')
+            except Exception as e:
+                print(e)

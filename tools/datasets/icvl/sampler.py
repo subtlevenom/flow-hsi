@@ -12,6 +12,7 @@ from tools.utils.concurrent import concurrent
 from tools.utils import images
 from tools.files import reader
 from scipy import io
+from tools.files.iterators import files
 
 THREADS = 1
 
@@ -21,7 +22,7 @@ TARGET = 'target'
 
 def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> None:
     """
-    CAVE-HSI: https://ieee-dataport.org/documents/cave-hsi
+    ICVL: 
     """
 
     input_dir = Path(input_path)
@@ -31,69 +32,35 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
         raise Exception(f'No such directory: {input_dir}')
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    norm_filenames = []
-    norm_src_files = {}
-    norm_tgt_files = {}
-
     # Copy pairs (output_dir, input_path) splitted by tasks
     splits = {}
     for name, data in split.items():
+        input_src_files = [f for f in files(data[SOURCE], '.npy')]
         output_src_dir = output_dir.joinpath(name, SOURCE)
         output_src_dir.mkdir(parents=True, exist_ok=True)
-        input_src_files = list(Path(data.source).glob('*.npy'))
 
+        input_tgt_files = [f for f in files(data[TARGET], '.npy')]
         output_tgt_dir = output_dir.joinpath(name, TARGET)
         output_tgt_dir.mkdir(parents=True, exist_ok=True)
-        input_tgt_files = list(Path(data.target).glob('*.mat'))
 
         # filter out unique names
-        filenames = set([f.stem for f in input_src_files]) & set(
-            [f.stem for f in input_tgt_files])
+        src_filenames = set([f.stem for f in input_src_files])
+        tgt_filenames = set([f.stem for f in input_tgt_files])
+        common_filenames = src_filenames & tgt_filenames
 
         input_src_files = {f.stem: f for f in input_src_files}
         input_tgt_files = {f.stem: f for f in input_tgt_files}
 
-        src_files = [(output_src_dir, input_src_files[f]) for f in filenames]
-        tgt_files = [(output_tgt_dir, input_tgt_files[f]) for f in filenames]
+        src_files = [(output_src_dir, input_src_files[f]) for f in common_filenames]
+        tgt_files = [(output_tgt_dir, input_tgt_files[f]) for f in common_filenames]
 
         splits[name] = list(zip(src_files, tgt_files))
-
-        # norm
-        norm_filenames.extend(filenames)
-        norm_src_files = norm_src_files | input_src_files
-        norm_tgt_files = norm_tgt_files | input_tgt_files
-
-    norm = None
-    if params.get('normalize', False):
-        # normalization
-        src, tgt = [],[]
-        for filename in norm_filenames:
-            src_file = norm_src_files[filename]
-            tgt_file = norm_tgt_files[filename]
-            src_img = reader.read(src_file)
-            tgt_img = reader.read(tgt_file)
-
-            src.append(src_img.reshape(-1, src_img.shape[-1]))
-            tgt.append(tgt_img.reshape(-1, tgt_img.shape[-1]))
-
-        src = np.concat(src, axis=0) # n x 31
-        tgt = np.concat(tgt, axis=0) # n x 31
-
-        m,c = [],[]
-        for n in range(src.shape[-1]):
-            x = src[...,n]
-            y = tgt[...,n]
-            _m, _c = np.polyfit(x, y, 1)
-            m.append(_m)
-            c.append(_c)
-        norm = (np.array(m),np.array(c))
 
     # Copy concurrent
     tasks = []
     with Progress() as progress:
         for split_name, split_data in splits.items():
-            pb = progress.add_task(f"[cyan]{split_name}",
-                                   total=len(split_data))
+            pb = progress.add_task(f"[cyan]{split_name}", total=len(split_data))
             with ThreadPoolExecutor(max_workers=THREADS) as executor:
                 split_tasks = [
                     _copy_data(executor,
@@ -101,7 +68,6 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
                                input_src_file=copy[0][1],
                                output_ref_dir=copy[1][0],
                                input_ref_file=copy[1][1],
-                               norm=norm,
                                params=params) for copy in split_data
                 ]
                 for task in split_tasks:
@@ -121,7 +87,6 @@ def _copy_data(
     input_src_file: Path,
     output_ref_dir: Path,
     input_ref_file: Path,
-    norm: tuple,
     params,
 ):
     if not input_src_file.is_file():
@@ -136,11 +101,6 @@ def _copy_data(
 
     src_image = reader.read(input_src_file)
     ref_image = reader.read(input_ref_file)
-
-    # normalize by channels (a white point)
-
-    if norm is not None:
-        src_image = norm[0] * src_image + norm[1]
 
     for i in range(n_crops):
         try:

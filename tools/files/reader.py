@@ -6,7 +6,7 @@ from .parsers import register_parsers
 parsers: dict = {}
 
 
-def read(path: str | Path, format:str = None) -> Any:
+def read(path: str | Path, format:str = None, **kwargs) -> Any:
     """Reads file"""
 
     path = Path(path)

@@ -15,8 +15,7 @@ def adapt(
     match type:
         case 'cave-hsi':
             cave_hsi.adapter.adapt(input_path, output_path, params)
-        case 'icvl':
-            icvl.adapter.adapt(input_path, output_path, params)
+
 
 def sample(
     type: str,
@@ -34,9 +33,37 @@ def sample(
             icvl.sampler.sample(input_path, output_path, split, params)
 
 
+def split(
+    type: str,
+    source_path: str,
+    target_path: str,
+    output_path: str,
+    split: dict,
+    **kwargs,
+) -> None:
+
+    match type:
+        case 'icvl':
+            icvl.splitter.split(source_path, target_path, output_path, split)
+
+
+def normalize(
+    type: str,
+    gt_path: str,
+    src_path: str,
+    output_path: str,
+    **kwargs,
+) -> None:
+
+    match type:
+        case 'icvl':
+            icvl.normalizer.normalize(gt_path, src_path, output_path)
+
+
 def generate(
     type: str,
     input_path: str,
+    split: dict = None,
     params: DictConfig = None,
     optics: DictConfig = None,
     **kwargs,
@@ -46,4 +73,4 @@ def generate(
         case 'cave-hsi':
             cave_hsi.generator.generate(input_path, params, optics)
         case 'icvl':
-            icvl.generator.generate(input_path, params, optics)
+            icvl.generator.generate(split, params)
