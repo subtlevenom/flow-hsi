@@ -14,7 +14,7 @@ def read(file: Path) -> np.ndarray:
     """reads hyperspectral image"""
     with h5py.File(file, 'r') as mat:
         mat = np.array(mat[TAG])
-    mat = np.moveaxis(mat, 0, 2)
+    mat = np.transpose(mat) #.moveaxis(mat, 0, 2)
     return mat
 
 

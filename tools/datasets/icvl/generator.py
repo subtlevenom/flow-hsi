@@ -39,6 +39,7 @@ def generate(split:dict, params:DictConfig, **kwargs) -> None:
     for name, data in split.items():
         input_files = [f for f in Path(data[INPUT]).glob('*.*') if f.suffix in HSI_SUFFICES and f.stem.replace('_gyper','') in common_filestems]
         output_dir = Path(data[OUTPUT])
+        output_dir.mkdir(exist_ok=True, parents=True)
 
         for file in input_files:
             try:
