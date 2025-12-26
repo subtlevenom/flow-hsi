@@ -63,7 +63,7 @@ def split(source_path:str, target_path:str, output_path:str, split:dict) -> None
                 output_split_dir = output_dir.joinpath(name, TARGET)
                 output_split_dir.mkdir(parents=True, exist_ok=True)
                 for file in sfiles:
-                    input_path = source_dir.joinpath(file)
+                    input_path = target_dir.joinpath(file)
                     output_path = output_split_dir.joinpath(file)
                     shutil.copy(input_path, output_path)
                     progress.update(pb, advance=1)
