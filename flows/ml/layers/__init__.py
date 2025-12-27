@@ -5,5 +5,6 @@ from . import fusion
 from . import heads
 from . import kan
 from . import sep_kan
+from . import sep_gaussian
 from . import mw_isp
 from . import transformer
