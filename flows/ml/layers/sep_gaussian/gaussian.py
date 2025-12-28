@@ -6,11 +6,8 @@ class Gaussian(torch.nn.Module):
     def __init__(self):
         super(Gaussian, self).__init__()
 
-    def forward(self, x:torch.Tensor, m:torch.Tensor, s:torch.Tensor):
-        x = x - m # BCHW
-        S = torch.eye(s)
-        # S = torch.linalg.inv(S) # BCSHW
-        y = torch.einsum('bchw,bcshw->bshw', x, S)
-        y = torch.sum(y * x, dim=1, keepdim=True)
-        y = torch.exp(-0.5 * y)
-        return y
+    def forward(self, x:torch.Tensor, a:torch.Tensor, m:torch.Tensor, s:torch.Tensor):
+        x = (x - m) * s # BCHW
+        x = torch.sum(x, dim=1, keepdim=True)
+        x = torch.exp(-0.5 * x)
+        return x
