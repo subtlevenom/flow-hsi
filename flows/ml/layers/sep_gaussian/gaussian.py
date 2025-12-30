@@ -9,5 +9,5 @@ class Gaussian(torch.nn.Module):
     def forward(self, x:torch.Tensor, a:torch.Tensor, m:torch.Tensor, s:torch.Tensor):
         x = (x - m) * s # BCHW
         x = torch.sum(x, dim=1, keepdim=True)
-        x = torch.exp(-0.5 * x)
+        x = a * torch.exp(-0.5 * x)
         return x
