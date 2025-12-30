@@ -43,6 +43,8 @@ def split(
 ) -> None:
 
     match type:
+        case 'cave-hsi':
+            cave_hsi.splitter.split(source_path, target_path, output_path, split)
         case 'icvl':
             icvl.splitter.split(source_path, target_path, output_path, split)
 
@@ -56,6 +58,8 @@ def normalize(
 ) -> None:
 
     match type:
+        case 'cave-hsi':
+            cave_hsi.normalizer.normalize(gt_path, src_path, output_path)
         case 'icvl':
             icvl.normalizer.normalize(gt_path, src_path, output_path)
 
@@ -63,14 +67,14 @@ def normalize(
 def generate(
     type: str,
     input_path: str,
+    output_path: str,
     split: dict = None,
     params: DictConfig = None,
-    optics: DictConfig = None,
     **kwargs,
 ) -> None:
 
     match type:
         case 'cave-hsi':
-            cave_hsi.generator.generate(input_path, params, optics)
+            cave_hsi.generator.generate(input_path, output_path)
         case 'icvl':
             icvl.generator.generate(split, params)

@@ -49,7 +49,7 @@ def main(config: DictConfig) -> None:
 
     for src_file in files(src_path):
         try:
-            tgt_file = tgt_path.joinpath(src_file.name).with_suffix('.mat')
+            tgt_file = tgt_path.joinpath(src_file.name).with_suffix('.npy')
 
             src = reader.read(src_file)
             src = transform(src).unsqueeze(0)
@@ -58,11 +58,11 @@ def main(config: DictConfig) -> None:
             tgt = transform(tgt).unsqueeze(0)
             
             pred = model(image=src)['result']
-            pred = torch.clamp(pred, 0., 1.)
+            # pred = torch.clamp(pred, 0., 1.)
 
             val = psnr(pred,tgt)
             metrics.append(val)
-            print(f'{src_file.stem}: {val}')
+            print(f'{src_file.stem}: {val} - AVG: {sum(metrics) / len(metrics)}')
         except Exception as e:
             print(f'Skip {src_file.stem} with exception {e}')
 

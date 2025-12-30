@@ -135,6 +135,6 @@ class DefaultPipeline(L.LightningModule):
         return {'loss': de_loss}
 
     def predict_step(self, batch, batch_idx, dataloader_idx):
-        src, _ = batch
-        output = self(src, scale=3)
-        return output
+        src, target = batch
+        prediction = self(src)
+        return prediction

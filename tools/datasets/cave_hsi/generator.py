@@ -14,26 +14,22 @@ from tools.optics import create_cdf
 from tools.files import reader, writer
 
 
-def generate(input_path: str, params: DictConfig, optics: DictConfig, **kwargs) -> None:
+def generate(input_path: str, output_path:str, **kwargs) -> None:
     """
     CAVE-HSI: https://ieee-dataport.org/documents/cave-hsi
     """
 
     input_dir = Path(input_path)
-
     if not input_dir.is_dir():
         raise Exception(f'No such directory: {input_dir}')
 
-    cdf = create_cdf(optics)
+    output_dir = Path(output_path)
+    output_dir.mkdir(exist_ok=True, parents=True)
 
     for gt_path in Path(input_dir).glob('**/*.mat'):
         try:
-            src_path = gt_path.parent.parent.joinpath(params.tag).joinpath(gt_path.name)
             gt_image = reader.read(gt_path)
-            src_image = cdf(gt_image, padding=params.padding)
-            # normalize
-            src_max, src_min = src_image.max(), src_image.min()
-            src_image = (src_image - src_min) / (src_max - src_min) # * 65535).clip(0, 65535).astype(np.uint16)
-            writer.write(src_path, src_image)
+            out_path = output_dir.joinpath(gt_path.stem).with_suffix('.npy')
+            writer.write(out_path, gt_image)
         except Exception as e:
             print(f'Failed to convert {gt_path}.')
