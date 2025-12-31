@@ -134,7 +134,15 @@ class DefaultPipeline(L.LightningModule):
         self.log('test_loss', de_loss, prog_bar=True, logger=True)
         return {'loss': de_loss}
 
-    def predict_step(self, batch, batch_idx, dataloader_idx):
-        src, target = batch
+    def predict_step(self, batch, batch_idx):
+        src, target, name = batch
         prediction = self(src)
-        return prediction
+
+        mae_loss = self.mae_loss(prediction, target)
+        psnr_loss = self.psnr_metric(prediction, target)
+        ssim_loss = self.ssim_metric(prediction, target)
+        de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
+
+        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss}')
+
+        return {'loss': de_loss}

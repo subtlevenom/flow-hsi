@@ -1,5 +1,4 @@
 import argparse
-from pathlib import Path
 import yaml
 from omegaconf import DictConfig
 from ..core.selector import (ModelSelector, DataSelector, PipelineSelector)
@@ -16,60 +15,112 @@ from lightning.pytorch.callbacks import (
 from flows.ml.callbacks import GenerateCallback
 from lightning.pytorch.loggers import CSVLogger
 from flows import cli
-from tools.utils import models
-from tools.files.iterators import files
-from tools.files import reader
-from flows.ml.metrics import (PSNR, SSIM, DeltaE)
-from torchvision.transforms.v2 import (
-    Compose,
-    ToImage,
-    ToDtype,
-    CenterCrop,
-    RandomCrop,
-)
-
+from tools.utils import text
 
 
 def main(config: DictConfig) -> None:
-    src_path = Path(config.source_path)
-    tgt_path = Path(config.target_path)
+    text.print(config)
+    predict_default(config)
 
-    model = ModelSelector.select(config.model).eval()
 
-    checkpoint_path = Path(config.save_dir).joinpath(config.experiment,'logs/checkpoints/last.ckpt')
-    models.load_model(model, 'model', checkpoint_path)
+def predict_default(config: DictConfig) -> None:
 
-    psnr = PSNR(data_range=(0, 1))
-    transform = Compose([
-        ToImage(),
-        ToDtype(dtype=torch.float32, scale=True),
-    ])
+    dm = DataSelector.select(config.data)
+    model = ModelSelector.select(config.model)
+    pipeline = PipelineSelector.select(model, config.pipeline)
 
-    metrics = []
+    logger = CSVLogger(
+        save_dir=os.path.join(config.save_dir, config.experiment),
+        name='logs',
+        version='',
+    )
 
-    for src_file in files(src_path):
-        try:
-            tgt_file = tgt_path.joinpath(src_file.name).with_suffix('.npy')
+    trainer = L.Trainer(
+        logger=logger,
+        default_root_dir=os.path.join(config.save_dir, config.experiment),
+        max_epochs=config.epochs,
+        devices=1,
+        callbacks=[
+            ModelCheckpoint(
+                filename="{epoch}-{val_loss:.2f}",
+                monitor='val_loss',
+                save_last=True,
+            ),
+            RichModelSummary(),
+            RichProgressBar(),
+            LearningRateMonitor(logging_interval='epoch', ),
+            GenerateCallback(every_n_epochs=1, ),
+            StochasticWeightAveraging(swa_lrs=config.pipeline.params.lr * 10.)
+        ],
+    )
 
-            src = reader.read(src_file)
-            src = transform(src).unsqueeze(0)
+    ckpt_path = os.path.join(config.save_dir, config.experiment,
+                             'logs/checkpoints/last.ckpt')
 
-            tgt = reader.read(tgt_file)
-            tgt = transform(tgt).unsqueeze(0)
-            
-            pred = model(image=src)['result']
-            # pred = torch.clamp(pred, 0., 1.)
+    trainer.predict(
+        model=pipeline,
+        datamodule=dm,
+        ckpt_path=ckpt_path
+        if config.resume and os.path.exists(ckpt_path) else None,
+    )
 
-            val = psnr(pred,tgt)
-            metrics.append(val)
-            print(f'{src_file.stem}: {val} - AVG: {sum(metrics) / len(metrics)}')
-        except Exception as e:
-            print(f'Skip {src_file.stem} with exception {e}')
 
-    print(f'AVG: {sum(metrics) / len(metrics)}')
+def train_kfold(config: DictConfig) -> None:
 
-    return 0
+    FOLD_STEPS = 10
 
-    
+    dm = DataSelector.select(config.data)
+    model = ModelSelector.select(config.model)
+    pipeline = PipelineSelector.select(model, config.pipeline)
 
-    
+    logger = CSVLogger(
+        save_dir=os.path.join(config.save_dir, config.experiment),
+        name='logs',
+        version='',
+    )
+
+    ckpt_path = os.path.join(config.save_dir, config.experiment,
+                             'logs/checkpoints/last.ckpt')
+    resume = config.resume and os.path.exists(ckpt_path)
+    if resume:
+        state_dict = torch.load(ckpt_path)
+        current_epoch = state_dict['epoch']
+    else:
+        ckpt_path = None
+        current_epoch = 0
+
+    while current_epoch < config.epochs:
+        for fold, data_module in enumerate(dm):
+            print(f'Fold {fold + 1}')
+
+            trainer = L.Trainer(
+                logger=logger,
+                default_root_dir=os.path.join(config.save_dir,
+                                              config.experiment),
+                max_epochs=current_epoch + FOLD_STEPS,
+                devices=1,
+                callbacks=[
+                    ModelCheckpoint(
+                        filename="{epoch}-{val_loss:.2f}",
+                        monitor='val_de',
+                        save_top_k=3,
+                        save_last=True,
+                    ),
+                    RichModelSummary(),
+                    RichProgressBar(),
+                    LearningRateMonitor(logging_interval='epoch', ),
+                    GenerateCallback(every_n_epochs=1, ),
+                    # LearningRateCallback(num_training_steps=100),
+                    StochasticWeightAveraging(
+                        swa_lrs=config.pipeline.params.lr * 10.)
+                ],
+            )
+
+            trainer.fit(
+                model=pipeline,
+                datamodule=data_module,
+                ckpt_path=ckpt_path,
+            )
+
+            current_epoch = trainer.current_epoch
+            resume = True
