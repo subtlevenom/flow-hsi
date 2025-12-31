@@ -59,7 +59,7 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/cmkan.weighted.icvl.v8/logs/checkpoints/_last.ckpt'
+        # MODEL_PATH = '.experiments/hsgaussian.weighted.cave-hsi.v8/logs/checkpoints/_last.36.5.ckpt'
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
         # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
         # models.require_grad(self.model.layers.cmkan, requires_grad=False)
