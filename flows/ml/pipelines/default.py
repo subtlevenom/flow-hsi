@@ -9,6 +9,7 @@ from ..models import Flow
 from flows.core import Logger
 from ..metrics import (PSNR, SSIM, DeltaE)
 from tools.utils import models
+import time
 
 
 class DefaultPipeline(L.LightningModule):
@@ -137,9 +138,13 @@ class DefaultPipeline(L.LightningModule):
         self.log('test_loss', de_loss, prog_bar=True, logger=True)
         return {'loss': de_loss}
 
-    avg = 0
+    sum = 0
+    start_time = 0
 
     def predict_step(self, batch, batch_idx):
+        if batch_idx == 0:
+            self.start_time = time.perf_counter()
+
         src, target, name = batch
         prediction = self(src)
 
@@ -148,8 +153,9 @@ class DefaultPipeline(L.LightningModule):
         ssim_loss = self.ssim_metric(prediction, target)
         de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
 
-        self.avg += psnr_loss
+        self.sum += psnr_loss
+        elapsed = time.perf_counter() - self.start_time 
 
-        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss} | AVG: {self.avg / (1 + batch_idx)}')
+        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss} | AVG: {self.sum / (1 + batch_idx)} | Elapsed: {elapsed}')
 
         return {'loss': de_loss}
