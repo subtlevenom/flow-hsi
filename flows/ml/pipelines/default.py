@@ -59,8 +59,9 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/hsgaussian.sum.3.cave-hsi.v8/logs/checkpoints/epoch=78-val_loss=0.01.ckpt'
+        MODEL_PATH = '.experiments/hsgaussian.weighted.7.cave-hsi.v8/logs/checkpoints/__last.ckpt'
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
+        models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
         # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
         # models.load_model(self.model.layers.decoder, 'model.layers.decoder', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder, requires_grad=False)
@@ -136,6 +137,8 @@ class DefaultPipeline(L.LightningModule):
         self.log('test_loss', de_loss, prog_bar=True, logger=True)
         return {'loss': de_loss}
 
+    avg = 0
+
     def predict_step(self, batch, batch_idx):
         src, target, name = batch
         prediction = self(src)
@@ -145,6 +148,8 @@ class DefaultPipeline(L.LightningModule):
         ssim_loss = self.ssim_metric(prediction, target)
         de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
 
-        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss}')
+        self.avg += psnr_loss
+
+        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss} | AVG: {self.avg / (1 + batch_idx)}')
 
         return {'loss': de_loss}
