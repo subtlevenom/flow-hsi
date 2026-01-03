@@ -147,6 +147,7 @@ class DefaultPipeline(L.LightningModule):
 
         src, target, name = batch
         prediction = self(src)
+        elapsed = time.perf_counter() - self.start_time 
 
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
@@ -154,8 +155,7 @@ class DefaultPipeline(L.LightningModule):
         de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
 
         self.sum += psnr_loss
-        elapsed = time.perf_counter() - self.start_time 
 
-        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss} | AVG: {self.sum / (1 + batch_idx)} | Elapsed: {elapsed}')
+        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss} | AVG: {self.sum / (1 + batch_idx)} | Elapsed: {elapsed/(batch_idx + 1)}')
 
         return {'loss': de_loss}
