@@ -60,12 +60,14 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/hsgaussian.weighted.7.cave-hsi.v8/logs/checkpoints/__last.ckpt'
+        # MODEL_PATH = '.experiments/hsgaussian.sum.7.cave-hsi.v8/logs/checkpoints/last.ckpt'
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
         # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
         # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        # models.load_model(self.model.layers.hskan, 'model.layers.hskan', MODEL_PATH)
         # models.load_model(self.model.layers.decoder, 'model.layers.decoder', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder, requires_grad=False)
+        # models.require_grad(self.model.layers.hskan, requires_grad=False)
         # models.require_grad(self.model.layers.decoder, requires_grad=False)
 
         Logger.info('Initialized model weights with isp pipeline.')
