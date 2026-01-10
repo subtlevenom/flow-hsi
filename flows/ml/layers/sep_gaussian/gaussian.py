@@ -7,8 +7,8 @@ class Gaussian(torch.nn.Module):
         super(Gaussian, self).__init__()
 
     def forward(self, x:torch.Tensor, a:torch.Tensor, m:torch.Tensor, s:torch.Tensor):
-        # return self.forward_mul(x, a, m, s)
-        return self.forward_sum(x, a, m, s)
+        return self.forward_mul(x, a, m, s)
+        # return self.forward_sum(x, a, m, s)
 
     def forward_mul(self, x:torch.Tensor, a:torch.Tensor, m:torch.Tensor, s:torch.Tensor):
         x = (x - m) * s # BCHW
