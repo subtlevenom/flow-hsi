@@ -140,7 +140,8 @@ class DefaultPipeline(L.LightningModule):
         self.log('test_loss', de_loss, prog_bar=True, logger=True)
         return {'loss': de_loss}
 
-    sum = 0
+    sum_psnr = 0
+    sum_ssim = 0
     start_time = 0
 
     def predict_step(self, batch, batch_idx):
@@ -156,8 +157,10 @@ class DefaultPipeline(L.LightningModule):
         ssim_loss = self.ssim_metric(prediction, target)
         de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
 
-        self.sum += psnr_loss
+        self.sum_psnr += psnr_loss
+        self.sum_ssim += ssim_loss
+        n = 1 + batch_idx
 
-        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss} | AVG: {self.sum / (1 + batch_idx)} | Elapsed: {elapsed/(batch_idx + 1)}')
+        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss} | AVG >> psnr: {self.sum_psnr / n} ssim: {self.sum_ssim / n} | Elapsed: {elapsed/(batch_idx + 1)}')
 
         return {'loss': de_loss}
