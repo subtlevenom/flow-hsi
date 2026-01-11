@@ -20,7 +20,7 @@ class CmKAN(SepKAN):
         return x
 
 
-class LightCmKAN(CmKAN):
+class LightCmKAN(SepKAN):
 
     def create_encoder(self, in_channels, out_channels, **kwargs):
         return LightCMEncoder(in_channels, out_channels)

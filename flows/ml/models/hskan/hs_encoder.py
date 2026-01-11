@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from flows.ml.models.cmkan import LightCmKAN
 
 
 class HSEncoder(nn.Module):
@@ -26,9 +27,18 @@ class HSEncoder(nn.Module):
             groups=in_channels,
         )
 
+        self.kan =  LightCmKAN(1, 1)
+
     def forward(self, x: torch.Tensor):
         x = torch.cat([x] * self.out_channels, dim=1)
-        x = x * (1. + self.weights(x)**2)
+        y = self.weights(x)
+        w = rearrange(y, 'b c h w -> (b c) 1 h w')
+        w = self.kan(w)
+        w = rearrange(w,
+                      '(b c) 1 h w -> b c h w',
+                      c=self.in_channels * self.out_channels)
+
+        x = x + x * w
         x = rearrange(x,
                       'b (n c) h w -> (b n) c h w',
                       n=self.in_channels,
