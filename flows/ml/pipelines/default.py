@@ -100,10 +100,14 @@ class DefaultPipeline(L.LightningModule):
         src, target = batch
         prediction = self(src)
 
+        x = self.model.layers.encoder(src)
+        x = self.model.layers.decoder(x)
+        mae_loss_ae = self.mae_loss(x, src)
+
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
         ssim_loss = self.ssim_metric(prediction, target)
-        loss = mae_loss + 0.15 * (1.-ssim_loss) #+ 0.2 * (40. - psnr_loss)
+        loss = mae_loss + 0.15 * (1.-ssim_loss) + 0.25 * mae_loss_ae #+ 0.2 * (40. - psnr_loss)
 
         self.log('train_mae', mae_loss, prog_bar=True, logger=True)
         self.log('train_psnr', psnr_loss, prog_bar=True, logger=True)
