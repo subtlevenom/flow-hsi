@@ -100,7 +100,7 @@ def _copy_data(
     n_crops = 1 if random_crop is None else params.get('n_crops', 1)
 
     src_image = reader.read(input_src_file) / 1023.
-    ref_image = reader.read(input_ref_file)
+    ref_image = reader.read(input_ref_file, 'ntire')
 
     for i in range(n_crops):
         try:
