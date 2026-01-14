@@ -39,7 +39,7 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
         output_src_dir = output_dir.joinpath(name, SOURCE)
         output_src_dir.mkdir(parents=True, exist_ok=True)
 
-        input_tgt_files = [f for f in files(data[TARGET], '.mat')]
+        input_tgt_files = [f for f in files(data[TARGET], '.npy')]
         output_tgt_dir = output_dir.joinpath(name, TARGET)
         output_tgt_dir.mkdir(parents=True, exist_ok=True)
 
@@ -100,7 +100,7 @@ def _copy_data(
     n_crops = 1 if random_crop is None else params.get('n_crops', 1)
 
     src_image = reader.read(input_src_file) / 1023.
-    ref_image = reader.read(input_ref_file, 'ntire')
+    ref_image = reader.read(input_ref_file)
 
     for i in range(n_crops):
         try:
