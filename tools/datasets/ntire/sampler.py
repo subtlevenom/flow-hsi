@@ -39,7 +39,7 @@ def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> No
         output_src_dir = output_dir.joinpath(name, SOURCE)
         output_src_dir.mkdir(parents=True, exist_ok=True)
 
-        input_tgt_files = [f for f in files(data[TARGET], '.npy')]
+        input_tgt_files = [f for f in files(data[TARGET], '.mat')]
         output_tgt_dir = output_dir.joinpath(name, TARGET)
         output_tgt_dir.mkdir(parents=True, exist_ok=True)
 
