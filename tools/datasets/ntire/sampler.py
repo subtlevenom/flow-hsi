@@ -22,7 +22,7 @@ TARGET = 'target'
 
 def sample(input_path:str, output_path:str, split:dict, params:DictConfig) -> None:
     """
-    ICVL: 
+    NTIRE: 
     """
 
     input_dir = Path(input_path)

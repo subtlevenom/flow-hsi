@@ -1,7 +1,6 @@
 from omegaconf import DictConfig
 from tools.utils import text
-from . import cave_hsi
-from . import icvl
+from . import cave_hsi, icvl, ntire
 
 
 def adapt(
@@ -31,6 +30,8 @@ def sample(
             cave_hsi.sampler.sample(input_path, output_path, split, params)
         case 'icvl':
             icvl.sampler.sample(input_path, output_path, split, params)
+        case 'ntire':
+            ntire.sampler.sample(input_path, output_path, split, params)
 
 
 def split(
@@ -47,6 +48,8 @@ def split(
             cave_hsi.splitter.split(source_path, target_path, output_path, split)
         case 'icvl':
             icvl.splitter.split(source_path, target_path, output_path, split)
+        case 'ntire':
+            ntire.splitter.split(source_path, target_path, output_path, split)
 
 
 def normalize(
@@ -78,3 +81,5 @@ def generate(
             cave_hsi.generator.generate(input_path, output_path)
         case 'icvl':
             icvl.generator.generate(split, params)
+        case 'ntire':
+            ntire.generator.generate(split, params)
