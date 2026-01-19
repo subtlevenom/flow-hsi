@@ -23,11 +23,11 @@ class HSLayer(nn.Module):
         self.layer = HSGaussianLayer(in_channels, n_layers)
         self.norm = LayerNorm(in_channels)
         self.ffn = FFN(in_channels=n_layers + 2 * in_channels,
-                       out_channels=in_channels)
+                       out_channels=out_channels)
 
-    def forward(self, x: torch.Tensor):
-        z = self.norm(x)
-        y = self.layer(x)
-        y = torch.concat([x, z, y], dim=1)
-        y = self.ffn(y)
-        return y
+    def forward(self, x: torch.Tensor, y: torch.Tensor):
+        n = self.norm(y)
+        x = self.layer(x)
+        x = torch.concat([y, n, x], dim=1)
+        x = self.ffn(x)
+        return x

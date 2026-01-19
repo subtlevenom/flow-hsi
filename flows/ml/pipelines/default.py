@@ -60,7 +60,7 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/hsgaussian.sum.7.cave-hsi.v8/logs/checkpoints/last.ckpt'
+        # MODEL_PATH = '.experiments/hsgaussian.mul.7.huawei/logs/checkpoints/epoch=49-val_loss=0.05.ckpt'
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
         # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
         # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
@@ -118,7 +118,7 @@ class DefaultPipeline(L.LightningModule):
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
         ssim_loss = self.ssim_metric(prediction, target)
-        de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
+        de_loss = self.de_metric(prediction, target)
 
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('val_ssim', ssim_loss, prog_bar=True, logger=True)
@@ -133,7 +133,7 @@ class DefaultPipeline(L.LightningModule):
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
         ssim_loss = self.ssim_metric(prediction, target)
-        de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
+        de_loss = self.de_metric(prediction, target)
 
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('test_ssim', ssim_loss, prog_bar=True, logger=True)
@@ -155,7 +155,7 @@ class DefaultPipeline(L.LightningModule):
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
         ssim_loss = self.ssim_metric(prediction, target)
-        de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
+        de_loss = self.de_metric(prediction, target)
 
         self.sum_psnr += psnr_loss
         self.sum_ssim += ssim_loss

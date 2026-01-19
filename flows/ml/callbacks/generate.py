@@ -33,9 +33,9 @@ class GenerateCallback(Callback):
                 pl_module.train()
 
             # Plot and add to tensorboard
-            input_imgs = self.input_imgs[:,[5,15,25]]
-            target_imgs = self.target_imgs[:,[5,15,25]]
-            reconst_imgs = reconst_imgs[:,[5,15,25]]
+            input_imgs = self.input_imgs
+            target_imgs = self.target_imgs
+            reconst_imgs = reconst_imgs
             imgs = torch.stack([input_imgs, reconst_imgs, target_imgs], dim=1).flatten(0, 1)
             grid = torchvision.utils.make_grid(imgs, nrow=3)
             # Save image
@@ -59,9 +59,9 @@ class GenerateCallback(Callback):
                 pl_module.train()
             # Plot and add to tensorboard
 
-            input_imgs = self.input_imgs[:,[5,15,25]]
-            target_imgs = self.target_imgs[:,[5,15,25]]
-            reconst_imgs = reconst_imgs[:,[5,15,25]]
+            input_imgs = self.input_imgs
+            target_imgs = self.target_imgs
+            reconst_imgs = reconst_imgs
             imgs = torch.stack([input_imgs, reconst_imgs, target_imgs], dim=1).flatten(0, 1)
             grid = torchvision.utils.make_grid(imgs, nrow=3)
             # Save image
