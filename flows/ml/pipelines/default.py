@@ -7,7 +7,7 @@ import torch.nn.functional as F
 import torchvision
 from ..models import Flow
 from flows.core import Logger
-from ..metrics import (PSNR, SSIM, DeltaE)
+from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 from tools.utils import models
 import time
 
@@ -30,6 +30,7 @@ class DefaultPipeline(L.LightningModule):
         self.mse_loss = nn.MSELoss(reduction='mean')
         self.mae_loss = nn.L1Loss(reduction='mean')
         self.de_metric = DeltaE()
+        self.sam_metric = SAM()
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.psnr_metric = PSNR(data_range=(0, 1))
 
@@ -133,15 +134,18 @@ class DefaultPipeline(L.LightningModule):
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
         ssim_loss = self.ssim_metric(prediction, target)
+        sam_loss = self.sam_metric(prediction, target) * 180. / torch.pi 
         de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
 
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('test_ssim', ssim_loss, prog_bar=True, logger=True)
+        self.log('test_sam', sam_loss, prog_bar=True, logger=True)
         self.log('test_loss', de_loss, prog_bar=True, logger=True)
         return {'loss': de_loss}
 
     sum_psnr = 0
     sum_ssim = 0
+    sum_sam = 0
     start_time = 0
 
     def predict_step(self, batch, batch_idx):
@@ -155,12 +159,14 @@ class DefaultPipeline(L.LightningModule):
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
         ssim_loss = self.ssim_metric(prediction, target)
+        sam_loss = self.sam_metric(prediction, target)
         de_loss = self.de_metric(prediction[:,[5,15,25]], target[:,[5,15,25]])
 
         self.sum_psnr += psnr_loss
         self.sum_ssim += ssim_loss
+        self.sum_sam += sam_loss
         n = 1 + batch_idx
 
-        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, loss {de_loss} | AVG >> psnr: {self.sum_psnr / n} ssim: {self.sum_ssim / n} | Elapsed: {elapsed/(batch_idx + 1)}')
+        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, sam {sam_loss}, loss {de_loss} | AVG >> psnr: {self.sum_psnr / n} ssim: {self.sum_ssim / n} sam: {self.sum_sam / n} | Elapsed: {elapsed/(batch_idx + 1)}')
 
         return {'loss': de_loss}
