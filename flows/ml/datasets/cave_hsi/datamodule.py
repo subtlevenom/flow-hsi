@@ -15,7 +15,7 @@ from .dataset import Dataset
 from flows.core import Logger
 from flows.ml.transforms.pair_trransform import PairTransform
 
-CROP = 128
+CROP = 256
 IMG_EXTS: Tuple[str] = (".npy")
 
 class DataModule(L.LightningDataModule):
