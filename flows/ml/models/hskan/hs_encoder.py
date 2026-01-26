@@ -17,11 +17,7 @@ class HSEncoder(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        self.proj = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=1,
-        )
+        self.proj = FFN(in_channels=3, out_channels=3)
 
     def forward(self, x: torch.Tensor):
         return self.proj(x)

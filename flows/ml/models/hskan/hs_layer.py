@@ -19,15 +19,23 @@ class HSLayer(nn.Module):
 
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.w = 3 * 3
 
         self.layer = HSGaussianLayer(in_channels, in_channels, n_layers)
-        self.cube = nn.Parameter(torch.rand(1, 9*in_channels, 1, 1))
+        self.offset = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=self.w * in_channels,
+            kernel_size=3,
+            padding=1,
+        )
 
     def forward(self, x: torch.Tensor, y: torch.Tensor):
-        y0 = torch.cat([y]*9, dim=1) + self.cube
-        yc = rearrange(y0, 'b (n c) h w -> (b n) c h w', n=9, c=3)
-        x = torch.repeat_interleave(x, 9, dim=0)
-        p = self.layer(x,yc)
+        o = self.offset(x)
+        y0 = torch.cat([y]*self.w, dim=1) + o
+        x0 = torch.cat([x]*self.w, dim=1)
+        yc = rearrange(y0, 'b (n c) h w -> (b n) c h w', n=self.w, c=3)
+        xc = rearrange(x0, 'b (n c) h w -> (b n) c h w', n=self.w, c=3)
+        p = self.layer(xc,yc)
         p = rearrange(p, '(b n) c h w -> b (n c) h w', n=9)
         s = torch.sum(p, dim=1, keepdim=True)
         p = p / s
