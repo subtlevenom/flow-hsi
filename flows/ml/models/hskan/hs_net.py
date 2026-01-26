@@ -19,6 +19,7 @@ class HSLayer(nn.Module):
 
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.w = 3 * 3
 
         self.layer = HSGaussianMixture(in_channels, in_channels, n_layers)
         self.offset = nn.Conv2d(

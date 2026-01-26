@@ -11,12 +11,14 @@ class HSEncoder(nn.Module):
         self,
         in_channels: int = 3,
         out_channels: int = 3,
+        layer: int = 0
     ):
         super(HSEncoder, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
 
+        
         self.proj = FFN(in_channels=3, out_channels=3)
 
     def forward(self, x: torch.Tensor):

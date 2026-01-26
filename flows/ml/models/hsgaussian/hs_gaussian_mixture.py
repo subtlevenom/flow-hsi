@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from .hs_gaussian import HSGaussian
 from flows.ml.layers.encoders import SGEncoder, CMEncoder, LightCMEncoder
 
-class HSGaussianLayer(nn.Module):
+class HSGaussianMixture(nn.Module):
 
     def __init__(
         self,
@@ -15,7 +15,7 @@ class HSGaussianLayer(nn.Module):
         y_channels: int,
         n_layers: int,
     ):
-        super(HSGaussianLayer, self).__init__()
+        super(HSGaussianMixture, self).__init__()
 
         self.x_channels = x_channels
         self.y_channels = y_channels
@@ -26,7 +26,8 @@ class HSGaussianLayer(nn.Module):
         self.mixture = LightCMEncoder(x_channels, n_layers)
 
     def forward(self, x:torch.Tensor, y:torch.Tensor):
-        y = torch.concat([g(x,y) for g in self.layers], dim=1)
-        a = F.sigmoid(self.mixture(x))
+        z = torch.concat([x,y],dim=1)
+        y = torch.concat([g(y,z) for g in self.layers], dim=1)
+        a = self.mixture(x)
         y = torch.sum(a * y, dim=1, keepdim=True)
         return y
