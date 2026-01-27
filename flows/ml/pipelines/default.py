@@ -61,13 +61,13 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/hsgaussian.mul.7.huawei/logs/checkpoints/epoch=49-val_loss=0.05.ckpt'
+        MODEL_PATH = '.experiments/hsgaussian.huawei/logs/checkpoints/_last_01.ckpt'
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
         # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
-        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        models.load_model(self.model.layers.hsnet.encoder.proj, 'model.layers.hsnet', MODEL_PATH)
         # models.load_model(self.model.layers.hskan, 'model.layers.hskan', MODEL_PATH)
         # models.load_model(self.model.layers.decoder, 'model.layers.decoder', MODEL_PATH)
-        # models.require_grad(self.model.layers.encoder, requires_grad=False)
+        models.require_grad(self.model.layers.hsnet.encoder.proj, requires_grad=False)
         # models.require_grad(self.model.layers.hskan, requires_grad=False)
         # models.require_grad(self.model.layers.decoder, requires_grad=False)
 
