@@ -11,17 +11,18 @@ class HSEncoder(nn.Module):
         self,
         in_channels: int = 3,
         out_channels: int = 3,
-        layer: int = 0
+        n_iter: int = 0
     ):
         super(HSEncoder, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
         
-        if layer == 0:
-            self.proj = FFN(in_channels=3, out_channels=3)
+        if n_iter == 0:
+            self.proj = FFN(in_channels=in_channels, out_channels=out_channels)
         else:
-            self.proj = nn.Sequential()
+            from .hs_net import HSNet
+            self.proj = HSNet(in_channels, out_channels, n_iters=n_iter-1)
 
     def forward(self, x: torch.Tensor):
         return self.proj(x)
