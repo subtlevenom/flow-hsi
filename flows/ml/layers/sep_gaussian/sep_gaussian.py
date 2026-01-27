@@ -18,7 +18,7 @@ class SepGaussian(ABC, torch.nn.Module):
         self.x_channels = x_channels
         self.y_channels = y_channels
 
-        self.encoder = self.create_encoder(x_channels, 2 * y_channels)
+        self.encoder = self.create_encoder(y_channels, 2 * x_channels + 1)
         self.gaussian = Gaussian()
 
     @abstractmethod
@@ -27,7 +27,8 @@ class SepGaussian(ABC, torch.nn.Module):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor):
         w = self.encoder(y)
-        m = w[:, :self.x_channels]
-        s = F.sigmoid(w[:, self.x_channels:])
-        y = self.gaussian(x, m, s)
+        a = w[:, :1]
+        m = w[:, 1:1+self.x_channels]
+        s = w[:, 1+self.x_channels:]
+        y = self.gaussian(x, a, m, s)
         return y

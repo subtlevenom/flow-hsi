@@ -10,7 +10,7 @@ class HSDecoder(nn.Module):
     def __init__(
         self,
         in_channels: int = 3,
-        out_channels: int = 31,
+        out_channels: int = 3,
     ):
         super(HSDecoder, self).__init__()
 

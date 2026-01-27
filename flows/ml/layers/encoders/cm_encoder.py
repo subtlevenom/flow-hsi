@@ -29,7 +29,7 @@ class IlluminationEstimator(nn.Module):
                                     kernel_size=5,
                                     padding=2,
                                     bias=True,
-                                    groups=n_fea_in)
+                                    groups=n_fea_out)
 
         self.conv2 = nn.Conv2d(n_fea_middle,
                                n_fea_out,
@@ -194,6 +194,10 @@ class TransformerBlock(nn.Module):
     def __init__(self, in_channel, mid_channel, out_channel, num_heads, bias):
         super(TransformerBlock, self).__init__()
 
+        self.in_channel = in_channel
+        self.mid_channel = mid_channel
+        self.out_channel = out_channel
+
         self.norm1 = LayerNorm(in_channel)
         self.attn = Attention(in_channel, num_heads, bias)
         self.norm2 = LayerNorm(in_channel)
@@ -322,24 +326,25 @@ class LightEncoder2D(torch.nn.Module):
 
     def __init__(self, in_dim, out_dim, kernel_size):
         super(LightEncoder2D, self).__init__()
-        self.estimator = IlluminationEstimator(12, in_dim+1, in_dim)
+        N_1 = 1 * in_dim
+        N_4 = 4 * in_dim
+        N_5 = 5 * in_dim
+        N_16 = 16 * in_dim
+        self.estimator = IlluminationEstimator(in_dim * (in_dim + 1), in_dim + 1, in_dim)
 
-        self.down1 = DWTForward() # 12 h/2
-        self.trans1 = TransformerBlock(
-            12, 12, 12, 3, True
-        )
+        self.down1 = DWTForward()  # 12 h/2
         self.illu_down1 = nn.Sequential(
             nn.AvgPool2d(2),
-            nn.Conv2d(12, 12, 1),
+            nn.Conv2d(in_dim * (in_dim + 1), N_4, 1),
         )
+        self.trans1 = TransformerBlock(N_4, N_4, N_4, N_4 // 2, True)
 
         self.up1 = nn.Upsample(scale_factor=2, mode='bilinear')
 
         self.conv_out = nn.Sequential(
-            LayerNorm(3+12),
-            FFN(3+12, out_dim)
+            LayerNorm(N_1 + N_4),
+            FFN(N_1 + N_4, out_features=out_dim),
         )
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         illu_fea, illu_map = self.estimator(x)
