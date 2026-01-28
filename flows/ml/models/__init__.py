@@ -2,7 +2,7 @@ import sys, pkgutil, importlib, inspect
 from torch import nn
 import torch
 from flows.ml import layers
-from . import hskan, cmkan, hsgaussian
+from . import ggpr, cmkan
 from .flow import Flow
 
 

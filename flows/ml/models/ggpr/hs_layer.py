@@ -4,7 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from flows.ml.layers.encoders.sg_encoder import FFN, LayerNorm
-from ..hsgaussian import HSGaussianLayer, HSGaussianMixture
+from .hs_gaussian_layer import HSGaussianLayer
 
 
 class HSLayer(nn.Module):

@@ -1,1 +1,3 @@
 from .sep_gaussian import SepGaussian
+from .sep_gaussian_layer import SepGaussianLayer
+from .sep_gaussian_mixture import SepGaussianMixture
