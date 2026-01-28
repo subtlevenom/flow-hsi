@@ -19,7 +19,7 @@ class HSEncoder(nn.Module):
         self.out_channels = out_channels
         
         if n_iter == 0:
-            self.proj = FFN(in_channels=in_channels, out_channels=out_channels)
+            self.proj = nn.Sequential()
         else:
             from .hs_net import HSNet
             self.proj = HSNet(in_channels, out_channels, n_iters=n_iter-1)

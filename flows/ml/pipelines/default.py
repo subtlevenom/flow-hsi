@@ -61,13 +61,14 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
 
-        MODEL_PATH = '.experiments/hsgaussian.huawei/logs/checkpoints/_last_01.ckpt'
+        # MODEL_PATH = '.experiments/hsgaussian.huawei/logs/checkpoints/_1_last.ckpt'
+        # models.load_model(self.model.layers.hsnet.encoder.proj, 'model.layers.hsnet', MODEL_PATH)
+        # models.require_grad(self.model.layers.hsnet.encoder.proj, requires_grad=False)
+
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
         # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
-        models.load_model(self.model.layers.hsnet.encoder.proj, 'model.layers.hsnet', MODEL_PATH)
         # models.load_model(self.model.layers.hskan, 'model.layers.hskan', MODEL_PATH)
         # models.load_model(self.model.layers.decoder, 'model.layers.decoder', MODEL_PATH)
-        models.require_grad(self.model.layers.hsnet.encoder.proj, requires_grad=False)
         # models.require_grad(self.model.layers.hskan, requires_grad=False)
         # models.require_grad(self.model.layers.decoder, requires_grad=False)
 
@@ -97,8 +98,12 @@ class DefaultPipeline(L.LightningModule):
         pred = self.model(image=x)
         return pred['result']
 
+    a = 1.0
+
     def training_step(self, batch, batch_idx):
         src, target = batch
+        src = self.a * src + (1 - self.a) * target 
+
         prediction = self(src)
 
         mae_loss = self.mae_loss(prediction, target)
@@ -114,6 +119,8 @@ class DefaultPipeline(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         src, target = batch
+        src = self.a * src + (1 - self.a) * target 
+
         prediction = self(src)
 
         mae_loss = self.mae_loss(prediction, target)

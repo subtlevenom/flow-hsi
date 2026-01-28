@@ -6,6 +6,7 @@ from torch import nn
 import torch.nn.functional as F
 from .hs_gaussian import HSGaussian
 from flows.ml.layers.encoders import SGEncoder, CMEncoder, LightCMEncoder
+from .hs_gaussian_layer import HSGaussianLayer
 
 class HSGaussianMixture(nn.Module):
 
@@ -13,21 +14,24 @@ class HSGaussianMixture(nn.Module):
         self,
         x_channels: int,
         y_channels: int,
-        n_layers: int,
+        g_channels: int,
+        out_channels: int,
     ):
         super(HSGaussianMixture, self).__init__()
 
         self.x_channels = x_channels
         self.y_channels = y_channels
-        self.n_layers = n_layers
+        self.g_channels = g_channels
+        self.out_channels = out_channels
 
-        self.layers = nn.ModuleList(
-            [HSGaussian(x_channels,y_channels) for _ in range(n_layers)])
-        self.mixture = LightCMEncoder(x_channels, n_layers)
+        self.layer = HSGaussianLayer(x_channels, y_channels, g_channels)
+        self.mixture = nn.Conv2d(
+            in_channels=g_channels,
+            out_channels=out_channels,
+            kernel_size=1,
+        )
 
     def forward(self, x:torch.Tensor, y:torch.Tensor):
-        z = torch.concat([x,y],dim=1)
-        y = torch.concat([g(y,z) for g in self.layers], dim=1)
-        a = self.mixture(x)
-        y = torch.sum(a * y, dim=1, keepdim=True)
-        return y
+        x = self.layer(x,y)
+        x = self.mixture(x)
+        return x
