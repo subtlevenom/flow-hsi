@@ -32,9 +32,7 @@ class GPDFLoss(Metric):
         eps = 1e-7
         p = (0.5 + eps + 0.5 * torch.sign(s)) * (0.5 + eps + 0.5 * torch.sign(xsx))
 
-        xsx = torch.clip(xsx,0)
-        s = torch.clip(s,eps)
-        loss = torch.mean(0.5 * xsx - 0.5 * torch.log(s) - torch.log(p))
+        loss = torch.mean(-torch.log(s) + xsx + 6 * np.log(2 * np.pi) - 2 * torch.log(p))
 
         self.correct += loss
         self.total += 1

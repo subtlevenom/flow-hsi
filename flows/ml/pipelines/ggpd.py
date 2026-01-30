@@ -63,8 +63,8 @@ class GGPDPipeline(L.LightningModule):
                     nn.init.normal_(m.weight, 0, 0.01)
                     nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/hsgaussian.huawei/logs/checkpoints/_1_last.ckpt'
-        # models.load_model(self.model.layers.hsnet.encoder.proj, 'model.layers.hsnet', MODEL_PATH)
+        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
         # models.require_grad(self.model.layers.hsnet.encoder.proj, requires_grad=False)
 
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
@@ -103,8 +103,8 @@ class GGPDPipeline(L.LightningModule):
     def training_step(self, batch, batch_idx):
         src, target = batch
 
-        m, s = self(src)
-        x = torch.cat([src,target], dim=1)
+        x, m, s = self(src)
+        x = torch.cat([x,target], dim=1)
 
         loss = self.ggpd_loss(x, m, s)
 
@@ -114,8 +114,8 @@ class GGPDPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, target = batch
 
-        m, s = self(src)
-        x = torch.cat([src,target], dim=1)
+        x, m, s = self(src)
+        x = torch.cat([x,target], dim=1)
 
         loss = self.ggpd_loss(x, m, s)
 

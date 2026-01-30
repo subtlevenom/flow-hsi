@@ -12,7 +12,7 @@ class GPEncoder(nn.Module):
     def __init__(
         self,
         in_channels: int = 3,
-        out_channels: int = 27,
+        out_channels: int = 30,
     ):
         super(GPEncoder, self).__init__()
 
@@ -22,7 +22,12 @@ class GPEncoder(nn.Module):
         self.encoder = CMEncoder(in_channels, out_channels)
 
     def forward(self, x: torch.Tensor):
-        x = self.encoder(x)
-        m = x[:, :2 * self.in_channels]
-        s = covariance_matrix(x[:, 2 * self.in_channels:])
-        return m, s
+        x = F.sigmoid(self.encoder(x))
+        C = 2 * self.in_channels
+        m = x[:, :C]
+        s = 2 * torch.pi * x[:, C:2*C]
+        a = x[:, 2*C:-3]
+        x = x[:,-3:]
+
+        r = covariance_matrix(s, a)
+        return x, m, r
