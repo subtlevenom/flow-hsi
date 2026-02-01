@@ -46,6 +46,7 @@ class GenerateCallback(Callback):
             torchvision.utils.save_image(grid, save_path)
 
     def on_test_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        return
         dataloader = trainer.test_dataloaders
         self.input_imgs, self.target_imgs = next(iter(dataloader))
         self.input_imgs = self.input_imgs.to(pl_module.device)
@@ -53,6 +54,7 @@ class GenerateCallback(Callback):
         self.save_dir = os.path.join(trainer.log_dir, 'figures')
 
     def on_test_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        return
         if trainer.current_epoch % self.every_n_epochs == 0:
             # Reconstruct images
             with torch.no_grad():

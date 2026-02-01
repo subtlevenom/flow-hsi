@@ -8,7 +8,7 @@ import torchvision
 import time
 from tools.utils import models
 from flows.core import Logger
-from flows.ml.models.ggpd import GPDFLoss
+from flows.ml.models.ggpd import GPDFLoss, Gaussian
 from ..models import Flow
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 
@@ -35,6 +35,7 @@ class GGPDPipeline(L.LightningModule):
         self.sam_metric = SAM()
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.psnr_metric = PSNR(data_range=(0, 1))
+        self.gaussian = Gaussian()
 
         self.save_hyperparameters(ignore=['model'])
 
@@ -65,7 +66,8 @@ class GGPDPipeline(L.LightningModule):
 
         # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
         # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
-        # models.require_grad(self.model.layers.hsnet.encoder.proj, requires_grad=False)
+        # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)
+        # models.require_grad(self.model.layers.encoder, requires_grad=False)
 
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
         # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
@@ -96,47 +98,63 @@ class GGPDPipeline(L.LightningModule):
             "monitor": "val_loss"
         }
 
-    def forward(self, x: torch.Tensor, scale:int=0) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, scale: int = 0) -> torch.Tensor:
         pred = self.model(image=x)
-        return pred['result']
+        return pred['x'], pred['m'], pred['r'], pred['y']
 
     def training_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, s = self(src)
+        x, m, r, y = self(src)
         x = torch.cat([x,target], dim=1)
 
-        loss = self.ggpd_loss(x, m, s)
+        ggpd_loss = self.ggpd_loss(x, m, r)
+        mae_loss = self.mae_loss(y, target)
+        psnr_loss = self.psnr_metric(y, target)
+        loss = ggpd_loss + mae_loss
 
+        self.log('psnr', psnr_loss, prog_bar=True, logger=True)
+        self.log('ggpd', ggpd_loss, prog_bar=True, logger=True)
+        self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('train_loss', loss, prog_bar=True, logger=True)
+
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, s = self(src)
+        x, m, r, y = self(src)
         x = torch.cat([x,target], dim=1)
 
-        loss = self.ggpd_loss(x, m, s)
+        ggpd_loss = self.ggpd_loss(x, m, r)
+        mae_loss = self.mae_loss(y, target)
+        psnr_loss = self.psnr_metric(y, target)
+        loss = mae_loss
 
+        self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
+        self.log('val_ggpd', ggpd_loss, prog_bar=True, logger=True)
+        self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_loss', loss, prog_bar=True, logger=True)
+
         return {'loss': loss}
 
     def test_step(self, batch, batch_idx):
         src, target = batch
-        prediction = self(src)
 
-        mae_loss = self.mae_loss(prediction, target)
-        psnr_loss = self.psnr_metric(prediction, target)
-        ssim_loss = self.ssim_metric(prediction, target)
-        sam_loss = self.sam_metric(prediction, target) * 180. / torch.pi 
-        de_loss = self.de_metric(prediction, target)
+        x, m, r, y = self(src)
+        x = torch.cat([x,target], dim=1)
+
+        ggpd_loss = self.ggpd_loss(x, m, r)
+        mae_loss = self.mae_loss(y, target)
+        psnr_loss = self.psnr_metric(y, target)
+        loss = mae_loss
 
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
-        self.log('test_ssim', ssim_loss, prog_bar=True, logger=True)
-        self.log('test_sam', sam_loss, prog_bar=True, logger=True)
-        self.log('test_loss', de_loss, prog_bar=True, logger=True)
-        return {'loss': de_loss}
+        self.log('test_ggpd', ggpd_loss, prog_bar=True, logger=True)
+        self.log('test_mae', mae_loss, prog_bar=True, logger=True)
+        self.log('test_loss', loss, prog_bar=True, logger=True)
+        
+        return {'loss': loss}
 
     sum_psnr = 0
     sum_ssim = 0
@@ -149,7 +167,7 @@ class GGPDPipeline(L.LightningModule):
 
         src, target, name = batch
         prediction = self(src)
-        elapsed = time.perf_counter() - self.start_time 
+        elapsed = time.perf_counter() - self.start_time
 
         mae_loss = self.mae_loss(prediction, target)
         psnr_loss = self.psnr_metric(prediction, target)
@@ -162,6 +180,8 @@ class GGPDPipeline(L.LightningModule):
         self.sum_sam += sam_loss
         n = 1 + batch_idx
 
-        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, sam {sam_loss}, loss {de_loss} | AVG >> psnr: {self.sum_psnr / n} ssim: {self.sum_ssim / n} sam: {self.sum_sam / n} | Elapsed: {elapsed/(batch_idx + 1)}')
+        print(
+            f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, sam {sam_loss}, loss {de_loss} | AVG >> psnr: {self.sum_psnr / n} ssim: {self.sum_ssim / n} sam: {self.sum_sam / n} | Elapsed: {elapsed/(batch_idx + 1)}'
+        )
 
         return {'loss': de_loss}

@@ -28,11 +28,9 @@ class GPDFLoss(Metric):
 
         s = torch.permute(S, (0, 3, 4, 1, 2))
         s = torch.linalg.det(s)
+        s = torch.clip(s, 1e-7)
 
-        eps = 1e-7
-        p = (0.5 + eps + 0.5 * torch.sign(s)) * (0.5 + eps + 0.5 * torch.sign(xsx))
-
-        loss = torch.mean(-torch.log(s) + xsx + 6 * np.log(2 * np.pi) - 2 * torch.log(p))
+        loss = torch.mean(x.shape[1] * np.log(2 * np.pi) - torch.log(s) + xsx)
 
         self.correct += loss
         self.total += 1

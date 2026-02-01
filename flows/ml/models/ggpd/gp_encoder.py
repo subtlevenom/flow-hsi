@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from einops import rearrange
 from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.encoders.sg_encoder import FFN, LayerNorm
+from flows.ml.models.ggpd.gaussian import Gaussian
 from .utils import covariance_matrix
 
 
@@ -22,12 +23,17 @@ class GPEncoder(nn.Module):
         self.encoder = CMEncoder(in_channels, out_channels)
 
     def forward(self, x: torch.Tensor):
-        x = F.sigmoid(self.encoder(x))
+        p = self.encoder(x)
         C = 2 * self.in_channels
-        m = x[:, :C]
-        s = 2 * torch.pi * x[:, C:2*C]
-        a = x[:, 2*C:-3]
-        x = x[:,-3:]
+        m = p[:, :C]
+        s = p[:, C:2*C]
+        s = torch.square(F.relu(s) - F.relu(-s)) 
+        a = 2 * torch.pi * F.sigmoid(p[:, 2*C:-self.in_channels])
+        x = p[:,-self.in_channels:]
+        r,c = covariance_matrix(s, a)
 
-        r = covariance_matrix(s, a)
-        return x, m, r
+        y = torch.cat([x, m[:,self.in_channels:]], dim=1)
+        y = torch.einsum('bcij,bclij->blij', s*(y-m), c)
+        y = m[:,self.in_channels:] + (1. / s[:,3:]) * y[:,self.in_channels:]
+
+        return x, m, r, y
