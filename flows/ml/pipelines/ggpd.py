@@ -105,10 +105,10 @@ class GGPDPipeline(L.LightningModule):
     def training_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, r, y = self(src)
+        x, m, S, y = self(src)
         x = torch.cat([x,target], dim=1)
 
-        ggpd_loss = self.ggpd_loss(x, m, r)
+        ggpd_loss = self.ggpd_loss(x, m, S)
         mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
         loss = ggpd_loss + mae_loss
@@ -123,10 +123,10 @@ class GGPDPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, r, y = self(src)
+        x, m, S, y = self(src)
         x = torch.cat([x,target], dim=1)
 
-        ggpd_loss = self.ggpd_loss(x, m, r)
+        ggpd_loss = self.ggpd_loss(x, m, S)
         mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
         loss = mae_loss

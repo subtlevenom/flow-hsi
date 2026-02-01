@@ -23,20 +23,20 @@ def covariance_matrix(s:torch.Tensor, a:torch.Tensor):
             c += 1
 
     # C
-    CT = r
-    C = r.permute(0,1,2,4,3)
+    RT = r
+    R = r.permute(0,1,2,4,3)
     # D
     D = torch.zeros((B,H,W,C,C),dtype=a.dtype, device=a.device)
     D[:,:,:] = torch.eye(C)
     D = D * s.unsqueeze(2).permute(0,3,4,1,2)
     # CT*D*C
-    S = torch.matmul(CT,D)
-    S = torch.matmul(S,C)
+    S = torch.matmul(RT,D)
+    S = torch.matmul(S,R)
 
-    C = C.permute(0,3,4,1,2)
-    D = D.permute(0,3,4,1,2)
-    S = S.permute(0,3,4,1,2)
+    # C = C.permute(0,3,4,1,2)
+    # D = D.permute(0,3,4,1,2)
+    # S = S.permute(0,3,4,1,2)
 
-    return S,C,D
+    return S,R,D
 
 

@@ -210,8 +210,10 @@ __marimo__/
 .vscode
 
 .idea/
+.models
 .experiments/
 .data/
+.configs
 *.yaml
 !config.example.yaml
 

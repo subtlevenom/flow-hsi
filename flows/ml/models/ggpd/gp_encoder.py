@@ -23,17 +23,32 @@ class GPEncoder(nn.Module):
         self.encoder = CMEncoder(in_channels, out_channels)
 
     def forward(self, x: torch.Tensor):
-        p = self.encoder(x)
         C = 2 * self.in_channels
+
+        p = self.encoder(x)
         m = p[:, :C]
         s = p[:, C:2*C]
         s = torch.square(F.relu(s) - F.relu(-s)) 
+        s = torch.clip(s,1e-6)
         a = 2 * torch.pi * F.sigmoid(p[:, 2*C:-self.in_channels])
         x = p[:,-self.in_channels:]
-        r,c = covariance_matrix(s, a)
+        S,R,D = covariance_matrix(s, a)
 
-        y = torch.cat([x, m[:,self.in_channels:]], dim=1)
-        y = torch.einsum('bcij,bclij->blij', s*(y-m), c)
-        y = m[:,self.in_channels:] + (1. / s[:,3:]) * y[:,self.in_channels:]
+        # S^-1 = (CT*D*C)^-1 = C*D^-1*CT
+        D_1 = torch.linalg.inv(D)
+        RT = R.permute(0,1,2,4,3)
+        S_1 = torch.matmul(R,D_1)
+        S_1 = torch.matmul(S_1,RT)
+        Sxx = S_1[:,:,:,:3,:3]
+        Syy = S_1[:,:,:,3:,3:]
+        Syx = S_1[:,:,:,3:,:3]
+        Sxy = S_1[:,:,:,:3,3:]
+        Sxx_1 = torch.linalg.inv(Sxx)
+        Q = torch.matmul(Syx,Sxx_1)
+        mx = m[:,:self.in_channels]
+        my = m[:,self.in_channels:]
+        y = my + torch.einsum('bijmn,bnij->bmij', Q, (x-mx))
 
-        return x, m, r, y
+        S = S.permute(0,3,4,1,2)
+
+        return x, m, S, y
