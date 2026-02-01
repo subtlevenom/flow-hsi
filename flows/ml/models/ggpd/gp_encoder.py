@@ -39,6 +39,8 @@ class GPEncoder(nn.Module):
         RT = R.permute(0,1,2,4,3)
         S_1 = torch.matmul(R,D_1)
         S_1 = torch.matmul(S_1,RT)
+
+        # y = my + Syx * Sxx^-1 * (x-mx)
         Sxx = S_1[:,:,:,:3,:3]
         Syy = S_1[:,:,:,3:,3:]
         Syx = S_1[:,:,:,3:,:3]
@@ -49,6 +51,7 @@ class GPEncoder(nn.Module):
         my = m[:,self.in_channels:]
         y = my + torch.einsum('bijmn,bnij->bmij', Q, (x-mx))
 
+        # to use correctly in ggpd_loss
         S = S.permute(0,3,4,1,2)
 
         return x, m, S, y
