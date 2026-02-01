@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from .MST_Plus_Plus import MSAB
 
 
 class HSDecoder(nn.Module):
@@ -16,24 +17,35 @@ class HSDecoder(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        all_channels = in_channels * out_channels
+        # MST++ SAB
 
-        self.weights = nn.Conv2d(
-            in_channels=all_channels,
-            out_channels=all_channels,
-            kernel_size=3,
-            padding=1,
-            groups=in_channels,
-        )
+        num_blocks=list(range(in_channels,1,-1))
+        dim_head = out_channels
+        dim_stage = out_channels
+
+        self.decoder_layers = nn.Sequential()
+        for i in num_blocks:
+            dim_in = dim_stage * i
+            dim_out = dim_stage * (i - 1)
+            self.decoder_layers.append(
+                MSAB(
+                    dim=dim_in,
+                    num_blocks=i+1,
+                    dim_head=dim_head,
+                    heads=i,
+                ))
+            self.decoder_layers.append(
+                nn.Conv2d(
+                    in_channels=dim_in,
+                    out_channels=dim_out,
+                    kernel_size=1,
+                    bias=False,
+                ))
 
     def forward(self, x: torch.Tensor):
         x = rearrange(x,
                       '(b n) c h w -> b (n c) h w',
                       n=self.out_channels,
                       c=self.in_channels)
-        x = x * (1. + self.weights(x)**2)
-        x1 = x[:,:self.out_channels]
-        x2 = x[:,self.out_channels:2 * self.out_channels]
-        x3 = x[:,2 * self.out_channels:]
-        x = (x1 + x2 + x3) / 3.
+        x = self.decoder_layers(x)
         return x

@@ -212,6 +212,8 @@ __marimo__/
 .idea/
 .experiments/
 .data/
+.models
+.configs
 *.yaml
 !config.example.yaml
 

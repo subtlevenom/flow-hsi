@@ -58,7 +58,8 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.constant_(m.bias, 0)
                 elif isinstance(m, nn.Linear):
                     nn.init.normal_(m.weight, 0, 0.01)
-                    nn.init.constant_(m.bias, 0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
 
         # MODEL_PATH = '.experiments/hsgaussian.sum.7.cave-hsi.v8/logs/checkpoints/last.ckpt'
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'

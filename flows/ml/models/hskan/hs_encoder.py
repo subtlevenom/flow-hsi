@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from .MST_Plus_Plus import MSAB
 
 
 class HSEncoder(nn.Module):
@@ -16,19 +17,33 @@ class HSEncoder(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        all_channels = in_channels * out_channels
+        # MST++ SAB
 
-        self.weights = nn.Conv2d(
-            in_channels=all_channels,
-            out_channels=all_channels,
-            kernel_size=3,
-            padding=1,
-            groups=in_channels,
-        )
+        num_blocks=list(range(2,out_channels+1))
+        dim_head = in_channels
+        dim_stage = in_channels
+
+        self.encoder_layers = nn.Sequential()
+        for i in num_blocks:
+            dim_in = dim_stage * (i - 1)
+            dim_out = dim_stage * i
+            self.encoder_layers.append(
+                MSAB(
+                    dim=dim_in,
+                    num_blocks=i,
+                    dim_head=dim_head,
+                    heads=i - 1,
+                ))
+            self.encoder_layers.append(
+                nn.Conv2d(
+                    in_channels=dim_in,
+                    out_channels=dim_out,
+                    kernel_size=1,
+                    bias=False,
+                ))
 
     def forward(self, x: torch.Tensor):
-        x = torch.cat([x] * self.out_channels, dim=1)
-        x = x * (1. + self.weights(x)**2)
+        x = self.encoder_layers(x)
         x = rearrange(x,
                       'b (n c) h w -> (b n) c h w',
                       n=self.in_channels,
