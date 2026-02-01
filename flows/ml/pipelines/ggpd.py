@@ -109,9 +109,10 @@ class GGPDPipeline(L.LightningModule):
         x = torch.cat([x,target], dim=1)
 
         ggpd_loss = self.ggpd_loss(x, m, S)
+        my_loss = self.mae_loss(m[:,3:], target)
         mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
-        loss = ggpd_loss + mae_loss
+        loss = ggpd_loss + my_loss + mae_loss
 
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('ggpd', ggpd_loss, prog_bar=True, logger=True)

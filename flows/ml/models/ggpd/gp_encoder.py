@@ -23,15 +23,16 @@ class GPEncoder(nn.Module):
         self.encoder = CMEncoder(in_channels, out_channels)
 
     def forward(self, x: torch.Tensor):
-        C = 2 * self.in_channels
+        I = self.in_channels
+        C = 2 * I
 
         p = self.encoder(x)
         m = p[:, :C]
         s = p[:, C:2*C]
         s = torch.square(F.relu(s) - F.relu(-s)) 
         s = torch.clip(s,1e-6)
-        a = 2 * torch.pi * F.sigmoid(p[:, 2*C:-self.in_channels])
-        x = p[:,-self.in_channels:]
+        a = 2 * torch.pi * F.sigmoid(p[:, 2*C:-I])
+        x = p[:,-I:]
         S,R,D = covariance_matrix(s, a)
 
         # S^-1 = (CT*D*C)^-1 = C*D^-1*CT
@@ -41,14 +42,14 @@ class GPEncoder(nn.Module):
         S_1 = torch.matmul(S_1,RT)
 
         # y = my + Syx * Sxx^-1 * (x-mx)
-        Sxx = S_1[:,:,:,:3,:3]
-        Syy = S_1[:,:,:,3:,3:]
-        Syx = S_1[:,:,:,3:,:3]
-        Sxy = S_1[:,:,:,:3,3:]
+        Sxx = S_1[:,:,:,:I,:I]
+        Syy = S_1[:,:,:,I:,I:]
+        Syx = S_1[:,:,:,I:,:I]
+        Sxy = S_1[:,:,:,:I,I:]
         Sxx_1 = torch.linalg.inv(Sxx)
         Q = torch.matmul(Syx,Sxx_1)
-        mx = m[:,:self.in_channels]
-        my = m[:,self.in_channels:]
+        mx = m[:,:I]
+        my = m[:,I:]
         y = my + torch.einsum('bijmn,bnij->bmij', Q, (x-mx))
 
         # to use correctly in ggpd_loss
