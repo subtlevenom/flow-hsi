@@ -68,6 +68,7 @@ class GGPDPipeline(L.LightningModule):
         # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
         # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder, requires_grad=False)
+        models.require_grad(self.model.layers.corrector, requires_grad=False)
 
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
         # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
@@ -109,10 +110,9 @@ class GGPDPipeline(L.LightningModule):
         x = torch.cat([x,target], dim=1)
 
         ggpd_loss = self.ggpd_loss(x, m, S)
-        my_loss = self.mae_loss(m[:,3:], target)
         mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
-        loss = ggpd_loss + my_loss + mae_loss
+        loss = ggpd_loss + mae_loss
 
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('ggpd', ggpd_loss, prog_bar=True, logger=True)
