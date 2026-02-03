@@ -62,13 +62,14 @@ class GGPDPipeline(L.LightningModule):
                     nn.init.constant_(m.bias, 0)
                 elif isinstance(m, nn.Linear):
                     nn.init.normal_(m.weight, 0, 0.01)
-                    nn.init.constant_(m.bias, 0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
-        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
+        models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
         # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)
-        # models.require_grad(self.model.layers.encoder, requires_grad=False)
-        models.require_grad(self.model.layers.corrector, requires_grad=False)
+        models.require_grad(self.model.layers.encoder, requires_grad=False)
+        # models.require_grad(self.model.layers.corrector, requires_grad=False)
 
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
         # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
