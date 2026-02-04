@@ -65,10 +65,10 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
-        models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
         # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)
-        models.require_grad(self.model.layers.encoder, requires_grad=False)
+        # models.require_grad(self.model.layers.encoder, requires_grad=False)
         # models.require_grad(self.model.layers.corrector, requires_grad=False)
 
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
@@ -107,11 +107,14 @@ class GGPDPipeline(L.LightningModule):
     def training_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, S, y = self(src)
-        x = torch.cat([x,target], dim=1)
+        x, m, S, y_pred = self(src)
+        mx = m[:,:3]
+        y = m[:,3:]
+        x = torch.cat([x,y], dim=1)
+        m = torch.cat([mx,target], dim=1)
 
         ggpd_loss = self.ggpd_loss(x, m, S)
-        mae_loss = self.mae_loss(y, target)
+        mae_loss = self.mae_loss(y_pred, target)
         psnr_loss = self.psnr_metric(y, target)
         loss = ggpd_loss + mae_loss
 
@@ -125,11 +128,14 @@ class GGPDPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, S, y = self(src)
-        x = torch.cat([x,target], dim=1)
+        x, m, S, y_pred = self(src)
+        mx = m[:,:3]
+        y = m[:,3:]
+        x = torch.cat([x,y], dim=1)
+        m = torch.cat([mx,target], dim=1)
 
         ggpd_loss = self.ggpd_loss(x, m, S)
-        mae_loss = self.mae_loss(y, target)
+        mae_loss = self.mae_loss(y_pred, target)
         psnr_loss = self.psnr_metric(y, target)
         loss = mae_loss
 
@@ -143,11 +149,14 @@ class GGPDPipeline(L.LightningModule):
     def test_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, r, y = self(src)
-        x = torch.cat([x,target], dim=1)
+        x, m, S, y_pred = self(src)
+        mx = m[:,:3]
+        y = m[:,3:]
+        x = torch.cat([x,y], dim=1)
+        m = torch.cat([mx,target], dim=1)
 
-        ggpd_loss = self.ggpd_loss(x, m, r)
-        mae_loss = self.mae_loss(y, target)
+        ggpd_loss = self.ggpd_loss(x, m, S)
+        mae_loss = self.mae_loss(y_pred, target)
         psnr_loss = self.psnr_metric(y, target)
         loss = mae_loss
 

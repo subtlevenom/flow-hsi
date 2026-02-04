@@ -31,7 +31,7 @@ class GPEncoder(nn.Module):
         s = p[:, C:2*C]
         s = torch.square(F.relu(s) - F.relu(-s)) 
         s = torch.clip(s,1e-6)
-        a = 2 * torch.pi * F.sigmoid(p[:, 2*C:-I])
+        a = p[:, 2*C:-I]
         x = p[:,-I:]
         S,R,D = covariance_matrix(s, a)
 
