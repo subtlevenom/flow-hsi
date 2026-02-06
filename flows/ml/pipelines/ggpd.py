@@ -8,7 +8,7 @@ import torchvision
 import time
 from tools.utils import models
 from flows.core import Logger
-from flows.ml.models.ggpd import GPDFLoss, Gaussian
+from flows.ml.models.ggpd import GPDFLoss
 from ..models import Flow
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 
@@ -35,7 +35,6 @@ class GGPDPipeline(L.LightningModule):
         self.sam_metric = SAM()
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.psnr_metric = PSNR(data_range=(0, 1))
-        self.gaussian = Gaussian()
 
         self.save_hyperparameters(ignore=['model'])
 
@@ -65,8 +64,8 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
-        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
+        models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
         # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder, requires_grad=False)
         # models.require_grad(self.model.layers.corrector, requires_grad=False)
@@ -100,26 +99,22 @@ class GGPDPipeline(L.LightningModule):
             "monitor": "val_loss"
         }
 
-    def forward(self, x: torch.Tensor, scale: int = 0) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         pred = self.model(image=x)
-        return pred['x'], pred['m'], pred['r'], pred['y']
+        return pred['y'], pred['p_']
 
     def training_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, S, y_pred = self(src)
-        mx = m[:,:3]
-        y = m[:,3:]
-        x = torch.cat([x,y], dim=1)
-        m = torch.cat([mx,target], dim=1)
+        y, p = self(src)
 
-        ggpd_loss = self.ggpd_loss(x, m, S)
-        mae_loss = self.mae_loss(y_pred, target)
+        p = torch.mean(1.-p)
+
+        mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
-        loss = ggpd_loss + mae_loss
+        loss = mae_loss + p
 
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
-        self.log('ggpd', ggpd_loss, prog_bar=True, logger=True)
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('train_loss', loss, prog_bar=True, logger=True)
 
@@ -128,19 +123,15 @@ class GGPDPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, S, y_pred = self(src)
-        mx = m[:,:3]
-        y = m[:,3:]
-        x = torch.cat([x,y], dim=1)
-        m = torch.cat([mx,target], dim=1)
+        y, p = self(src)
 
-        ggpd_loss = self.ggpd_loss(x, m, S)
-        mae_loss = self.mae_loss(y_pred, target)
+        p = torch.mean(1.-p)
+
+        mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
-        loss = mae_loss
+        loss = mae_loss + p
 
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
-        self.log('val_ggpd', ggpd_loss, prog_bar=True, logger=True)
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_loss', loss, prog_bar=True, logger=True)
 
@@ -149,19 +140,15 @@ class GGPDPipeline(L.LightningModule):
     def test_step(self, batch, batch_idx):
         src, target = batch
 
-        x, m, S, y_pred = self(src)
-        mx = m[:,:3]
-        y = m[:,3:]
-        x = torch.cat([x,y], dim=1)
-        m = torch.cat([mx,target], dim=1)
+        y, p = self(src)
 
-        ggpd_loss = self.ggpd_loss(x, m, S)
-        mae_loss = self.mae_loss(y_pred, target)
+        p = torch.mean(1.-p)
+
+        mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
-        loss = mae_loss
+        loss = mae_loss + p
 
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
-        self.log('test_ggpd', ggpd_loss, prog_bar=True, logger=True)
         self.log('test_mae', mae_loss, prog_bar=True, logger=True)
         self.log('test_loss', loss, prog_bar=True, logger=True)
         

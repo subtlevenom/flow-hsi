@@ -18,7 +18,7 @@ class GPCorrector(nn.Module):
 
         self.in_channels = in_channels
         self.out_channels = out_channels
-        all_channels = 2 * (in_channels + out_channels)
+        all_channels = in_channels
 
         stage_ratio = 2
         dim = all_channels
@@ -54,8 +54,8 @@ class GPCorrector(nn.Module):
             bias=False,
         )
 
-    def forward(self, m: torch.Tensor, x: torch.Tensor, y: torch.Tensor):
-        x = torch.cat([m,x,y],dim=1)
+    def forward(self, x: torch.Tensor, y: torch.Tensor, p:torch.Tensor):
+        x = torch.cat([x,p,y], dim=1)
         x = self.layers(x)
         x = self.mapping(x)
         return x
