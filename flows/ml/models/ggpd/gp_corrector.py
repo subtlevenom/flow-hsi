@@ -18,14 +18,23 @@ class GPCorrector(nn.Module):
 
         self.in_channels = in_channels
         self.out_channels = out_channels
-        all_channels = in_channels
 
+        self.layer = LightCMEncoder(
+            in_channels=2*(in_channels+out_channels),
+            out_channels=1,
+        )
+        """
         stage_ratio = 2
-        dim = all_channels
+        dim = 3 * in_channels
         dim_stage = dim
         num_blocks = [2, 4]
 
-        self.layers = nn.Sequential()
+        self.layers = nn.Sequential(
+            FFN(
+                in_channels=in_channels,
+                out_channels=dim,
+            ),
+        )
         for stage_num_blocks in num_blocks:
             self.layers.append(
                 MSAB(
@@ -49,13 +58,12 @@ class GPCorrector(nn.Module):
         self.mapping = nn.Conv2d(
             in_channels=(stage_ratio ** len(num_blocks)) * dim,
             out_channels=out_channels,
-            kernel_size=3,
-            padding=1,
+            kernel_size=1,
             bias=False,
         )
+        """
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor, p:torch.Tensor):
-        x = torch.cat([x,p,y], dim=1)
-        x = self.layers(x)
-        x = self.mapping(x)
-        return x
+    def forward(self, x: torch.Tensor, y_: torch.Tensor, m: torch.Tensor):
+        x = torch.cat([x,y_,m],dim=1)
+        y = self.layer(x)
+        return y

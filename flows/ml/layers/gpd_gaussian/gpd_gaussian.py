@@ -17,13 +17,17 @@ class GPDGaussian(ABC, torch.nn.Module):
 
         self.x_channels = x_channels
         self.y_channels = y_channels
-        self.m_channels = x_channels + y_channels
-        self.s_channels = x_channels + y_channels
-        self.a_channels = self.s_channels*(self.s_channels-1) // 2
-        out_channels = self.a_channels + self.s_channels + self.m_channels + self.x_channels
 
-        self.encoder = self.create_encoder(x_channels, out_channels)
-        self.gaussian = Gaussian()
+        m_channels = x_channels + y_channels
+        s_channels = x_channels + y_channels
+        a_channels = s_channels*(s_channels-1) // 2
+
+        self.m_channels = m_channels
+        self.s_channels = s_channels
+        self.a_channels = a_channels
+
+        self.encoder = self.create_encoder(
+            x_channels, m_channels + s_channels + a_channels)
 
     @abstractmethod
     def create_encoder(self, in_channels: int, out_channels: int, **kwargs):
@@ -65,13 +69,12 @@ class GPDGaussian(ABC, torch.nn.Module):
     def forward(self, x: torch.Tensor):
         w = self.encoder(x)
 
-        x = w[:, :self.x_channels]
-        m = w[:, self.x_channels:self.x_channels+self.m_channels]
-        s = w[:, self.x_channels+self.m_channels:self.x_channels+2*self.m_channels]
-        a = w[:, self.x_channels+2*self.m_channels:]
+        m = w[:,:self.m_channels]
+        s = w[:,self.m_channels:self.m_channels+self.s_channels]
+        a = w[:,self.m_channels+self.s_channels:]
 
-        s = torch.clip(torch.square(s), 1e-6) # torch.square(F.relu(s) - F.relu(-s)) 
+        s = torch.clip(torch.square(s), 1e-6)
 
         S,R,D = self.covariance_matrix(s, a)
-        
-        return x, m, S, R, D
+
+        return m, S, R, D
