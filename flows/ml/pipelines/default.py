@@ -150,7 +150,7 @@ class DefaultPipeline(L.LightningModule):
             self.start_time = time.perf_counter()
 
         src, target, name = batch
-        prediction = self(src)
+        prediction = self(src/1023.)
         elapsed = time.perf_counter() - self.start_time 
 
         mae_loss = self.mae_loss(prediction, target)
