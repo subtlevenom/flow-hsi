@@ -61,9 +61,9 @@ class DefaultPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/hsgaussian.sum.7.cave-hsi.v8/logs/checkpoints/last.ckpt'
+        # MODEL_PATH = '.experiments/mstpp.ntire.v8/logs/checkpoints/MSTpp_NTIRE_v1_best.pth'
         # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
-        # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
+        # models.load_model(self.model.layers.encoder, 'model', MODEL_PATH)
         # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
         # models.load_model(self.model.layers.hskan, 'model.layers.hskan', MODEL_PATH)
         # models.load_model(self.model.layers.decoder, 'model.layers.decoder', MODEL_PATH)
