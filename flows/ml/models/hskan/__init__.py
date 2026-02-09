@@ -4,3 +4,4 @@ from .pca_encoder import PCAEncoder
 from .pca_decoder import PCADecoder
 from .hs_layer import HSLayer
 from .sink import Sink
+from .MST_Plus_Plus import MST_Plus_Plus
