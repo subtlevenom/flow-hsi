@@ -63,7 +63,7 @@ class GPCorrector(nn.Module):
         )
         """
 
-    def forward(self, x: torch.Tensor, y_: torch.Tensor, m: torch.Tensor):
-        x = torch.cat([x,y_,m],dim=1)
+    def forward(self, y1: torch.Tensor, y2: torch.Tensor, m: torch.Tensor):
+        x = torch.cat([y1,y2,m],dim=1)
         y = self.layer(x)
         return y

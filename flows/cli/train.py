@@ -48,6 +48,7 @@ def train_default(config: DictConfig) -> None:
             ModelCheckpoint(
                 filename="{epoch}-{val_loss:.2f}",
                 monitor='val_loss',
+                save_top_k=3,
                 save_last=True,
             ),
             RichModelSummary(),
