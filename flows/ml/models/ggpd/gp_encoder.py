@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import MultivariateNormal
 from einops import rearrange
 from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.encoders.sg_encoder import FFN, LayerNorm
@@ -72,22 +73,22 @@ class GPEncoder(nn.Module):
         _y = []
         _m = []
         _S =[]
+        _p = []
 
-        p_sum = 0
-        y_sum = 0
         for layer in self.layers:
             m,S,R,D = layer(x)
             S = S.permute(0,3,4,1,2)
             y = self.get_my_by_x(x,m,R,D)
             z = torch.cat([x,y], dim=1)
             q = self.g(m, m, S)
-            p = self.g(z, m, S) #/ self.g(m, m, S)
-            w = 2 * (q / (p + q) - 0.5)
-            y_sum += m[:,3:] * w
-            p_sum += w
+            w = self.g(z, m, S) #/ self.g(m, m, S)
+            p = 2 * (q / (w + q) - 0.5)
+            # y_sum += m[:,3:] * p
+            # p_sum += p
             _y.append(y)
             _m.append(m)
             _S.append(S)
-        y = y_sum / p_sum
+            _p.append(p)
+        # y = y_sum / p_sum
 
-        return y, _y, _m, _S
+        return _y, _m, _S, _p

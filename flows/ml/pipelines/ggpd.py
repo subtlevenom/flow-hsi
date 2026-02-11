@@ -66,10 +66,9 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/___last.ckpt'
-        # models.load_model(self.model.layers.encoder.layer1, 'model.layers.encoder.layer', MODEL_PATH)
-        # models.load_model(self.model.layers.encoder.layer2, 'model.layers.encoder.layer', MODEL_PATH)
-        # models.require_grad(self.model.layers.encoder, requires_grad=False)
+        MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/epoch=51-val_loss=0.05.ckpt'
+        models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        models.require_grad(self.model.layers.encoder, requires_grad=False)
         # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)
         # models.require_grad(self.model.layers.corrector, requires_grad=False)
 
@@ -104,7 +103,7 @@ class GGPDPipeline(L.LightningModule):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
-        return pred['y'], pred['m'], pred['S']
+        return pred['y'], pred['_m'], pred['_S']
 
     def training_step(self, batch, batch_idx):
         src, target = batch
@@ -116,7 +115,7 @@ class GGPDPipeline(L.LightningModule):
         gpd_loss = sum([self.ggpd_loss(z, mi, Si) for mi, Si in zip(m,S)]) / len(m)
         mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
-        loss = gpd_loss
+        loss = mae_loss # gpd_loss
 
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('gpd', gpd_loss, prog_bar=True, logger=True)
