@@ -116,7 +116,7 @@ class GGPDPipeline(L.LightningModule):
         gpd_loss = sum([self.ggpd_loss(z, mi, Si) for mi, Si in zip(m,S)]) / len(m)
         mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
-        loss = mae_loss+ gpd_loss
+        loss = gpd_loss
 
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('gpd', gpd_loss, prog_bar=True, logger=True)

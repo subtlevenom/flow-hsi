@@ -25,6 +25,7 @@ class GPEncoder(nn.Module):
             GPGaussian(x_channels=in_channels, y_channels=out_channels)
             for _ in range(n_layers)
         ])
+        self.g = Gaussian()
 
     def get_my_by_x(self,x,m,R,D):
         C = self.in_channels
@@ -66,18 +67,27 @@ class GPEncoder(nn.Module):
 
         return x
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor):
+    def forward(self, x: torch.Tensor, tgt: torch.Tensor):
 
         _y = []
         _m = []
         _S =[]
 
+        p_sum = 0
+        y_sum = 0
         for layer in self.layers:
             m,S,R,D = layer(x)
-            y = self.get_my_by_x(x,m,R,D)
             S = S.permute(0,3,4,1,2)
+            y = self.get_my_by_x(x,m,R,D)
+            z = torch.cat([x,y], dim=1)
+            q = self.g(m, m, S)
+            p = self.g(z, m, S) #/ self.g(m, m, S)
+            w = 2 * (q / (p + q) - 0.5)
+            y_sum += m[:,3:] * w
+            p_sum += w
             _y.append(y)
             _m.append(m)
             _S.append(S)
+        y = y_sum / p_sum
 
-        return _y, _m, _S
+        return y, _y, _m, _S
