@@ -54,6 +54,12 @@ class GPCorrector(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, m: torch.Tensor, p: torch.Tensor):
+        m = sum([_m[:,3:]*_p for _m,_p in zip(m,p)])
+        p = torch.cat(p,dim=1) #.repeat_interleave(len(p))
+        p = torch.sum(p,dim=1,keepdim=True)        
+        m = m / p
+        return m
+
         m = [_m[:,3:] for _m in m]
         m = torch.cat(m,dim=1)
         p = torch.cat(p,dim=1) #.repeat_interleave(len(p))
@@ -61,3 +67,4 @@ class GPCorrector(nn.Module):
         y = self.layers(y)
         y = self.mapping(y)
         return y
+

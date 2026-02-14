@@ -66,9 +66,9 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/epoch=51-val_loss=0.05.ckpt'
-        models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
-        models.require_grad(self.model.layers.encoder, requires_grad=False)
+        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/___last.ckpt'
+        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        # models.require_grad(self.model.layers.encoder, requires_grad=False)
         # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)
         # models.require_grad(self.model.layers.corrector, requires_grad=False)
 
@@ -115,7 +115,7 @@ class GGPDPipeline(L.LightningModule):
         gpd_loss = sum([self.ggpd_loss(z, mi, Si) for mi, Si in zip(m,S)]) / len(m)
         mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
-        loss = mae_loss # gpd_loss
+        loss = gpd_loss + mae_loss 
 
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('gpd', gpd_loss, prog_bar=True, logger=True)
@@ -134,7 +134,7 @@ class GGPDPipeline(L.LightningModule):
         gpd_loss = sum([self.ggpd_loss(z, mi, Si) for mi, Si in zip(m,S)]) / len(m)
         mae_loss = self.mae_loss(y, target)
         psnr_loss = self.psnr_metric(y, target)
-        loss = mae_loss # + gpd_loss
+        loss = mae_loss 
 
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_gpd', gpd_loss, prog_bar=True, logger=True)
@@ -146,25 +146,15 @@ class GGPDPipeline(L.LightningModule):
     def test_step(self, batch, batch_idx):
         src, target = batch
 
-        y, x_, y_, m, S = self(src, target)
-
-        d = torch.linalg.norm(x_-src,dim=1).unsqueeze(1)
-        d = torch.mean(d**2)
+        y, m, S = self(src, target)
 
         z = torch.cat([src, target], dim=1)
-        _x_ = torch.cat([x_, target], dim=1)
-        _y_ = torch.cat([src, y_], dim=1)
-        x__ = F.normalize(_x_ - m, dim=1)
-        y__ = F.normalize(_y_ - m, dim=1)
-        a = torch.mean(torch.sum(x__ * y__, dim=1))
 
-        gpd_loss = self.ggpd_loss(z, m, S)
-        mae_loss = self.mae_loss(y_, target)
-        psnr_loss = self.psnr_metric(y_, target)
-        loss = mae_loss #gpd_loss + a
+        gpd_loss = sum([self.ggpd_loss(z, mi, Si) for mi, Si in zip(m,S)]) / len(m)
+        mae_loss = self.mae_loss(y, target)
+        psnr_loss = self.psnr_metric(y, target)
+        loss = mae_loss # + gpd_loss
 
-        self.log('test_norm', d, prog_bar=True, logger=True)
-        self.log('test_angle', a, prog_bar=True, logger=True)
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('test_mae', mae_loss, prog_bar=True, logger=True)
         self.log('test_gpd', gpd_loss, prog_bar=True, logger=True)

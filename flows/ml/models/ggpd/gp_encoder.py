@@ -74,15 +74,16 @@ class GPEncoder(nn.Module):
         _m = []
         _S =[]
         _p = []
+        _d = []
 
         for layer in self.layers:
-            m,S,R,D = layer(x)
+            m,S,R,D, s = layer(x)
             S = S.permute(0,3,4,1,2)
             y = self.get_my_by_x(x,m,R,D)
             z = torch.cat([x,y], dim=1)
-            q = self.g(m, m, S)
-            w = self.g(z, m, S) #/ self.g(m, m, S)
-            p = 2 * (q / (w + q) - 0.5)
+            p = self.g(z, m, S) #/ self.g(m, m, S)
+            # p = p / q
+            # p = 2 * (q / (w + q) - 0.5)
             # y_sum += m[:,3:] * p
             # p_sum += p
             _y.append(y)
