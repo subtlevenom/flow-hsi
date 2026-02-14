@@ -70,6 +70,7 @@ class GPEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor, tgt: torch.Tensor):
 
+        _x = []
         _y = []
         _m = []
         _S =[]
@@ -77,19 +78,23 @@ class GPEncoder(nn.Module):
         _d = []
 
         for layer in self.layers:
-            m,S,R,D, s = layer(x)
+            xx,m,S,R,D = layer(x)
             S = S.permute(0,3,4,1,2)
-            y = self.get_my_by_x(x,m,R,D)
-            z = torch.cat([x,y], dim=1)
-            p = self.g(z, m, S) #/ self.g(m, m, S)
-            # p = p / q
+            yy = self.get_my_by_x(xx,m,R,D)
+            z = torch.cat([xx,yy], dim=1)
+            p = self.g(z, m, S)
+            y0 = self.get_my_by_x(x,m,R,D)
+            z = torch.cat([x,y0], dim=1)
+            q = self.g(z, m, S)
+            # p = q / p
             # p = 2 * (q / (w + q) - 0.5)
             # y_sum += m[:,3:] * p
             # p_sum += p
-            _y.append(y)
+            _x.append(xx)
+            _y.append(yy)
             _m.append(m)
             _S.append(S)
             _p.append(p)
         # y = y_sum / p_sum
 
-        return _y, _m, _S, _p
+        return _x, _y, _m, _S, _p
