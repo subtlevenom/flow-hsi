@@ -3,7 +3,7 @@ from typing import List
 import numpy as np
 import torch
 import torch.nn.functional as F
-from .gaussian import Gaussian
+from .multivariate_normal import MultivariateNormal
 
 
 class GPDGaussian(ABC, torch.nn.Module):
@@ -30,7 +30,7 @@ class GPDGaussian(ABC, torch.nn.Module):
         self.smax = 1. / self.smin
 
         self.encoder = self.create_encoder(
-            x_channels, x_channels + m_channels + s_channels + a_channels)
+            x_channels, m_channels + s_channels + a_channels)
 
     @abstractmethod
     def create_encoder(self, in_channels: int, out_channels: int, **kwargs):
@@ -59,30 +59,28 @@ class GPDGaussian(ABC, torch.nn.Module):
                 R = rij if c == 0 else torch.matmul(R, rij)
                 c += 1
 
-        # C
+        # R
         RT = R.permute(0, 1, 2, 4, 3)
         # D
-        D = torch.zeros((B, H, W, C, C), dtype=a.dtype, device=a.device)
-        D[:, :, :] = torch.eye(C)
-        D = D * s.unsqueeze(2).permute(0, 3, 4, 1, 2)
+        D = torch.diag_embed(s.permute(0, 2, 3, 1))
         # RT*D*R
         S = torch.matmul(RT, D)
         S = torch.matmul(S, R)
 
         return S, R, D
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> MultivariateNormal:
         w = self.encoder(x)
 
-        x = w[:, :self.x_channels]
-        m = w[:, self.x_channels:self.x_channels + self.m_channels]
-        s = w[:, self.x_channels + self.m_channels:self.x_channels +
-              self.m_channels + self.s_channels]
+        m = w[:, :self.m_channels].permute(0,2,3,1)
+
+        s = w[:, self.m_channels:self.m_channels + self.s_channels]
         s = F.sigmoid(s)
         s = self.smin * (1 - s) + self.smax * s
-        a = w[:, self.x_channels + self.m_channels + self.s_channels:]
+
+        a = w[:, self.m_channels + self.s_channels:]
         a = torch.pi * F.tanh(a)
 
-        S, R, D = self.covariance_matrix(s, a)
+        S, _, _ = self.covariance_matrix(s, a)
 
-        return x, m, S, R, D
+        return MultivariateNormal(mean=m, covariance_matrix=S)

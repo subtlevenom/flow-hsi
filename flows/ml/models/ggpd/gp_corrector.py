@@ -53,8 +53,8 @@ class GPCorrector(nn.Module):
             bias=False,
         )
 
-    def forward(self, x: torch.Tensor, m: torch.Tensor, p: torch.Tensor):
-        m = sum([_m[:,3:]*_p for _m,_p in zip(m,p)])
+    def forward(self, y: torch.Tensor, m: torch.Tensor, p: torch.Tensor):
+        m = sum([_y*_p for _y,_p in zip(y,p)])
         p = torch.cat(p,dim=1) #.repeat_interleave(len(p))
         p = torch.sum(p,dim=1,keepdim=True)        
         m = m / p

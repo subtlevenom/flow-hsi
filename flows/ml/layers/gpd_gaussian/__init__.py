@@ -1,2 +1,2 @@
 from .gpd_gaussian import GPDGaussian
-from .gaussian import Gaussian
+from .multivariate_normal import MultivariateNormal
