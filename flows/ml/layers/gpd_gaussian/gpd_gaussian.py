@@ -26,7 +26,7 @@ class GPDGaussian(ABC, torch.nn.Module):
         self.s_channels = s_channels
         self.a_channels = a_channels
 
-        self.smin = 1e-2
+        self.smin = 1e-3
         self.smax = 1. / self.smin
 
         self.encoder = self.create_encoder(
@@ -60,12 +60,11 @@ class GPDGaussian(ABC, torch.nn.Module):
                 c += 1
 
         # R
-        RT = R.permute(0, 1, 2, 4, 3)
+        RT = R.transpose(3,4)
         # D
         D = torch.diag_embed(s.permute(0, 2, 3, 1))
         # RT*D*R
-        S = torch.matmul(RT, D)
-        S = torch.matmul(S, R)
+        S = RT @ D @ R
 
         return S, R, D
 

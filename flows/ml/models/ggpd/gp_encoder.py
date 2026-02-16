@@ -34,23 +34,23 @@ class GPEncoder(nn.Module):
 
         x_ = []
         y_ = []
-        m_ = []
         p_ = []
+        g_ = []
 
         for x_layer, g_layer in zip(self.x_layers, self.g_layers):
             _x = x_layer(x)
-            g = g_layer(_x)
             # x,y
-            m = g.mean
+            gxy:MultivariateNormal = g_layer(x)
             # y|x
-            gy_x = g.conditional_distribution(_x)
+            gy_x:MultivariateNormal = gxy.conditional_distribution(_x)
+            # p(y|x)
             y_x = gy_x.mean
             z = torch.cat([_x,y_x], dim=1)
-            p = g.prob(z)
+            p = gxy.log_prob(z)
 
             x_.append(_x)
             y_.append(y_x)
-            m_.append(m)
             p_.append(p.unsqueeze(1))
+            g_.append(gxy)
 
-        return x_, y_, m_, p_
+        return x_, y_, p_, g_
