@@ -82,4 +82,4 @@ class GPDGaussian(ABC, torch.nn.Module):
 
         S, _, _ = self.covariance_matrix(s, a)
 
-        return MultivariateNormal(mean=m, covariance_matrix=S), s
+        return MultivariateNormal(mean=m, covariance_matrix=S)
