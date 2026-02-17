@@ -26,6 +26,7 @@ class GPCorrector(nn.Module):
         dim = in_channels
         dim_stage = dim
 
+        """
         self.layers = nn.Sequential()
         for stage_num_blocks in num_blocks:
             self.layers.append(
@@ -54,6 +55,7 @@ class GPCorrector(nn.Module):
             padding=1,
             bias=False,
         )
+        """
 
     def forward(self, y: List[torch.Tensor], log_p: List[torch.Tensor], g: List[MultivariateNormal] ):
         C = y[0].shape[1]

@@ -36,11 +36,12 @@ class GPEncoder(nn.Module):
         y_ = []
         p_ = []
         g_ = []
+        ss = []
 
         for x_layer, g_layer in zip(self.x_layers, self.g_layers):
             _x = x_layer(x)
             # x,y
-            gxy:MultivariateNormal = g_layer(x)
+            gxy,s = g_layer(x)
             # y|x
             gy_x:MultivariateNormal = gxy.conditional_distribution(_x)
             # p(y|x)
@@ -52,5 +53,6 @@ class GPEncoder(nn.Module):
             y_.append(y_x)
             p_.append(p.unsqueeze(1))
             g_.append(gxy)
+            ss.append(s[0,:,20,20])
 
         return x_, y_, p_, g_

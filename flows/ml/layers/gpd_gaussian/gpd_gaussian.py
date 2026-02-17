@@ -27,7 +27,7 @@ class GPDGaussian(ABC, torch.nn.Module):
         self.a_channels = a_channels
 
         self.smin = 1e-3
-        self.smax = 1. / self.smin
+        self.smax = 1e+3
 
         self.encoder = self.create_encoder(
             x_channels, m_channels + s_channels + a_channels)
@@ -82,4 +82,4 @@ class GPDGaussian(ABC, torch.nn.Module):
 
         S, _, _ = self.covariance_matrix(s, a)
 
-        return MultivariateNormal(mean=m, covariance_matrix=S)
+        return MultivariateNormal(mean=m, covariance_matrix=S), s

@@ -68,8 +68,10 @@ class GGPDPipeline(L.LightningModule):
                         nn.init.constant_(m.bias, 0)
 
         # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
-        # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
-        # models.require_grad(self.model.layers.encoder, requires_grad=False)
+        # models.load_model(self.model.layers.encoder.x_layers[0], 'model.layers.encoder.x_layers.0', MODEL_PATH)
+        # models.load_model(self.model.layers.encoder.g_layers[0], 'model.layers.encoder.g_layers.0', MODEL_PATH)
+        # models.require_grad(self.model.layers.encoder.x_layers[0], requires_grad=False)
+        # models.require_grad(self.model.layers.encoder.g_layers[0], requires_grad=False)
         # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)
         # models.require_grad(self.model.layers.corrector, requires_grad=False)
 
