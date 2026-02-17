@@ -106,23 +106,24 @@ class GGPDPipeline(L.LightningModule):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
-        return pred['y'], pred['_x'], pred['_g']
+        return pred['y'], pred['_y'], pred['_x'], pred['_g']
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y, x_, g_ = self(src, tgt)
+        y, y_, x_, g_ = self(src, tgt)
 
-        log_p = sum([g.log_prob(torch.cat([x, tgt], dim=1)) for g, x in zip(g_, x_)])/len(x_)
-
-        kl_loss = -torch.mean(log_p)
+        z = torch.cat([src, tgt], dim=1)
+        kl_loss = sum([self.kl_loss(torch.cat([_x, _y], dim=1), z) for _x, _y in zip(x_, y_)])/len(x_)
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
+        de_loss = self.de_metric(y, tgt)
         loss = kl_loss + mae_loss
 
         self.log('kl', kl_loss, prog_bar=True, logger=True)
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
+        self.log('de', de_loss, prog_bar=True, logger=True)
         self.log('train_loss', loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
@@ -130,18 +131,19 @@ class GGPDPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y, x_, g_ = self(src, tgt)
+        y, y_, x_, g_ = self(src, tgt)
 
-        log_p = sum([g.log_prob(torch.cat([x, tgt], dim=1)) for g, x in zip(g_, x_)])/len(x_)
-
-        kl_loss = -torch.mean(log_p)
+        z = torch.cat([src, tgt], dim=1)
+        kl_loss = sum([self.kl_loss(torch.cat([_x, _y], dim=1), z) for _x, _y in zip(x_, y_)])/len(x_)
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
-        loss = mae_loss
+        de_loss = self.de_metric(y, tgt)
+        loss = de_loss
 
         self.log('val_kl', kl_loss, prog_bar=True, logger=True)
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
+        self.log('val_de', de_loss, prog_bar=True, logger=True)
         self.log('val_loss', loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
@@ -149,18 +151,19 @@ class GGPDPipeline(L.LightningModule):
     def test_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y, x_, g_ = self(src, tgt)
+        y, y_, x_, g_ = self(src, tgt)
 
-        log_p = sum([g.log_prob(torch.cat([x, tgt], dim=1)) for g, x in zip(g_, x_)])/len(x_)
-
-        kl_loss = -torch.mean(log_p)
+        z = torch.cat([src, tgt], dim=1)
+        kl_loss = sum([self.kl_loss(torch.cat([_x, _y], dim=1), z) for _x, _y in zip(x_, y_)])/len(x_)
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
-        loss = mae_loss
+        de_loss = self.de_metric(y, tgt)
+        loss = de_loss
 
         self.log('test_kl', kl_loss, prog_bar=True, logger=True)
         self.log('test_mae', mae_loss, prog_bar=True, logger=True)
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
+        self.log('test_de', de_loss, prog_bar=True, logger=True)
         self.log('test_loss', loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
