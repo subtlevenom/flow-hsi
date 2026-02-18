@@ -26,8 +26,8 @@ class GPDGaussian(ABC, torch.nn.Module):
         self.s_channels = s_channels
         self.a_channels = a_channels
 
-        self.smin = 1e-3
-        self.smax = 1e+3
+        self.smin = 1e-4
+        self.smax = 1e+2
 
         self.encoder = self.create_encoder(
             x_channels, m_channels + s_channels + a_channels)
@@ -73,11 +73,10 @@ class GPDGaussian(ABC, torch.nn.Module):
 
         m = w[:, :self.m_channels].permute(0,2,3,1)
 
-        s = w[:, self.m_channels:self.m_channels + self.s_channels]
-        s = F.sigmoid(s)
+        s = F.sigmoid(w[:, self.m_channels:self.m_channels + self.s_channels])
         s = self.smin * (1 - s) + self.smax * s
 
-        a = w[:, self.m_channels + self.s_channels:]
+        a = F.tanh(w[:, self.m_channels + self.s_channels:])
         a = torch.pi * F.tanh(a)
 
         S, _, _ = self.covariance_matrix(s, a)

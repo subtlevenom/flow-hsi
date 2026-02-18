@@ -50,7 +50,7 @@ class GPEncoder(nn.Module):
 
             x_.append(_x)
             y_.append(y_x)
-            p_.append(p.unsqueeze(1))
+            p_.append(p)
             g_.append(gxy)
 
         return x_, y_, p_, g_

@@ -60,7 +60,7 @@ class GPCorrector(nn.Module):
     def forward(self, y: List[torch.Tensor], log_p: List[torch.Tensor], g: List[MultivariateNormal] ):
         C = y[0].shape[1]
 
-        log_q = [_g.log_prob(_g.mean).unsqueeze(1) for _g in g]
+        log_q = [_g.log_prob(_g.mean) for _g in g]
         p = torch.cat(log_p, dim=1)
         q = torch.cat(log_q, dim=1)
         w = torch.stack([p, q], dim=0)

@@ -35,7 +35,7 @@ class GGPDPipeline(L.LightningModule):
         self.mae_loss = nn.L1Loss(reduction='mean')
         self.de_metric = DeltaE()
         self.sam_metric = SAM()
-        self.kl_loss = nn.KLDivLoss()
+        self.kl_loss = nn.KLDivLoss(reduction='mean')
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.psnr_metric = PSNR(data_range=(0, 1))
 
@@ -114,7 +114,15 @@ class GGPDPipeline(L.LightningModule):
         y, y_, x_, g_ = self(src, tgt)
 
         z = torch.cat([src, tgt], dim=1)
-        kl_loss = sum([self.kl_loss(torch.cat([_x, _y], dim=1), z) for _x, _y in zip(x_, y_)])/len(x_)
+
+        kl_loss = torch.cat(
+            [
+                _g.log_prob(torch.cat([_x, tgt], dim=1))
+                for _g, _x in zip(g_, x_)
+            ],
+            dim=1,
+        )
+        kl_loss = -torch.mean(kl_loss)
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         de_loss = self.de_metric(y, tgt)
@@ -134,11 +142,19 @@ class GGPDPipeline(L.LightningModule):
         y, y_, x_, g_ = self(src, tgt)
 
         z = torch.cat([src, tgt], dim=1)
-        kl_loss = sum([self.kl_loss(torch.cat([_x, _y], dim=1), z) for _x, _y in zip(x_, y_)])/len(x_)
+
+        kl_loss = torch.cat(
+            [
+                _g.log_prob(torch.cat([_x, tgt], dim=1))
+                for _g, _x in zip(g_, x_)
+            ],
+            dim=1,
+        )
+        kl_loss = -torch.mean(kl_loss)
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         de_loss = self.de_metric(y, tgt)
-        loss = de_loss
+        loss = mae_loss
 
         self.log('val_kl', kl_loss, prog_bar=True, logger=True)
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
@@ -154,11 +170,19 @@ class GGPDPipeline(L.LightningModule):
         y, y_, x_, g_ = self(src, tgt)
 
         z = torch.cat([src, tgt], dim=1)
-        kl_loss = sum([self.kl_loss(torch.cat([_x, _y], dim=1), z) for _x, _y in zip(x_, y_)])/len(x_)
+
+        kl_loss = torch.cat(
+            [
+                _g.log_prob(torch.cat([_x, tgt], dim=1))
+                for _g, _x in zip(g_, x_)
+            ],
+            dim=1,
+        )
+        kl_loss = -torch.mean(kl_loss)
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         de_loss = self.de_metric(y, tgt)
-        loss = de_loss
+        loss = mae_loss
 
         self.log('test_kl', kl_loss, prog_bar=True, logger=True)
         self.log('test_mae', mae_loss, prog_bar=True, logger=True)

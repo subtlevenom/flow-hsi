@@ -36,7 +36,7 @@ class MultivariateNormal(Normal):
         return super().mean.permute(0,3,1,2)
 
     def log_prob(self, x:torch.Tensor) -> torch.Tensor:
-        return super().log_prob(x.permute(0,2,3,1))
+        return super().log_prob(x.permute(0,2,3,1)).unsqueeze(1)
 
     def prob(self, x:torch.Tensor) -> torch.Tensor:
-        return torch.exp(super().log_prob(x.permute(0,2,3,1)))
+        return torch.exp(super().log_prob(x.permute(0,2,3,1))).unsqueeze(1)
