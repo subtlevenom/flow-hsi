@@ -57,38 +57,17 @@ class GPCorrector(nn.Module):
         )
         """
 
-    def forward(self, y: List[torch.Tensor], log_p: List[torch.Tensor], g: List[MultivariateNormal] ):
-        C = y[0].shape[1]
+    def forward(self, x: List[torch.Tensor], p: List[torch.Tensor], g: List[MultivariateNormal] ):
+        C = x[0].shape[1]
 
-        """
-        log_q = [_g.log_prob(_g.mean) for _g in g]
-        p = torch.cat(log_p, dim=1)
-        q = torch.cat(log_q, dim=1)
-        w = torch.stack([p, q], dim=0)
-        w = torch.softmax(w,dim=0)
-        p0 = w[0]
-        q0 = w[1]
-
-        p = torch.repeat_interleave(p0, C, dim=1)
-        q = torch.repeat_interleave(q0, C, dim=1)
-
-        y = torch.cat(y,dim=1)
-        m = torch.cat([_g.mean[:,3:] for _g in g], dim=1)
-        y = y * p + m * q
-
-        p = torch.softmax(2 * q0 / (p0 + q0) - 1,dim=1)
-        p = torch.repeat_interleave(p, C, dim=1)
-        y = y * p
-        """
-
-        p = torch.cat(log_p, dim=1)
+        p = torch.cat(p, dim=1)
         p = torch.softmax(p,dim=1)
         p = torch.repeat_interleave(p, C, dim=1)
 
-        y = torch.cat(y,dim=1)
+        y = torch.cat(x,dim=1)
         y = y * p
 
-        y = rearrange(y, 'b (n c) w h -> b n c w h', n = len(log_p))
+        y = rearrange(y, 'b (n c) w h -> b n c w h', n = len(x))
         y = torch.sum(y, dim=1, keepdim=False)
 
         return y

@@ -25,30 +25,32 @@ class GPEncoder(nn.Module):
             LightCMEncoder(in_channels=in_channels, out_channels=in_channels)
             for _ in range(n_layers)
         ])
+        self.y_layers = nn.ModuleList([
+            LightCMEncoder(in_channels=in_channels, out_channels=in_channels)
+            for _ in range(n_layers)
+        ])
         self.g_layers = nn.ModuleList([
             GPGaussian(x_channels=in_channels, y_channels=out_channels)
             for _ in range(n_layers)
         ])
 
-    def forward(self, x: torch.Tensor, tgt: torch.Tensor):
+    def forward(self, src: torch.Tensor, tgt: torch.Tensor):
 
         x_ = []
-        y_ = []
         p_ = []
         g_ = []
 
-        for x_layer, g_layer in zip(self.x_layers, self.g_layers):
-            _x = x_layer(x)
+        for x_layer, y_layer, g_layer in zip(self.x_layers, self.y_layers, self.g_layers):
+            _x = x_layer(src)
+            _y = y_layer(src)
             # x,y
-            gxy:MultivariateNormal = g_layer(x)
-            # y|x
-            y_x = gxy.conditional_mean(_x)
-            z = torch.cat([_x,y_x], dim=1)
-            p = gxy.log_prob(z)
+            gxy:MultivariateNormal = g_layer(src)
 
-            x_.append(_x)
-            y_.append(y_x)
+            _z = torch.cat([_x,_y], dim=1)
+            p = gxy.log_prob(_z)
+
+            x_.append(_z)
             p_.append(p)
             g_.append(gxy)
 
-        return x_, y_, p_, g_
+        return x_, p_, g_
