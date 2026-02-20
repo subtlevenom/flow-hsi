@@ -1,5 +1,7 @@
 import os
+import random
 import statistics
+from einops import rearrange
 import torch
 from torch import nn
 import lightning as L
@@ -113,20 +115,26 @@ class GGPDPipeline(L.LightningModule):
 
         y, y_, x_, g_ = self(src, tgt)
 
-        z = torch.cat([src, tgt], dim=1)
 
-        kl_loss = torch.cat(
+        p = torch.cat(
             [
                 _g.log_prob(torch.cat([_x, tgt], dim=1))
                 for _g, _x in zip(g_, x_)
             ],
             dim=1,
         )
-        kl_loss = -torch.mean(kl_loss)
+        p = torch.softmax(p,dim=1)
+        p = torch.repeat_interleave(p, y.shape[1], dim=1)
+        y_ = torch.cat(y_,dim=1)
+        kl = y_ * p
+        kl = rearrange(kl, 'b (n c) w h -> b n c w h', n = len(g_))
+        kl = torch.sum(kl, dim=1, keepdim=False)
+
+        kl_loss = self.mae_loss(kl, tgt)
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         de_loss = self.de_metric(y, tgt)
-        loss = kl_loss + mae_loss
+        loss = mae_loss
 
         self.log('kl', kl_loss, prog_bar=True, logger=True)
         self.log('mae', mae_loss, prog_bar=True, logger=True)

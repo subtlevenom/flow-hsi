@@ -42,9 +42,7 @@ class GPEncoder(nn.Module):
             # x,y
             gxy:MultivariateNormal = g_layer(x)
             # y|x
-            gy_x:MultivariateNormal = gxy.conditional_distribution(_x)
-            # p(y|x)
-            y_x = gy_x.mean
+            y_x = gxy.conditional_mean(_x)
             z = torch.cat([_x,y_x], dim=1)
             p = gxy.log_prob(z)
 

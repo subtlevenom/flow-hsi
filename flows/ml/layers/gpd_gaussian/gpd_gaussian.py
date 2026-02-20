@@ -3,6 +3,7 @@ from typing import List
 import numpy as np
 import torch
 import torch.nn.functional as F
+import einops
 from .multivariate_normal import MultivariateNormal
 
 
@@ -26,8 +27,8 @@ class GPDGaussian(ABC, torch.nn.Module):
         self.s_channels = s_channels
         self.a_channels = a_channels
 
-        self.smin = 1e-4
-        self.smax = 1e+2
+        self.smin = 1e-3
+        self.smax = 1e+3
 
         self.encoder = self.create_encoder(
             x_channels, m_channels + s_channels + a_channels)
@@ -59,12 +60,13 @@ class GPDGaussian(ABC, torch.nn.Module):
                 R = rij if c == 0 else torch.matmul(R, rij)
                 c += 1
 
-        # R
-        RT = R.transpose(3,4)
         # D
         D = torch.diag_embed(s.permute(0, 2, 3, 1))
+        # R
+        RT = R.transpose(3,4)
+        Q = torch.einsum('bmnij,bmnjk -> bmnik', RT, D)
         # RT*D*R
-        S = RT @ D @ R
+        S = torch.einsum('bmnij,bmnjk -> bmnik', Q, R)
 
         return S, R, D
 
@@ -76,9 +78,9 @@ class GPDGaussian(ABC, torch.nn.Module):
         s = F.sigmoid(w[:, self.m_channels:self.m_channels + self.s_channels])
         s = self.smin * (1 - s) + self.smax * s
 
-        a = F.tanh(w[:, self.m_channels + self.s_channels:])
-        a = torch.pi * F.tanh(a)
+        a = torch.pi * F.tanh(w[:, self.m_channels + self.s_channels:])
 
         S, _, _ = self.covariance_matrix(s, a)
+        S = 0.5 * (S + S.transpose(3,4))
 
         return MultivariateNormal(mean=m, covariance_matrix=S)

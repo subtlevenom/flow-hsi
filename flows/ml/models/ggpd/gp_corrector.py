@@ -60,6 +60,7 @@ class GPCorrector(nn.Module):
     def forward(self, y: List[torch.Tensor], log_p: List[torch.Tensor], g: List[MultivariateNormal] ):
         C = y[0].shape[1]
 
+        """
         log_q = [_g.log_prob(_g.mean) for _g in g]
         p = torch.cat(log_p, dim=1)
         q = torch.cat(log_q, dim=1)
@@ -78,8 +79,17 @@ class GPCorrector(nn.Module):
         p = torch.softmax(2 * q0 / (p0 + q0) - 1,dim=1)
         p = torch.repeat_interleave(p, C, dim=1)
         y = y * p
+        """
+
+        p = torch.cat(log_p, dim=1)
+        p = torch.softmax(p,dim=1)
+        p = torch.repeat_interleave(p, C, dim=1)
+
+        y = torch.cat(y,dim=1)
+        y = y * p
 
         y = rearrange(y, 'b (n c) w h -> b n c w h', n = len(log_p))
         y = torch.sum(y, dim=1, keepdim=False)
+
         return y
 

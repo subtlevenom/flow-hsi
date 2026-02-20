@@ -55,7 +55,7 @@ def train_default(config: DictConfig) -> None:
             RichProgressBar(),
             LearningRateMonitor(logging_interval='epoch', ),
             GenerateCallback(every_n_epochs=1, ),
-            #StochasticWeightAveraging(swa_lrs=config.pipeline.params.lr * 10.)
+            StochasticWeightAveraging(swa_lrs=config.pipeline.params.lr * 10.)
         ],
     )
 
