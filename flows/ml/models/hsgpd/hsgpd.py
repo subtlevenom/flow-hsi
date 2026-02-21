@@ -7,10 +7,11 @@ from flows.ml.layers.encoders.sg_encoder import FFN, LayerNorm
 from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.mst import MSAB
 from flows.ml.layers.sep_gpd import MultivariateNormal
-from ..cmkan import CmKAN
+from flows.ml.models.cmkan import CmKAN
+from flows.ml.models.ggpd import GGPD
 
 
-class HSKan(nn.Module):
+class HSGPD(nn.Module):
 
     def __init__(
         self,
@@ -22,7 +23,7 @@ class HSKan(nn.Module):
         grid_range: List[float] = [0, 1],
         **kwargs,
     ):
-        super(HSKan, self).__init__()
+        super(HSGPD, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -36,22 +37,23 @@ class HSKan(nn.Module):
             grid_range=grid_range,
         )
 
-        self.distorter = LightCMEncoder(in_channels, out_channels)
-        self.corrector = LightCMEncoder(in_channels, out_channels)
+        self.n = 9
+        self.distorter = LightCMEncoder(in_channels, self.n * out_channels)
+        self.corrector = LightCMEncoder(self.n * in_channels, out_channels)
 
 
-    def forward(self, x: List[torch.Tensor], p: List[torch.Tensor], g: List[MultivariateNormal] ):
-        C = x[0].shape[1]
+    def forward(self, x: torch.Tensor):
+        
+        dx = self.distorter(x)
 
-        p = torch.cat(p, dim=1)
-        p = torch.softmax(p,dim=1)
-        p = torch.repeat_interleave(p, C, dim=1)
+        x0 = x.repeat(self.n, dim=1)
+        xd = x0 + dx
 
-        y = torch.cat(x,dim=1)
-        y = y * p
+        xd = rearrange(xd, 'b (n c) h w -> (b n) c h w', n = self.n)
+        xd = self.cmkan(xd)
+        xd = rearrange(xd, '(b n) c h w -> b (n c) h w', n = self.n)
 
-        y = rearrange(y, 'b (n c) w h -> b n c w h', n = len(x))
-        y = torch.sum(y, dim=1, keepdim=False)
+        y = self.corrector(xd)
 
         return y
 
