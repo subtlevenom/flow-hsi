@@ -1,1 +1,1 @@
-from .cm_kan import CmKAN, LightCmKAN
+from .cmkan import CmKAN, LightCmKAN

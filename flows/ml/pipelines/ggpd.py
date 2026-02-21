@@ -14,7 +14,7 @@ from flows.core import Logger
 from flows.ml.models.ggpd import GPDFLoss
 from ..models import Flow
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
-from flows.ml.layers.gpd_gaussian import MultivariateNormal
+from flows.ml.layers.sep_gpd import MultivariateNormal
 
 
 class GGPDPipeline(L.LightningModule):
@@ -37,7 +37,7 @@ class GGPDPipeline(L.LightningModule):
         self.mae_loss = nn.L1Loss(reduction='mean')
         self.de_metric = DeltaE()
         self.sam_metric = SAM()
-        self.kl_loss = nn.KLDivLoss(reduction='mean', log_target=True)
+        self.kl_loss = nn.KLDivLoss(reduction='batchmean', log_target=True)
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.psnr_metric = PSNR(data_range=(0, 1))
 
@@ -69,9 +69,10 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
-        # models.load_model(self.model.layers.encoder.x_layers[0], 'model.layers.encoder.x_layers.0', MODEL_PATH)
-        # models.load_model(self.model.layers.encoder.g_layers[0], 'model.layers.encoder.g_layers.0', MODEL_PATH)
+        MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_epoch=19-val_loss=0.05.ckpt'
+        models.load_model(self.model.layers.encoder.gpd.layers, 'model.layers.encoder.g_layers', MODEL_PATH)
+        models.load_model(self.model.layers.encoder.x_layers, 'model.layers.encoder.x_layers', MODEL_PATH)
+        models.load_model(self.model.layers.encoder.y_layers, 'model.layers.encoder.y_layers', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder.x_layers[0], requires_grad=False)
         # models.require_grad(self.model.layers.encoder.g_layers[0], requires_grad=False)
         # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)

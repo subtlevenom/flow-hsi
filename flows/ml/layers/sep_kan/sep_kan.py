@@ -43,3 +43,7 @@ class SepKAN(ABC, torch.nn.Module):
         w = self.encoder(x)
         x = self.sep_kan_layer(x,w)
         return x
+
+    def predictor(self, x):
+        w = self.encoder(x)
+        return lambda y: self.sep_kan_layer(y, w)

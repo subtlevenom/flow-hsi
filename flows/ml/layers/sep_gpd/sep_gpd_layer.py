@@ -7,31 +7,33 @@ import einops
 from .multivariate_normal import MultivariateNormal
 
 
-class GPDGaussian(ABC, torch.nn.Module):
+class SepGPDLayer(ABC, torch.nn.Module):
 
     def __init__(
         self,
-        x_channels: int,
-        y_channels: int,
+        in_channels: int,
+        out_channels: int,
+        s_range: List[float] = [1e-3, 1e+3],
     ):
-        super(GPDGaussian, self).__init__()
+        super(SepGPDLayer, self).__init__()
 
-        self.x_channels = x_channels
-        self.y_channels = y_channels
+        self.in_channels = in_channels
+        self.out_channels = out_channels
 
-        m_channels = x_channels + y_channels
-        s_channels = x_channels + y_channels
+        m_channels = out_channels
+        s_channels = out_channels
         a_channels = s_channels * (s_channels - 1) // 2
 
         self.m_channels = m_channels
         self.s_channels = s_channels
         self.a_channels = a_channels
 
-        self.smin = 1e-3
-        self.smax = 1e+3
+        s_range = s_range or [1e-3, 1e+3]
+        self.smin = s_range[0]
+        self.smax = s_range[1]
 
         self.encoder = self.create_encoder(
-            x_channels, m_channels + s_channels + a_channels)
+            in_channels, m_channels + s_channels + a_channels)
 
     @abstractmethod
     def create_encoder(self, in_channels: int, out_channels: int, **kwargs):
@@ -63,7 +65,7 @@ class GPDGaussian(ABC, torch.nn.Module):
         # D
         D = torch.diag_embed(s.permute(0, 2, 3, 1))
         # R
-        RT = R.transpose(3,4)
+        RT = R.transpose(3, 4)
         Q = torch.einsum('bmnij,bmnjk -> bmnik', RT, D)
         # RT*D*R
         S = torch.einsum('bmnij,bmnjk -> bmnik', Q, R)
@@ -73,14 +75,12 @@ class GPDGaussian(ABC, torch.nn.Module):
     def forward(self, x: torch.Tensor) -> MultivariateNormal:
         w = self.encoder(x)
 
-        m = w[:, :self.m_channels].permute(0,2,3,1)
-
+        m = w[:, :self.m_channels].permute(0, 2, 3, 1)
         s = F.sigmoid(w[:, self.m_channels:self.m_channels + self.s_channels])
         s = self.smin * (1 - s) + self.smax * s
-
         a = torch.pi * F.tanh(w[:, self.m_channels + self.s_channels:])
 
         S, _, _ = self.covariance_matrix(s, a)
-        S = 0.5 * (S + S.transpose(3,4))
+        S = 0.5 * (S + S.transpose(3, 4))  # to minimize rounding errors
 
         return MultivariateNormal(mean=m, covariance_matrix=S)

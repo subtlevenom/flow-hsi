@@ -2,8 +2,8 @@ import sys, pkgutil, importlib, inspect
 from torch import nn
 import torch
 from flows.ml import layers
-from . import cmkan_original, ggpir, ggpd
 from .flow import Flow
+from . import cmkan_original, ggpir, ggpd, hsgpd
 
 
 def create_layer(name: str, params) -> nn.Module:
