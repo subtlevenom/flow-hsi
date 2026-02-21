@@ -8,7 +8,7 @@ import torchvision
 import time
 from tools.utils import models
 from flows.core import Logger
-from flows.ml.models.ggpd import GPDFLoss
+from flows.ml.losses.gpdf_loss import GPDFLoss
 from ..models import Flow
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 
@@ -64,9 +64,9 @@ class CmKANPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        MODEL_PATH = '.experiments/cmkan.huawei/logs/checkpoints/volga2k_supervised.ckpt'
-        models.load_model(self.model.layers.cmkan, 'model', MODEL_PATH)
-        # models.require_grad(self.model.layers.cmkan, requires_grad=False)
+        # MODEL_PATH = '.experiments/cmkan.huawei/logs/checkpoints/volga2k_supervised.ckpt'
+        # models.load_model(self.model.layers.encoder.cmkan, 'model', MODEL_PATH)
+        models.require_grad(self.model.layers.encoder.cmkan, requires_grad=False)
 
         Logger.info('Initialized model weights with isp pipeline.')
 

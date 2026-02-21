@@ -1,1 +1,1 @@
-from .hsgpd import HSKan
+from .hsgpd import HSGPD

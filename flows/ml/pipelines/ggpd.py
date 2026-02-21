@@ -11,7 +11,7 @@ import torchvision
 import time
 from tools.utils import models
 from flows.core import Logger
-from flows.ml.models.ggpd import GPDFLoss
+from flows.ml.losses.gpdf_loss import GPDFLoss
 from ..models import Flow
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 from flows.ml.layers.sep_gpd import MultivariateNormal
@@ -69,10 +69,10 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_epoch=19-val_loss=0.05.ckpt'
-        models.load_model(self.model.layers.encoder.gpd.layers, 'model.layers.encoder.g_layers', MODEL_PATH)
-        models.load_model(self.model.layers.encoder.x_layers, 'model.layers.encoder.x_layers', MODEL_PATH)
-        models.load_model(self.model.layers.encoder.y_layers, 'model.layers.encoder.y_layers', MODEL_PATH)
+        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_epoch=19-val_loss=0.05.ckpt'
+        # models.load_model(self.model.layers.encoder.gpd.layers, 'model.layers.encoder.g_layers', MODEL_PATH)
+        # models.load_model(self.model.layers.encoder.x_layers, 'model.layers.encoder.x_layers', MODEL_PATH)
+        # models.load_model(self.model.layers.encoder.y_layers, 'model.layers.encoder.y_layers', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder.x_layers[0], requires_grad=False)
         # models.require_grad(self.model.layers.encoder.g_layers[0], requires_grad=False)
         # models.load_model(self.model.layers.corrector, 'model.layers.corrector', MODEL_PATH)
@@ -130,7 +130,7 @@ class GGPDPipeline(L.LightningModule):
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         de_loss = self.de_metric(y, tgt)
-        loss = kl_loss + mae_loss
+        loss = mae_loss
 
         self.log('prob', prob_loss, prog_bar=True, logger=True)
         self.log('kl', kl_loss, prog_bar=True, logger=True)
