@@ -69,8 +69,13 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_epoch=19-val_loss=0.05.ckpt'
-        # models.load_model(self.model.layers.encoder.gpd.layers, 'model.layers.encoder.g_layers', MODEL_PATH)
+        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model.layers.encoder.gpd_x, 'model.layers.encoder.gpd_x', MODEL_PATH)
+        # models.load_model(self.model.layers.encoder.gpd_y, 'model.layers.encoder.gpd_y', MODEL_PATH)
+        # models.load_model(self.model.layers.encoder.dx_layer, 'model.layers.encoder.dx_layer', MODEL_PATH)
+        # models.require_grad(self.model.layers.encoder.gpd_x, requires_grad=False)
+        # models.require_grad(self.model.layers.encoder.gpd_y, requires_grad=False)
+        # models.require_grad(self.model.layers.encoder.dx_layer, requires_grad=False)
         # models.load_model(self.model.layers.encoder.x_layers, 'model.layers.encoder.x_layers', MODEL_PATH)
         # models.load_model(self.model.layers.encoder.y_layers, 'model.layers.encoder.y_layers', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder.x_layers[0], requires_grad=False)
@@ -109,30 +114,25 @@ class GGPDPipeline(L.LightningModule):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
-        return pred['y'], pred['x_'], pred['p_'], pred['g_']
+        return pred['x'], pred['px'], pred['py'], pred['gx'], pred['gy']
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y, x_, p_, g_ = self(src, tgt)
+        x, px, py, gx, gy = self(src, tgt)
 
-        z = torch.cat([src, tgt], dim=1)
+        mx = gx.mean
+        my = gy.mean
 
-        q_ = [_g.log_prob(z) for _g in g_]
+        x = my + (x - mx)
+        x = x[:,3:]
 
-        q = torch.cat(q_,dim=1)
-        p = torch.cat(p_,dim=1)
+        kl_loss = self.kl_loss(px, py) + self.kl_loss(py, px)
+        mae_loss = self.mae_loss(x, tgt)
+        psnr_loss = self.psnr_metric(x, tgt)
+        de_loss = self.de_metric(x, tgt)
+        loss = mae_loss + kl_loss
 
-        y = y[:,3:]
-
-        prob_loss = sum([self.mae_loss(_g.mean, z) for _g in g_]) / len(g_)
-        kl_loss = self.kl_loss(p, q)
-        mae_loss = self.mae_loss(y, tgt)
-        psnr_loss = self.psnr_metric(y, tgt)
-        de_loss = self.de_metric(y, tgt)
-        loss = mae_loss
-
-        self.log('prob', prob_loss, prog_bar=True, logger=True)
         self.log('kl', kl_loss, prog_bar=True, logger=True)
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
@@ -144,25 +144,20 @@ class GGPDPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y, x_, p_, g_ = self(src, tgt)
+        x, px, py, gx, gy = self(src, tgt)
 
-        z = torch.cat([src, tgt], dim=1)
+        mx = gx.mean
+        my = gy.mean
 
-        q_ = [_g.log_prob(z) for _g in g_]
+        x = my + (x - mx)
+        x = x[:,3:]
 
-        q = torch.cat(q_,dim=1)
-        p = torch.cat(p_,dim=1)
-
-        y = y[:,3:]
-
-        prob_loss = sum([self.mae_loss(_g.mean, z) for _g in g_]) / len(g_)
-        kl_loss = self.kl_loss(p, q)
-        mae_loss = self.mae_loss(y, tgt)
-        psnr_loss = self.psnr_metric(y, tgt)
-        de_loss = self.de_metric(y, tgt)
+        kl_loss = self.kl_loss(px, py) + self.kl_loss(py, px)
+        mae_loss = self.mae_loss(x, tgt)
+        psnr_loss = self.psnr_metric(x, tgt)
+        de_loss = self.de_metric(x, tgt)
         loss = mae_loss
 
-        self.log('val_prob', prob_loss, prog_bar=True, logger=True)
         self.log('val_kl', kl_loss, prog_bar=True, logger=True)
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)

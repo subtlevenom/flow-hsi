@@ -1,1 +1,1 @@
-from .cmgpd import CmGPD, LightCmGPD
+from .cmgpd import CmGPD, CmGPDLayer, LightCmGPD, LightCmGPDLayer
