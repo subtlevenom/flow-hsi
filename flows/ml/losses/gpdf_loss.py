@@ -8,6 +8,11 @@ import einops
 
 
 class GPDFLoss(Metric):
+    """
+    gpdf_loss = kl(q||p) + kl(p||q) - mx,my correlation. So we ignore (mx-my)*S^-1*(mx-my) term
+    https://mr-easy.github.io/2020-04-16-kl-divergence-between-2-gaussian-distributions/
+    https://arxiv.org/pdf/2102.05485
+    """
 
     def __init__(self):
         super(GPDFLoss, self).__init__()
@@ -35,7 +40,9 @@ class GPDFLoss(Metric):
         trace_Sq_1_Sp = torch.einsum("...ii", Sq_1_Sp)
         trace_Sp_1_Sq = torch.einsum("...ii", Sp_1_Sq)
 
-        d = 0.5 * (trace_Sq_1_Sp + trace_Sp_1_Sq)
+        n = Sq.shape[-1]
+
+        d = 0.5 * (trace_Sq_1_Sp + trace_Sp_1_Sq) - n
         loss = torch.mean(d)
 
         self.correct += loss
