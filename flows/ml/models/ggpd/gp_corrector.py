@@ -11,9 +11,43 @@ from flows.ml.layers.sep_gpd import MultivariateNormal
 
 class GPCorrector(nn.Module):
 
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels: int, out_channels: int, n_points: int):
         super(GPCorrector, self).__init__()
 
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.n_points = n_points
 
-    def forward(self, x: List[torch.Tensor], gx, gy):
-        return x
+        self.dx_layer = LightCMEncoder(
+            self.in_channels,
+            n_points * (self.in_channels + self.out_channels),
+        )
+
+    def forward(
+        self,
+        src: torch.Tensor,
+        x: torch.Tensor,
+        gx: MultivariateNormal,
+    ):
+
+        dx = self.dx_layer(src)
+        dx = rearrange(dx, 'b (n c) h w -> b n c h w', n=self.n_points)
+
+        p_ = []
+        x_ = []
+
+        for n in range(self.n_points):
+            z = x + dx[:,n]
+            p = gx.log_prob(z)
+
+            x_.append(z)
+            p_.append(p)
+        
+        p_ = torch.stack(p_, dim=1)
+        p_ = torch.softmax(p_, dim=1)
+
+        x_ = torch.stack(x_, dim=1)
+
+        x_ = torch.sum(x_ * p_, dim=1)
+
+        return x_

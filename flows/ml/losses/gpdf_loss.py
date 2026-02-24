@@ -3,6 +3,8 @@ from torch import nn
 from torchmetrics import Metric
 import torch.nn.functional as F
 import numpy as np
+from flows.ml.layers.sep_gpd import MultivariateNormal
+import einops
 
 
 class GPDFLoss(Metric):
@@ -18,19 +20,23 @@ class GPDFLoss(Metric):
 
     def update(
         self,
-        x: torch.Tensor,
-        m: torch.Tensor,
-        S: torch.Tensor,
+        q: MultivariateNormal,
+        p: MultivariateNormal,
     ) -> None:
-        x = x - m
-        xs = torch.einsum('bcij,bclij->blij', x, S)
-        xsx = torch.einsum('bcij,bcij->bij', xs, x)
+        Sq = q.covariance_matrix
+        Sp = p.covariance_matrix
 
-        s = torch.permute(S, (0, 3, 4, 1, 2))
-        s = torch.linalg.det(s)
-        s = torch.clip(s, 1e-7)
+        Sq_1 = q.precision_matrix
+        Sp_1 = p.precision_matrix
 
-        loss = torch.mean(x.shape[1] * np.log(2 * np.pi) - torch.log(s) + xsx)
+        Sq_1_Sp = torch.einsum('bhwij,bhwjk->bhwik', Sq_1, Sp)
+        Sp_1_Sq = torch.einsum('bhwij,bhwjk->bhwik', Sp_1, Sq)
+
+        trace_Sq_1_Sp = torch.einsum("...ii", Sq_1_Sp)
+        trace_Sp_1_Sq = torch.einsum("...ii", Sp_1_Sq)
+
+        d = 0.5 * (trace_Sq_1_Sp + trace_Sp_1_Sq)
+        loss = torch.mean(d)
 
         self.correct += loss
         self.total += 1

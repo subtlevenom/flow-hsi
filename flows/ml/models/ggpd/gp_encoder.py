@@ -27,11 +27,6 @@ class GPEncoder(nn.Module):
             out_channels=in_channels + out_channels,
         )
 
-        self.dx_layer = LightCMEncoder(
-            self.in_channels,
-            self.n * (self.in_channels + self.out_channels),
-        )
-
         self.gpd_x = LightCmGPDLayer(
             in_channels=in_channels,
             out_channels=in_channels + out_channels,
@@ -47,36 +42,7 @@ class GPEncoder(nn.Module):
         gx = self.gpd_x(src)
         gy = self.gpd_y(src)
 
-        y0 = torch.cat([src, tgt], dim=1)
-        x0 = self.x_layer(src)
+        x = self.x_layer(src)
+        y = torch.cat([src, tgt], dim=1)
 
-        dx = self.dx_layer(src)
-        dx = rearrange(dx, 'b (n c) h w -> b n c h w', n = self.n)
-
-        px_ = []
-        py_ = []
-        x_ = []
-        y_ = []
-        
-        for i in range(self.n):
-            yd = y0 + dx[:,i]
-            xd = x0 + dx[:, i]
-
-            py = gy.log_prob(yd)
-            px = gx.log_prob(xd)
-
-            py_.append(py)
-            px_.append(px)
-            y_.append(yd)
-            x_.append(xd)
-
-        py = torch.softmax(torch.cat(py_, dim=1), dim=1)
-        px = torch.softmax(torch.cat(px_, dim=1), dim=1)
-
-        y = torch.stack(y_, dim=1)
-        y = torch.sum(y * py.unsqueeze(2),dim=1, keepdim=False)
-
-        x = torch.stack(x_, dim=1)
-        x = torch.sum(x * px.unsqueeze(2),dim=1, keepdim=False)
-
-        return x, y, px, py, gx, gy 
+        return x, y, gx, gy 

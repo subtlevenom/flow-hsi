@@ -11,7 +11,7 @@ import torchvision
 import time
 from tools.utils import models
 from flows.core import Logger
-from flows.ml.losses.gpdf_loss import GPDFLoss
+from flows.ml.losses import GPDFLoss
 from ..models import Flow
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 from flows.ml.layers.sep_gpd import MultivariateNormal
@@ -70,7 +70,7 @@ class GGPDPipeline(L.LightningModule):
                         nn.init.constant_(m.bias, 0)
 
         # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
-        # models.load_model(self.model.layers.encoder.gpd_x, 'model.layers.encoder.gpd_x', MODEL_PATH)
+        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
         # models.load_model(self.model.layers.encoder.gpd_y, 'model.layers.encoder.gpd_y', MODEL_PATH)
         # models.load_model(self.model.layers.encoder.dx_layer, 'model.layers.encoder.dx_layer', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder.gpd_x, requires_grad=False)
@@ -114,25 +114,26 @@ class GGPDPipeline(L.LightningModule):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
-        return pred['x'], pred['px'], pred['py'], pred['gx'], pred['gy']
+        return pred['z'], pred['x'], pred['y'], pred['gx'], pred['gy']
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
 
-        x, px, py, gx, gy = self(src, tgt)
+        z, x, y, gx, gy = self(src, tgt)
 
-        mx = gx.mean
-        my = gy.mean
+        log_px = gx.log_prob(x)
+        log_py = gy.log_prob(y)
 
-        x = my + (x - mx)
-        x = x[:,3:]
+        z = (gy.mean + z - gx.mean)[:,3:]
 
-        kl_loss = self.kl_loss(px, py) + self.kl_loss(py, px)
-        mae_loss = self.mae_loss(x, tgt)
-        psnr_loss = self.psnr_metric(x, tgt)
-        de_loss = self.de_metric(x, tgt)
-        loss = mae_loss + kl_loss
+        dl_loss = -torch.mean(log_px) - torch.mean(log_py)
+        kl_loss = self.ggpd_loss(gx, gy)
+        mae_loss = self.mae_loss(z, tgt)
+        psnr_loss = self.psnr_metric(z, tgt)
+        de_loss = self.de_metric(z, tgt)
+        loss = kl_loss + dl_loss + mae_loss
 
+        self.log('dl', dl_loss, prog_bar=True, logger=True)
         self.log('kl', kl_loss, prog_bar=True, logger=True)
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
@@ -144,20 +145,21 @@ class GGPDPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
 
-        x, px, py, gx, gy = self(src, tgt)
+        z, x, y, gx, gy = self(src, tgt)
 
-        mx = gx.mean
-        my = gy.mean
+        log_px = gx.log_prob(x)
+        log_py = gy.log_prob(y)
 
-        x = my + (x - mx)
-        x = x[:,3:]
+        z = (gy.mean + z - gx.mean)[:,3:]
 
-        kl_loss = self.kl_loss(px, py) + self.kl_loss(py, px)
-        mae_loss = self.mae_loss(x, tgt)
-        psnr_loss = self.psnr_metric(x, tgt)
-        de_loss = self.de_metric(x, tgt)
+        dl_loss = -torch.mean(log_px) - torch.mean(log_py)
+        kl_loss = self.ggpd_loss(gx, gy)
+        mae_loss = self.mae_loss(z, tgt)
+        psnr_loss = self.psnr_metric(z, tgt)
+        de_loss = self.de_metric(z, tgt)
         loss = mae_loss
 
+        self.log('val_dl', dl_loss, prog_bar=True, logger=True)
         self.log('val_kl', kl_loss, prog_bar=True, logger=True)
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
@@ -169,21 +171,18 @@ class GGPDPipeline(L.LightningModule):
     def test_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y, x_, p_, g_ = self(src, tgt)
+        x, px, py, gx, gy = self(src, tgt)
 
-        z = torch.cat([src, tgt], dim=1)
+        mx = gx.mean
+        my = gy.mean
 
-        q_ = [_g.log_prob(z) for _g in g_]
+        x = my # + (x - mx)
+        x = x[:,3:]
 
-        q = torch.cat(q_,dim=1)
-        p = torch.cat(p_,dim=1)
-
-        y = y[:,3:]
-
-        kl_loss = self.kl_loss(p, q)
-        mae_loss = self.mae_loss(y, tgt)
-        psnr_loss = self.psnr_metric(y, tgt)
-        de_loss = self.de_metric(y, tgt)
+        kl_loss = self.kl_loss(px, py) + self.kl_loss(py, px)
+        mae_loss = self.mae_loss(x, tgt)
+        psnr_loss = self.psnr_metric(x, tgt)
+        de_loss = self.de_metric(x, tgt)
         loss = mae_loss
 
         self.log('test_kl', kl_loss, prog_bar=True, logger=True)
