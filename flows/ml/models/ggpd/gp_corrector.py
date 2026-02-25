@@ -18,36 +18,12 @@ class GPCorrector(nn.Module):
         self.out_channels = out_channels
         self.n_points = n_points
 
-        self.dx_layer = LightCMEncoder(
-            self.in_channels,
-            n_points * (self.in_channels + self.out_channels),
-        )
-
     def forward(
         self,
         src: torch.Tensor,
-        x: torch.Tensor,
-        gx: MultivariateNormal,
+        y: torch.Tensor,
+        gy: MultivariateNormal,
     ):
-
-        dx = self.dx_layer(src)
-        dx = rearrange(dx, 'b (n c) h w -> b n c h w', n=self.n_points)
-
-        p_ = []
-        x_ = []
-
-        for n in range(self.n_points):
-            z = x + dx[:,n]
-            p = gx.log_prob(z)
-
-            x_.append(z)
-            p_.append(p)
-        
-        p_ = torch.stack(p_, dim=1)
-        p_ = torch.softmax(p_, dim=1)
-
-        x_ = torch.stack(x_, dim=1)
-
-        x_ = torch.sum(x_ * p_, dim=1)
-
-        return x_
+        z = gy.conditional_mean(y)
+        z = torch.cat([y,z], dim=1)
+        return z

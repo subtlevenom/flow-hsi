@@ -1,6 +1,6 @@
 from omegaconf import DictConfig
 from tools.utils import text
-from . import cave_hsi, icvl, ntire
+from . import cave_hsi, icvl, ntire, hydra
 
 
 def adapt(
@@ -32,6 +32,8 @@ def sample(
             icvl.sampler.sample(input_path, output_path, split, params)
         case 'ntire':
             ntire.sampler.sample(input_path, output_path, split, params)
+        case 'hydra':
+            hydra.sampler.sample(input_path, output_path, split, params)
 
 
 def split(
@@ -50,6 +52,8 @@ def split(
             icvl.splitter.split(source_path, target_path, output_path, split)
         case 'ntire':
             ntire.splitter.split(source_path, target_path, output_path, split)
+        case 'hydra':
+            hydra.splitter.split(source_path, target_path, output_path, split)
 
 
 def normalize(
