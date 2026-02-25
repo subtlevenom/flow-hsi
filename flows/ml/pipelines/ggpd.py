@@ -114,22 +114,20 @@ class GGPDPipeline(L.LightningModule):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
-        return pred['y'], pred['gy']
+        return pred['y']
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y, gy = self(src, tgt)
+        y = self(src, tgt)
 
         z = torch.cat([src,tgt],dim=1)
 
-        pl_loss = -torch.mean(gy.log_prob(z))
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         de_loss = self.de_metric(y, tgt)
-        loss = pl_loss + mae_loss
+        loss = mae_loss
 
-        self.log('pl', pl_loss, prog_bar=True, logger=True)
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('de', de_loss, prog_bar=True, logger=True)
@@ -140,17 +138,15 @@ class GGPDPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y, gy = self(src, tgt)
+        y = self(src, tgt)
 
         z = torch.cat([src,tgt],dim=1)
 
-        pl_loss = -torch.mean(gy.log_prob(z))
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         de_loss = self.de_metric(y, tgt)
         loss = mae_loss
 
-        self.log('val_pl', pl_loss, prog_bar=True, logger=True)
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('val_de', de_loss, prog_bar=True, logger=True)
