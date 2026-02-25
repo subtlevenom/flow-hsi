@@ -123,12 +123,12 @@ class GGPDPipeline(L.LightningModule):
 
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
-        # de_loss = self.de_metric(y, tgt)
+        de_loss = self.de_metric(y[:,[5,15,25]], tgt[:,[5,15,25]])
         loss = mae_loss
 
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
-        # self.log('de', de_loss, prog_bar=True, logger=True)
+        self.log('de', de_loss, prog_bar=True, logger=True)
         self.log('train_loss', loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
@@ -140,12 +140,12 @@ class GGPDPipeline(L.LightningModule):
 
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
-        # de_loss = self.de_metric(y, tgt)
+        de_loss = self.de_metric(y[:,[5,15,25]], tgt[:,[5,15,25]])
         loss = mae_loss
 
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
-        # self.log('val_de', de_loss, prog_bar=True, logger=True)
+        self.log('val_de', de_loss, prog_bar=True, logger=True)
         self.log('val_loss', loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
@@ -157,7 +157,7 @@ class GGPDPipeline(L.LightningModule):
 
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
-        de_loss = self.de_metric(y, tgt)
+        de_loss = self.de_metric(y[:,[5,15,25]], tgt[:,[5,15,25]])
         loss = mae_loss
 
         self.log('test_mae', mae_loss, prog_bar=True, logger=True)
@@ -176,15 +176,15 @@ class GGPDPipeline(L.LightningModule):
         if batch_idx == 0:
             self.start_time = time.perf_counter()
 
-        src, target, name = batch
-        prediction = self(src)
+        src, tgt, name = batch
+        y = self(src, tgt)
         elapsed = time.perf_counter() - self.start_time
 
-        mae_loss = self.mae_loss(prediction, target)
-        psnr_loss = self.psnr_metric(prediction, target)
-        ssim_loss = self.ssim_metric(prediction, target)
-        sam_loss = self.sam_metric(prediction, target)
-        de_loss = self.de_metric(prediction, target)
+        mae_loss = self.mae_loss(y, tgt)
+        psnr_loss = self.psnr_metric(y, tgt)
+        ssim_loss = self.ssim_metric(y, tgt)
+        sam_loss = self.sam_metric(y, tgt)
+        de_loss = self.de_metric(y[:,[5,15,25]], tgt[:,[5,15,25]])
 
         self.sum_psnr += psnr_loss
         self.sum_ssim += ssim_loss

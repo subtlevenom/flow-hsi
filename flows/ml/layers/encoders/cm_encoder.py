@@ -4,6 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 from flows.ml.layers.mw_isp import DWTForward, RCAGroup, DWTInverse, seq
+from torchvision.transforms import Resize, InterpolationMode
 
 
 def to_3d(x):
@@ -355,6 +356,7 @@ class LightEncoder2D(torch.nn.Module):
         x1 = self.trans1(x1, illu_fea) # 12 h/2 w/2
 
         x1 = self.up1(x1)
+        x1 = Resize(x.shape[-2:], interpolation=InterpolationMode.BICUBIC)(x1)
         x = torch.cat([x, x1], dim=1)
         x = self.conv_out(x)
         return x

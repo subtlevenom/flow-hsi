@@ -25,7 +25,7 @@ class GPEncoder(nn.Module):
         self.n_points = n_points
 
         self.y_layers = nn.ModuleList([
-            LightCMEncoder(
+            FFN(
                 in_channels=in_channels,
                 out_channels=out_channels,
             ) for _ in range(n_points)
