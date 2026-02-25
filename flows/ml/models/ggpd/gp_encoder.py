@@ -14,18 +14,15 @@ class GPEncoder(nn.Module):
         self,
         in_channels: int = 3,
         out_channels: int = 3,
+        g_channels: int = 3,
         n_points:int = 3
     ):
         super(GPEncoder, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.g_channels = g_channels
         self.n_points = n_points
-
-        self.x_layer = LightCMEncoder(
-            in_channels=in_channels,
-            out_channels=in_channels,
-        )
 
         self.y_layers = nn.ModuleList([
             LightCMEncoder(
@@ -37,25 +34,20 @@ class GPEncoder(nn.Module):
         self.gpd_layers = nn.ModuleList([
             LightCmGPDLayer(
                 in_channels=in_channels,
-                out_channels=in_channels,
+                out_channels=g_channels,
             ) for _ in range(n_points)
         ])
 
-        self.ffn = FFN(
-            in_channels=in_channels+out_channels,
-            out_channels=out_channels,
-        )
-
-    def forward(self, src: torch.Tensor):
-
-        x = self.x_layer(src)
+    def forward(self, x_src: torch.Tensor, x_proj: torch.Tensor):
+        # x_src: B in_channels H W
+        # x_proj: B g_channels H W
 
         y_ = []
         p_ = []
         for n in range(self.n_points):
-            y = self.y_layers[n](src)
-            gx = self.gpd_layers[n](src)
-            p = gx.log_prob(x)
+            y = self.y_layers[n](x_src)
+            g = self.gpd_layers[n](x_src)
+            p = g.log_prob(x_proj)
             y_.append(y)
             p_.append(p)
 
@@ -64,7 +56,5 @@ class GPEncoder(nn.Module):
         p = torch.softmax(p, dim=1)
 
         y = torch.sum(y*p, dim=1)
-        y = torch.cat([x,y], dim=1)
-        y = self.ffn(y)
 
         return y

@@ -95,20 +95,20 @@ class DefaultPipeline(L.LightningModule):
         }
 
     def forward(self, x: torch.Tensor, scale:int=0) -> torch.Tensor:
-        pred = self.model(image=x)
-        return pred['result']
+        pred = self.model(src=x)
+        return pred['res']
 
     a = 1.0
 
     def training_step(self, batch, batch_idx):
-        src, target = batch
-        src = self.a * src + (1 - self.a) * target 
+        src, tgt = batch
+        src = self.a * src + (1 - self.a) * tgt 
 
         prediction = self(src)
 
-        mae_loss = self.mae_loss(prediction, target)
-        psnr_loss = self.psnr_metric(prediction, target)
-        ssim_loss = self.ssim_metric(prediction, target)
+        mae_loss = self.mae_loss(prediction, tgt)
+        psnr_loss = self.psnr_metric(prediction, tgt)
+        ssim_loss = self.ssim_metric(prediction, tgt)
         loss = mae_loss + 0.15 * (1.-ssim_loss) #+ 0.2 * (40. - psnr_loss)
 
         self.log('train_mae', mae_loss, prog_bar=True, logger=True)
@@ -118,15 +118,15 @@ class DefaultPipeline(L.LightningModule):
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
-        src, target = batch
-        src = self.a * src + (1 - self.a) * target 
+        src, tgt = batch
+        src = self.a * src + (1 - self.a) * tgt 
 
         prediction = self(src)
 
-        mae_loss = self.mae_loss(prediction, target)
-        psnr_loss = self.psnr_metric(prediction, target)
-        ssim_loss = self.ssim_metric(prediction, target)
-        de_loss = self.de_metric(prediction, target)
+        mae_loss = self.mae_loss(prediction, tgt)
+        psnr_loss = self.psnr_metric(prediction, tgt)
+        ssim_loss = self.ssim_metric(prediction, tgt)
+        de_loss = self.de_metric(prediction, tgt)
 
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('val_ssim', ssim_loss, prog_bar=True, logger=True)
@@ -135,14 +135,14 @@ class DefaultPipeline(L.LightningModule):
         return {'loss': mae_loss}
 
     def test_step(self, batch, batch_idx):
-        src, target = batch
+        src, tgt = batch
         prediction = self(src)
 
-        mae_loss = self.mae_loss(prediction, target)
-        psnr_loss = self.psnr_metric(prediction, target)
-        ssim_loss = self.ssim_metric(prediction, target)
-        sam_loss = self.sam_metric(prediction, target) * 180. / torch.pi 
-        de_loss = self.de_metric(prediction, target)
+        mae_loss = self.mae_loss(prediction, tgt)
+        psnr_loss = self.psnr_metric(prediction, tgt)
+        ssim_loss = self.ssim_metric(prediction, tgt)
+        sam_loss = self.sam_metric(prediction, tgt) * 180. / torch.pi 
+        de_loss = self.de_metric(prediction, tgt)
 
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('test_ssim', ssim_loss, prog_bar=True, logger=True)
@@ -159,15 +159,15 @@ class DefaultPipeline(L.LightningModule):
         if batch_idx == 0:
             self.start_time = time.perf_counter()
 
-        src, target, name = batch
+        src, tgt, name = batch
         prediction = self(src)
         elapsed = time.perf_counter() - self.start_time 
 
-        mae_loss = self.mae_loss(prediction, target)
-        psnr_loss = self.psnr_metric(prediction, target)
-        ssim_loss = self.ssim_metric(prediction, target)
-        sam_loss = self.sam_metric(prediction, target)
-        de_loss = self.de_metric(prediction, target)
+        mae_loss = self.mae_loss(prediction, tgt)
+        psnr_loss = self.psnr_metric(prediction, tgt)
+        ssim_loss = self.ssim_metric(prediction, tgt)
+        sam_loss = self.sam_metric(prediction, tgt)
+        de_loss = self.de_metric(prediction, tgt)
 
         self.sum_psnr += psnr_loss
         self.sum_ssim += ssim_loss

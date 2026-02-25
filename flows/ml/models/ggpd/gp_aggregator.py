@@ -9,10 +9,10 @@ from flows.ml.layers.mst import MSAB
 from flows.ml.layers.sep_gpd import MultivariateNormal
 
 
-class GPCorrector(nn.Module):
+class GPAggregator(nn.Module):
 
     def __init__(self, in_channels: int, out_channels: int, n_points: int):
-        super(GPCorrector, self).__init__()
+        super(GPAggregator, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels

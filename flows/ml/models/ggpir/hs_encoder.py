@@ -11,7 +11,6 @@ class HSEncoder(nn.Module):
         self,
         in_channels: int = 3,
         out_channels: int = 3,
-        n_iter: int = 0
     ):
         super(HSEncoder, self).__init__()
 
@@ -21,7 +20,7 @@ class HSEncoder(nn.Module):
         if n_iter == 0:
             self.proj = nn.Sequential()
         else:
-            from .hs_net import HSNet
+            from .ggpir import HSNet
             self.proj = HSNet(in_channels, out_channels, n_iters=n_iter-1)
 
     def forward(self, x: torch.Tensor):

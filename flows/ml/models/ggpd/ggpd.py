@@ -8,7 +8,7 @@ from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.mst import MSAB
 from flows.ml.layers.sep_gpd import MultivariateNormal
 from .gp_encoder import GPEncoder
-from .gp_corrector import GPCorrector
+from .gp_aggregator import GPAggregator
 
 
 class GGPD(nn.Module):
@@ -31,7 +31,7 @@ class GGPD(nn.Module):
             n_layers=n_layers,
         )
 
-        self.corrector = GPCorrector()
+        self.corrector = GPAggregator()
 
     def forward(self, x: torch.Tensor):
         x, p, g = self.encoder(x)

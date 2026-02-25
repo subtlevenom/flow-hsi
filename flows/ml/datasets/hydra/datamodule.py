@@ -15,7 +15,7 @@ from .dataset import Dataset
 from flows.core import Logger
 from flows.ml.transforms.pair_trransform import PairTransform
 
-CROP = 128
+CROP = None
 IMG_EXTS: Tuple[str] = (".npy")
 
 class DataModule(L.LightningDataModule):
@@ -101,11 +101,11 @@ class DataModule(L.LightningDataModule):
         # self.image_p_transform = None
         self.train_image_p_transform = PairTransform(
             crop_size=CROP, p=0.5, seed=seed
-        )
+        ) if CROP is not None else None
         # self.val_image_p_transform = None
         self.val_image_p_transform = PairTransform(
             crop_size=CROP, p=0.0, seed=seed
-        )
+        ) if CROP is not None else None
 
         self.image_train_transform = Compose([
             ToImage(),
