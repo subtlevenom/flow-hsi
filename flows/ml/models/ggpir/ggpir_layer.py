@@ -30,7 +30,8 @@ class GGPIRLayer(nn.Module):
             kernel_size=1,
         )
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor):
+    def forward(self, x: torch.Tensor, y: torch.Tensor=None):
+        y = x if y is None else y
         y = self.layer(x,y)
         y = torch.concat([x, y], dim=1)
         y = self.proj(y)
