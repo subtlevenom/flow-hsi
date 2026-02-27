@@ -1,3 +1,4 @@
+from typing import List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,6 +7,7 @@ from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.encoders.sg_encoder import FFN, LayerNorm
 from flows.ml.layers.sep_gpd import MultivariateNormal
 from flows.ml.models.cmgpd import CmGPD, LightCmGPD, LightCmGPDLayer
+from .msab_projector import MSABProjector
 
 
 class GPEncoder(nn.Module):
@@ -14,47 +16,31 @@ class GPEncoder(nn.Module):
         self,
         in_channels: int = 3,
         out_channels: int = 3,
-        g_channels: int = 3,
-        n_points:int = 3
     ):
         super(GPEncoder, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.g_channels = g_channels
-        self.n_points = n_points
 
-        self.y_layers = nn.ModuleList([
-            FFN(
-                in_channels=in_channels,
-                out_channels=out_channels,
-            ) for _ in range(n_points)
-        ])
+        self.g_layer = LightCmGPDLayer(
+            in_channels=in_channels,
+            out_channels=out_channels,
+        )
 
-        self.gpd_layers = nn.ModuleList([
-            LightCmGPDLayer(
-                in_channels=in_channels,
-                out_channels=g_channels,
-            ) for _ in range(n_points)
-        ])
+    def forward(
+        self,
+        src: torch.Tensor,
+        x: List[torch.Tensor],
+        y: List[torch.Tensor],
+    ):
+        g = self.g_layer(src)
+        p = [g.log_prob(_x) for _x in x]
 
-    def forward(self, x_src: torch.Tensor, x_proj: torch.Tensor):
-        # x_src: B in_channels H W
-        # x_proj: B g_channels H W
-
-        y_ = []
-        p_ = []
-        for n in range(self.n_points):
-            y = self.y_layers[n](x_src)
-            g = self.gpd_layers[n](x_src)
-            p = g.log_prob(x_proj)
-            y_.append(y)
-            p_.append(p)
-
-        y = torch.stack(y_,dim=1)
-        p = torch.stack(p_,dim=1)
+        p = torch.stack(p, dim=1)
         p = torch.softmax(p, dim=1)
+        # p = torch.exp(p)
+        y = torch.stack(y, dim=1)
 
-        y = torch.sum(y*p, dim=1)
+        y = torch.sum(y * p, dim=1)
 
         return y

@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from flows.ml.layers.sep_gpd import SepGPD, SepGPDLayer
 from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
+from flows.ml.models.ggpd.msab_projector import MSABProjector
 
 
 class CmGPDLayer(SepGPDLayer):
@@ -16,7 +17,12 @@ class CmGPDLayer(SepGPDLayer):
 class LightCmGPDLayer(SepGPDLayer):
 
     def create_encoder(self, in_channels, out_channels, **kwargs):
-        return LightCMEncoder(in_channels, out_channels)
+        return MSABProjector(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_blocks=[2, 2],
+        )
+        # return LightCMEncoder(in_channels, out_channels)
 
 
 class CmGPD(SepGPD):

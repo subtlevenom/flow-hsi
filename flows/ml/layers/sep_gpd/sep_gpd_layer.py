@@ -72,8 +72,9 @@ class SepGPDLayer(ABC, torch.nn.Module):
 
         return S, R, D
 
-    def forward(self, x: torch.Tensor) -> MultivariateNormal:
-        w = self.encoder(x)
+    def forward(self, x: torch.Tensor, w: torch.Tensor = None) -> MultivariateNormal:
+        if w is None:
+            w = self.encoder(x)
 
         m = w[:, :self.m_channels].permute(0, 2, 3, 1)
         s = F.sigmoid(w[:, self.m_channels:self.m_channels + self.s_channels])
