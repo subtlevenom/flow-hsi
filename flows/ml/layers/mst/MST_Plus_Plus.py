@@ -191,6 +191,10 @@ class MST(nn.Module):
         self.dim = dim
         self.stage = stage
 
+        # Input-output projection
+        self.proj_in = nn.Sequential() if in_dim == out_dim else nn.Conv2d(
+            in_dim, out_dim, kernel_size=1)
+
         # Input projection
         self.embedding = nn.Conv2d(in_dim, self.dim, 3, 1, 1, bias=False)
 
@@ -243,6 +247,9 @@ class MST(nn.Module):
         return out:[b,c,h,w]
         """
 
+        # Output Projection
+        _x = self.proj_in(x)
+
         # Embedding
         fea = self.embedding(x)
 
@@ -263,7 +270,7 @@ class MST(nn.Module):
             fea = LeWinBlcok(fea)
 
         # Mapping
-        out = self.mapping(fea) + x
+        out = self.mapping(fea) + _x
 
         return out
 
@@ -291,17 +298,3 @@ class MST_Plus_Plus(nn.Module):
         h = self.conv_out(h)
         h += x
         return h[:, :, :h_inp, :w_inp]
-
-
-
-
-
-
-
-
-
-
-
-
-
-
