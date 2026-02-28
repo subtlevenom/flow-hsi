@@ -8,7 +8,7 @@ from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.mst import MSAB
 from flows.ml.layers.sep_gpd import MultivariateNormal
 from .gp_encoder import GPEncoder
-from .gp_aggregator import GPAggregator
+from .gp_projector import GPProjector
 
 
 class GGPD(nn.Module):
@@ -18,6 +18,9 @@ class GGPD(nn.Module):
         in_channels: int = 3,
         out_channels: int = 3,
         n_layers: int = 3,
+        num_blocks: List[int] = [2, 2],
+        num_points: int = 7,
+        alg: str = 'mix',
     ):
         super(GGPD, self).__init__()
 
@@ -25,15 +28,21 @@ class GGPD(nn.Module):
         self.out_channels = out_channels
         self.n_layers = n_layers
 
+        self.projector = GPProjector(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            num_blocks=num_blocks,
+            num_points=num_points,
+        )
+
         self.encoder = GPEncoder(
             in_channels=in_channels,
             out_channels=out_channels,
-            n_layers=n_layers,
+            num_blocks=num_blocks,
+            alg=alg,
         )
 
-        self.corrector = GPAggregator()
-
     def forward(self, x: torch.Tensor):
-        x, p, g = self.encoder(x)
-        y = self.corrector(x,p,g)
-        return y[:,self.in_channels:]
+        _x, _y = self.projector(x)
+        y = self.encoder(x, _x, _y)
+        return y

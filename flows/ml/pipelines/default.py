@@ -1,38 +1,46 @@
 import os
+import random
+import statistics
+from typing import List
+from einops import rearrange
 import torch
 from torch import nn
 import lightning as L
 from torch import optim
 import torch.nn.functional as F
 import torchvision
-from ..models import Flow
-from flows.core import Logger
-from ..metrics import (PSNR, SSIM, SAM, DeltaE)
-from tools.utils import models
 import time
+from tools.utils import models
+from flows.core import Logger
+from flows.ml.losses import GPDFLoss
+from ..models import Flow
+from ..metrics import (PSNR, SSIM, SAM, DeltaE)
+from flows.ml.layers.sep_gpd import MultivariateNormal
 
 
 class DefaultPipeline(L.LightningModule):
 
-    def __init__(
-        self,
-        model: Flow,
-        optimizer: str = 'adam',
-        lr: float = 1e-3,
-        weight_decay: float = 0,
-    ) -> None:
+    def __init__(self,
+                 model: Flow,
+                 optimizer: str = 'adam',
+                 lr: float = 1e-3,
+                 weight_decay: float = 0,
+                 metrics_channels: List[int] = [0, 1, 2]) -> None:
         super(DefaultPipeline, self).__init__()
 
         self.model = model
         self.optimizer_type = optimizer
         self.lr = lr
         self.weight_decay = weight_decay
+        self.ggpd_loss = GPDFLoss()
         self.mse_loss = nn.MSELoss(reduction='mean')
         self.mae_loss = nn.L1Loss(reduction='mean')
         self.de_metric = DeltaE()
         self.sam_metric = SAM()
+        self.kl_loss = nn.KLDivLoss(reduction='batchmean', log_target=True)
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.psnr_metric = PSNR(data_range=(0, 1))
+        self.metrics_channels = metrics_channels
 
         self.save_hyperparameters(ignore=['model'])
 
@@ -59,18 +67,12 @@ class DefaultPipeline(L.LightningModule):
                     nn.init.constant_(m.bias, 0)
                 elif isinstance(m, nn.Linear):
                     nn.init.normal_(m.weight, 0, 0.01)
-                    nn.init.constant_(m.bias, 0)
+                    if m.bias is not None:
+                        nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/hsgaussian.huawei/logs/checkpoints/_1_last.ckpt'
-        # models.load_model(self.model.layers.hsnet.encoder.proj, 'model.layers.hsnet', MODEL_PATH)
-        # models.require_grad(self.model.layers.hsnet.encoder.proj, requires_grad=False)
-
-        # MODEL_PATH = '/data/korepanov/models/cmkan.weighted.cave.v8/logs/checkpoints/last.ckpt'
-        # models.load_model(self.model.layers, 'model.layers', MODEL_PATH)
-        # models.load_model(self.model.layers.hskan, 'model.layers.hskan', MODEL_PATH)
-        # models.load_model(self.model.layers.decoder, 'model.layers.decoder', MODEL_PATH)
-        # models.require_grad(self.model.layers.hskan, requires_grad=False)
-        # models.require_grad(self.model.layers.decoder, requires_grad=False)
+        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        # models.require_grad(self.model.layers.encoder.gpd_x, requires_grad=False)
 
         Logger.info('Initialized model weights with isp pipeline.')
 
@@ -94,65 +96,81 @@ class DefaultPipeline(L.LightningModule):
             "monitor": "val_loss"
         }
 
-    def forward(self, x: torch.Tensor, scale:int=0) -> torch.Tensor:
-        pred = self.model(src=x)
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        pred = self.model(src=x, tgt=y)
         return pred['res']
-
-    a = 1.0
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
-        src = self.a * src + (1 - self.a) * tgt 
 
-        prediction = self(src)
+        y = self(src, tgt)
 
-        mae_loss = self.mae_loss(prediction, tgt)
-        psnr_loss = self.psnr_metric(prediction, tgt)
-        ssim_loss = self.ssim_metric(prediction, tgt)
-        loss = mae_loss + 0.15 * (1.-ssim_loss) #+ 0.2 * (40. - psnr_loss)
+        mae_loss = self.mae_loss(y, tgt)
+        psnr_loss = self.psnr_metric(y, tgt)
+        ssim_loss = self.ssim_metric(y, tgt)
+        sam_loss = self.sam_metric(y, tgt)
+        de_loss = self.de_metric(y[:, self.metrics_channels],
+                                 tgt[:, self.metrics_channels])
+        loss = mae_loss
 
-        self.log('train_mae', mae_loss, prog_bar=True, logger=True)
-        self.log('train_psnr', psnr_loss, prog_bar=True, logger=True)
-        self.log('train_ssim', ssim_loss, prog_bar=True, logger=True)
+        self.log('mae', mae_loss, prog_bar=True, logger=True)
+        self.log('psnr', psnr_loss, prog_bar=True, logger=True)
+        self.log('ssim', ssim_loss, prog_bar=True, logger=True)
+        self.log('sam', sam_loss, prog_bar=True, logger=True)
+        self.log('de', de_loss, prog_bar=True, logger=True)
         self.log('train_loss', loss, prog_bar=True, logger=True)
+
         return {'loss': loss}
 
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
-        src = self.a * src + (1 - self.a) * tgt 
 
-        prediction = self(src)
+        y = self(src, tgt)
 
-        mae_loss = self.mae_loss(prediction, tgt)
-        psnr_loss = self.psnr_metric(prediction, tgt)
-        ssim_loss = self.ssim_metric(prediction, tgt)
-        de_loss = self.de_metric(prediction, tgt)
+        mae_loss = self.mae_loss(y, tgt)
+        psnr_loss = self.psnr_metric(y, tgt)
+        ssim_loss = self.ssim_metric(y, tgt)
+        sam_loss = self.sam_metric(y, tgt)
+        de_loss = self.de_metric(y[:, self.metrics_channels],
+                                 tgt[:, self.metrics_channels])
+        loss = mae_loss
 
+        self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('val_ssim', ssim_loss, prog_bar=True, logger=True)
+        self.log('val_sam', sam_loss, prog_bar=True, logger=True)
         self.log('val_de', de_loss, prog_bar=True, logger=True)
-        self.log('val_loss', mae_loss, prog_bar=True, logger=True)
-        return {'loss': mae_loss}
+        self.log('val_loss', loss, prog_bar=True, logger=True)
+
+        return {'loss': loss}
 
     def test_step(self, batch, batch_idx):
         src, tgt = batch
-        prediction = self(src)
 
-        mae_loss = self.mae_loss(prediction, tgt)
-        psnr_loss = self.psnr_metric(prediction, tgt)
-        ssim_loss = self.ssim_metric(prediction, tgt)
-        sam_loss = self.sam_metric(prediction, tgt) * 180. / torch.pi 
-        de_loss = self.de_metric(prediction, tgt)
+        y = self(src, tgt)
 
+        mae_loss = self.mae_loss(y, tgt)
+        psnr_loss = self.psnr_metric(y, tgt)
+        ssim_loss = self.ssim_metric(y, tgt)
+        sam_loss = self.sam_metric(y, tgt)
+        de_loss = self.de_metric(y[:, self.metrics_channels],
+                                 tgt[:, self.metrics_channels])
+        loss = mae_loss
+
+        self.log('test_mae', mae_loss, prog_bar=True, logger=True)
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('test_ssim', ssim_loss, prog_bar=True, logger=True)
         self.log('test_sam', sam_loss, prog_bar=True, logger=True)
-        self.log('test_loss', de_loss, prog_bar=True, logger=True)
-        return {'loss': de_loss}
+        self.log('test_de', de_loss, prog_bar=True, logger=True)
+        self.log('test_loss', loss, prog_bar=True, logger=True)
 
+        return {'loss': loss}
+
+    sum_mae = 0
     sum_psnr = 0
     sum_ssim = 0
     sum_sam = 0
+    sum_de = 0
     start_time = 0
 
     def predict_step(self, batch, batch_idx):
@@ -160,20 +178,27 @@ class DefaultPipeline(L.LightningModule):
             self.start_time = time.perf_counter()
 
         src, tgt, name = batch
-        prediction = self(src)
-        elapsed = time.perf_counter() - self.start_time 
+        y = self(src, tgt)
+        elapsed = time.perf_counter() - self.start_time
 
-        mae_loss = self.mae_loss(prediction, tgt)
-        psnr_loss = self.psnr_metric(prediction, tgt)
-        ssim_loss = self.ssim_metric(prediction, tgt)
-        sam_loss = self.sam_metric(prediction, tgt)
-        de_loss = self.de_metric(prediction, tgt)
+        mae_loss = self.mae_loss(y, tgt)
+        psnr_loss = self.psnr_metric(y, tgt)
+        ssim_loss = self.ssim_metric(y, tgt)
+        sam_loss = self.sam_metric(y, tgt)
+        de_loss = self.de_metric(y[:, self.metrics_channels],
+                                 tgt[:, self.metrics_channels])
 
+        self.sum_mae += mae_loss
         self.sum_psnr += psnr_loss
         self.sum_ssim += ssim_loss
         self.sum_sam += sam_loss
+        self.sum_de += de_loss
         n = 1 + batch_idx
 
-        print(f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, sam {sam_loss}, loss {de_loss} | AVG >> psnr: {self.sum_psnr / n} ssim: {self.sum_ssim / n} sam: {self.sum_sam / n} | Elapsed: {elapsed/(batch_idx + 1)}')
+        print(
+            f'{name[0]} CUR >> mae {mae_loss} psnr {psnr_loss}, ssim {ssim_loss}, sam {sam_loss}, de {de_loss}',
+            f'{name[0]} AVG >> mae {self.sum_mae / n} psnr: {self.sum_psnr / n} ssim: {self.sum_ssim / n} sam: {self.sum_sam / n} de: {self.sum_de / n}'
+            f'{name[0]} TIME >> {elapsed/(batch_idx + 1)}'
+        )
 
         return {'loss': de_loss}

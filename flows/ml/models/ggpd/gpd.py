@@ -1,0 +1,53 @@
+from typing import List
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from flows.ml.layers.sep_gpd import SepGPD, SepGPDLayer
+from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
+from flows.ml.layers.mst import MSABProjector, MSABCMProjector
+
+
+class GPDLayer(SepGPDLayer):
+
+    def create_encoder(self,
+                       in_channels: int,
+                       out_channels: int,
+                       alg: str = 'msab',
+                       **kwargs):
+        """
+        kwargs['alg']: 'msab','cmlight','cm','mix',None
+        kwargs['num_blocks']: [2,2]
+        """
+        match alg:
+            case 'msab':
+                return MSABProjector(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    num_blocks=kwargs.get('num_blocks', [2, 2]),
+                )
+            case 'lightcm':
+                return LightCMEncoder(in_channels, out_channels)
+            case 'cm':
+                return CMEncoder(in_channels, out_channels)
+            case _:
+                return MSABCMProjector(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    num_blocks=kwargs.get('num_blocks', [2, 2]),
+                )
+
+
+class GPD(SepGPD):
+
+    def create_layer(
+        self,
+        in_channels: int,
+        out_channels: int,
+        **kwargs,
+    ) -> SepGPDLayer:
+        return GPDLayer(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            **kwargs,
+        )

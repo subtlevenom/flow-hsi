@@ -13,7 +13,7 @@ class SepGPDLayer(ABC, torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        s_range: List[float] = [1e-3, 1e+3],
+        **kwargs,
     ):
         super(SepGPDLayer, self).__init__()
 
@@ -28,12 +28,15 @@ class SepGPDLayer(ABC, torch.nn.Module):
         self.s_channels = s_channels
         self.a_channels = a_channels
 
-        s_range = s_range or [1e-3, 1e+3]
+        s_range = kwargs.get('sigma_range', [1e-3, 1e+3])
         self.smin = s_range[0]
         self.smax = s_range[1]
 
         self.encoder = self.create_encoder(
-            in_channels, m_channels + s_channels + a_channels)
+            in_channels,
+            m_channels + s_channels + a_channels,
+            **kwargs,
+        )
 
     @abstractmethod
     def create_encoder(self, in_channels: int, out_channels: int, **kwargs):
@@ -72,7 +75,9 @@ class SepGPDLayer(ABC, torch.nn.Module):
 
         return S, R, D
 
-    def forward(self, x: torch.Tensor, w: torch.Tensor = None) -> MultivariateNormal:
+    def forward(self,
+                x: torch.Tensor,
+                w: torch.Tensor = None) -> MultivariateNormal:
         if w is None:
             w = self.encoder(x)
 
