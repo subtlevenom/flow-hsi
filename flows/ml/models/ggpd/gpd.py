@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from flows.ml.layers.sep_gpd import SepGPD, SepGPDLayer
 from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
-from flows.ml.layers.mst import MSABProjector, MSABCMProjector
+from flows.ml.layers.mst import MSABProjector, MSABCMProjector, MST, MST_Plus_Plus
 
 
 class GPDLayer(SepGPDLayer):
@@ -20,6 +20,19 @@ class GPDLayer(SepGPDLayer):
         kwargs['num_blocks']: [2,2]
         """
         match alg:
+            case 'mst':
+                return MST(
+                    in_dim=in_channels,
+                    out_dim=out_channels,
+                    dim=in_channels,
+                    num_blocks=kwargs.get('num_blocks', [2, 4, 4]),
+                )
+            case 'mst++':
+                return MST_Plus_Plus(
+                    in_channels=in_channels,
+                    out_channels=out_channels,
+                    n_feat=in_channels,
+                )
             case 'msab':
                 return MSABProjector(
                     in_channels=in_channels,
