@@ -35,13 +35,13 @@ class MSABCMProjector(nn.Module):
             out_channels=out_channels,
         )
         self.mix = nn.Conv2d(
-            in_channels=2 * out_channels,
+            in_channels=in_channels + 2 * out_channels,
             out_channels=out_channels,
             kernel_size=1,
         )
 
     def forward(self, x: torch.Tensor):
-        x1 = self.msab(x)
-        x2 = self.cm(x)
-        y = self.mix(torch.cat([x1, x2], dim=1))
+        x1 = self.cm(x)
+        x2 = self.msab(x)
+        y = self.mix(torch.cat([x, x1, x2], dim=1))
         return y
