@@ -6,7 +6,7 @@ from torch import optim
 import torch.nn.functional as F
 import torchvision
 import time
-from tools.utils import models
+from tools.utils import models, text
 from flows.core import Logger
 from flows.ml.losses.gpdf_loss import GPDFLoss
 from ..models import Flow
@@ -145,7 +145,9 @@ class CmKANPipeline(L.LightningModule):
 
         return {'loss': loss}
 
+    sum_mae = 0
     sum_psnr = 0
+    sum_de = 0
     sum_ssim = 0
     sum_sam = 0
     start_time = 0
@@ -164,13 +166,31 @@ class CmKANPipeline(L.LightningModule):
         sam_loss = self.sam_metric(prediction, target)
         de_loss = self.de_metric(prediction, target)
 
+        self.sum_mae += mae_loss
         self.sum_psnr += psnr_loss
+        self.sum_de += de_loss
         self.sum_ssim += ssim_loss
         self.sum_sam += sam_loss
         n = 1 + batch_idx
 
-        print(
-            f'{name[0]}: psnr {psnr_loss}, ssim {ssim_loss}, sam {sam_loss}, loss {de_loss} | AVG >> psnr: {self.sum_psnr / n} ssim: {self.sum_ssim / n} sam: {self.sum_sam / n} | Elapsed: {elapsed/(batch_idx + 1)}'
-        )
+        text.print_json({
+            name[0]: {
+                'CUR': {
+                    'mae': mae_loss.item(),
+                    'psnr': psnr_loss.item(),
+                    'ssim': ssim_loss.item(),
+                    'sam': sam_loss.item(),
+                    'de': de_loss.item(),
+                },
+                'AVG': {
+                    'mae': self.sum_mae.item() / n,
+                    'psnr': self.sum_psnr.item() / n,
+                    'ssim': self.sum_ssim.item() / n,
+                    'sam': self.sum_sam.item() / n,
+                    'de': self.sum_de.item() / n,
+                },
+                'TIME': elapsed / n,
+            },
+        })
 
         return {'loss': de_loss}

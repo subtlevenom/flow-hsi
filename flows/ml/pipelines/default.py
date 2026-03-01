@@ -10,7 +10,7 @@ from torch import optim
 import torch.nn.functional as F
 import torchvision
 import time
-from tools.utils import models
+from tools.utils import models, text
 from flows.core import Logger
 from flows.ml.losses import GPDFLoss
 from ..models import Flow
@@ -195,10 +195,24 @@ class DefaultPipeline(L.LightningModule):
         self.sum_de += de_loss
         n = 1 + batch_idx
 
-        print(
-            f'{name[0]} CUR >> mae {mae_loss} psnr {psnr_loss}, ssim {ssim_loss}, sam {sam_loss}, de {de_loss}',
-            f'{name[0]} AVG >> mae {self.sum_mae / n} psnr: {self.sum_psnr / n} ssim: {self.sum_ssim / n} sam: {self.sum_sam / n} de: {self.sum_de / n}'
-            f'{name[0]} TIME >> {elapsed/(batch_idx + 1)}'
-        )
+        text.print_json({
+            name[0]: {
+                'CUR': {
+                    'mae': mae_loss.item(),
+                    'psnr': psnr_loss.item(),
+                    'ssim': ssim_loss.item(),
+                    'sam': sam_loss.item(),
+                    'de': de_loss.item(),
+                },
+                'AVG': {
+                    'mae': self.sum_mae.item() / n,
+                    'psnr': self.sum_psnr.item() / n,
+                    'ssim': self.sum_ssim.item() / n,
+                    'sam': self.sum_sam.item() / n,
+                    'de': self.sum_de.item() / n,
+                },
+                'TIME': elapsed / n,
+            },
+        })
 
         return {'loss': de_loss}

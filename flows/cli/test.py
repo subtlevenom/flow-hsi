@@ -1,6 +1,6 @@
 import argparse
 import yaml
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from ..core.selector import (ModelSelector, DataSelector, PipelineSelector)
 import lightning as L
 import os
@@ -19,7 +19,7 @@ from tools.utils import text
 
 
 def main(config: DictConfig) -> None:
-    text.print(config)
+    text.print_config(config)
 
     dm = DataSelector.select(config.data)
     model = ModelSelector.select(config.model)
