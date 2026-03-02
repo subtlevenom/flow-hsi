@@ -35,7 +35,8 @@ class GPEncoder(nn.Module):
         y: List[torch.Tensor],
     ):
         g = self.g_layer(src)
-        p = [g.log_prob(_x) for _x in x]
+        m = g.mean
+        p = [g.log_prob(m+_x) for _x in x]
 
         p = torch.stack(p, dim=1)
         p = torch.softmax(p, dim=1)

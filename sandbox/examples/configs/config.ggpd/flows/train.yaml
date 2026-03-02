@@ -1,5 +1,5 @@
 task: train
-experiment: ggpd.mst.ntire
+experiment: ggpd.msab.huawei
 save_dir: .experiments
 accelerator: gpu
 devices: [0]
@@ -10,6 +10,6 @@ visualize_freq: 1
 
 defaults:
   - model: ggpd
-  - data: ntire
-  - pipeline: hydra
+  - data: huawei
+  - pipeline: ggpd
   - _self_

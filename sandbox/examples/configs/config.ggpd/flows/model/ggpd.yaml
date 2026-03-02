@@ -22,24 +22,21 @@ params:
     projector:
       model: ggpd.GPProjector
       params:
-        in_channels: 31
+        in_channels: 3
         out_channels: 
           - 3
-          - 31
-        alg: mst
+          - 3
+        alg: mix
         num_blocks:
           - 2
           - 2
-          - 2
-        num_points: 7
 
     encoder:
       model: ggpd.GPEncoder
       params:
-        in_channels: 31
+        in_channels: 3
         out_channels: 3
-        alg: mst
+        alg: mix
         num_blocks:
-          - 2
           - 2
           - 2
