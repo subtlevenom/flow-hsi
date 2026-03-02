@@ -1,0 +1,15 @@
+task: train
+experiment: hsgaussian.sum.7.cave-hsi.v8
+save_dir: .experiments
+accelerator: gpu
+devices: [0]
+resume: True
+epochs: 5800
+save_freq: 1
+visualize_freq: 1
+
+defaults:
+  - model: hsgaussian
+  - data: cave-hsi
+  - pipeline: default
+  - _self_

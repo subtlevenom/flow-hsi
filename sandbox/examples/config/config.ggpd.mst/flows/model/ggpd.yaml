@@ -1,0 +1,45 @@
+name: flow
+params:
+  metadata:
+
+    - layer: projector
+      inputs:
+        - src
+      outputs:
+        - x
+        - y
+
+    - layer: encoder
+      inputs:
+        - src
+        - x
+        - y
+      outputs:
+        - res
+
+  layers:
+
+    projector:
+      model: ggpd.GPProjector
+      params:
+        in_channels: 31
+        out_channels: 
+          - 3
+          - 31
+        alg: mst
+        num_blocks:
+          - 2
+          - 2
+          - 2
+        num_points: 7
+
+    encoder:
+      model: ggpd.GPEncoder
+      params:
+        in_channels: 31
+        out_channels: 3
+        alg: mst
+        num_blocks:
+          - 2
+          - 2
+          - 2

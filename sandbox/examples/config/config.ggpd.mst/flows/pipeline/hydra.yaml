@@ -1,0 +1,9 @@
+name: ggpd
+params:
+  optimizer: 'adam'
+  lr: 1e-4
+  weight_decay: 0
+  metrics_channels:
+    - 5
+    - 15
+    - 25

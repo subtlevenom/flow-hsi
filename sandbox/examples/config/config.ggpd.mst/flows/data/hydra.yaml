@@ -1,0 +1,20 @@
+name: hydra
+params:
+  train:
+    source: '/data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/dataset/train/source'
+    target: '/data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/dataset/train/target'
+    batch_size: 16
+  val:
+    source: '/data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/dataset/train/source'
+    target: '/data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/dataset/train/target'
+    batch_size: 16
+  test:
+    source: '/data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/split/val/source'
+    target: '/data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/split/val/target'
+    batch_size: 1
+  predict:
+    source: '/data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/origin/Hydra'
+    target: '/data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/origin/Specim'
+    batch_size: 1
+  num_workers: 12
+  seed: 43

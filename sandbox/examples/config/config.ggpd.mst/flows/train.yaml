@@ -1,0 +1,15 @@
+task: train
+experiment: ggpd.mst.ntire
+save_dir: .experiments
+accelerator: gpu
+devices: [0]
+resume: True
+epochs: 5800
+save_freq: 1
+visualize_freq: 1
+
+defaults:
+  - model: ggpd
+  - data: ntire
+  - pipeline: hydra
+  - _self_

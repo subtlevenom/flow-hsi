@@ -1,0 +1,7 @@
+task: tools
+tool: compare
+src_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/split/test/source
+ref_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/split/test/target
+params:
+  metrics: psnr
+  norm: False

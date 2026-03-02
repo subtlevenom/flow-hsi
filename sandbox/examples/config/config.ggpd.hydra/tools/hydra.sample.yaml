@@ -1,0 +1,16 @@
+task: tools
+tool: sample
+type: hydra
+input_path: /data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/split
+output_path: /data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/dataset
+split:
+  train:
+    source: ${input_path}/train/source
+    target: ${input_path}/train/target
+  val: 
+    source: ${input_path}/val/source
+    target: ${input_path}/val/target
+params:
+  crop_size:  64
+  n_crops: 100
+seed: 43

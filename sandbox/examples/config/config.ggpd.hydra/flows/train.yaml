@@ -1,0 +1,15 @@
+task: train
+experiment: ggpd.hydra
+save_dir: .experiments
+accelerator: gpu
+devices: [0]
+resume: True
+epochs: 5800
+save_freq: 1
+visualize_freq: 1
+
+defaults:
+  - model: ggpd
+  - data: hydra
+  - pipeline: ggpd
+  - _self_

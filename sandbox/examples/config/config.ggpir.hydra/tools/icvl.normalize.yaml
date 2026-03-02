@@ -1,0 +1,7 @@
+task: tools
+tool: normalize
+type: icvl
+gt_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/all/raw/gt
+src_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/all/raw/model
+output_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/all/normalized
+seed: 43

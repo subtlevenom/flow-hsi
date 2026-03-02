@@ -1,0 +1,42 @@
+name: flow
+params:
+  metadata:
+
+    - layer: encoder
+      inputs:
+        - src
+      outputs:
+        - x
+
+    - layer: ggpir
+      inputs:
+        - x
+      outputs:
+        - y
+
+    - layer: decoder
+      inputs:
+        - y
+      outputs:
+        - res
+
+  layers:
+
+    encoder:
+      model: ggpir.GGPIRMSABEncoder
+      params:
+        in_channels: 31
+        out_channels: 3
+
+    ggpir:
+      model: ggpir.GGPIRLayer
+      params:
+        x_channels: 3
+        y_channels: 3
+        g_channels: 7
+
+    decoder:
+      model: ggpir.GGPIRMSABDecoder
+      params:
+        in_channels: 3
+        out_channels: 31

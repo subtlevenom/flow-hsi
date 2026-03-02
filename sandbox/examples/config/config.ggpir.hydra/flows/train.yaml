@@ -1,0 +1,15 @@
+task: train
+experiment: ggpir.msam.hydra
+save_dir: .experiments
+accelerator: gpu
+devices: [0]
+resume: True
+epochs: 5800
+save_freq: 1
+visualize_freq: 1
+
+defaults:
+  - model: ggpir
+  - data: hydra
+  - pipeline: hydra
+  - _self_

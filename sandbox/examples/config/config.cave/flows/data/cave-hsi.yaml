@@ -1,0 +1,20 @@
+name: cave_hsi
+params:
+  train:
+    source: '/data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/dataset/train/source'
+    target: '/data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/dataset/train/target'
+    batch_size: 2
+  val:
+    source: '/data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/dataset/test/source'
+    target: '/data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/dataset/test/target'
+    batch_size: 2
+  test:
+    source: '/data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/dataset/test/source'
+    target: '/data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/dataset/test/target'
+    batch_size: 2
+  predict:
+    source: '/data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/split/test/source'
+    target: '/data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/split/test/target'
+    batch_size: 1
+  num_workers: 12
+  seed: 43

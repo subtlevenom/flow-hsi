@@ -1,0 +1,19 @@
+task: tools
+tool: sample
+type: cave-hsi
+input_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/split
+output_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/dataset
+split:
+  train:
+    source: ${input_path}/train/source
+    target: ${input_path}/train/target
+  val: 
+    source: ${input_path}/val/source
+    target: ${input_path}/val/target
+  test: 
+    source: ${input_path}/test/source
+    target: ${input_path}/test/target
+params:
+  crop_size:  256
+  n_crops: 100
+seed: 43

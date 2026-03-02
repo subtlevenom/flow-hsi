@@ -1,0 +1,25 @@
+name: flow
+params:
+  metadata:
+
+    - layer: cmkan
+      inputs:
+        - x
+      outputs:
+        - y
+
+  layers:
+
+    cmkan:
+      model: cmkan_original.CmKAN
+      params:
+        in_dims: 
+          - 3
+        out_dims: 
+          - 3
+        grid_size: 5
+        spline_order: 3
+        residual_std: 0.1
+        grid_range:
+          - 0.0
+          - 1.0
