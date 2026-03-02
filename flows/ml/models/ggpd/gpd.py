@@ -13,12 +13,13 @@ class GPDLayer(SepGPDLayer):
     def create_encoder(self,
                        in_channels: int,
                        out_channels: int,
-                       alg: str = 'msab',
+                       alg: str = 'mst',
                        **kwargs):
         """
         kwargs['alg']: 'msab','cmlight','cm','mix',None
         kwargs['num_blocks']: [2,2]
         """
+
         match alg:
             case 'mst':
                 return MST(

@@ -15,8 +15,8 @@ class SepGPD(ABC, torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        s_range: List[float] = [1e-3, 1e+3],
         n_layers: int = 3,
+        **kwargs,
     ):
         super(SepGPD, self).__init__()
 
@@ -28,7 +28,7 @@ class SepGPD(ABC, torch.nn.Module):
             self.create_layer(
                 in_channels=in_channels,
                 out_channels=out_channels,
-                s_range=s_range,
+                **kwargs,
             ) for _ in range(n_layers)
         ])
 

@@ -15,8 +15,7 @@ class GPEncoder(nn.Module):
         self,
         in_channels: int = 3,
         out_channels: int = 3,
-        alg: str = 'mix',
-        num_blocks: List[int] = [2, 2],
+        **kwargs,
     ):
         super(GPEncoder, self).__init__()
 
@@ -26,8 +25,7 @@ class GPEncoder(nn.Module):
         self.g_layer = GPDLayer(
             in_channels=in_channels,
             out_channels=out_channels,
-            alg=alg,
-            num_blocks=num_blocks,
+            **kwargs
         )
 
     def forward(

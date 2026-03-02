@@ -13,6 +13,7 @@ class SepGPDLayer(ABC, torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
+        sigma_range: List[int] = [1e-3, 1e+3],
         **kwargs,
     ):
         super(SepGPDLayer, self).__init__()
@@ -28,9 +29,9 @@ class SepGPDLayer(ABC, torch.nn.Module):
         self.s_channels = s_channels
         self.a_channels = a_channels
 
-        s_range = kwargs.get('sigma_range', [1e-3, 1e+3])
-        self.smin = s_range[0]
-        self.smax = s_range[1]
+        sigma_range = kwargs.get('sigma_range', [1e-3, 1e+3])
+        self.sigma_min = sigma_range[0]
+        self.sigma_max = sigma_range[1]
 
         self.encoder = self.create_encoder(
             in_channels,
@@ -83,7 +84,7 @@ class SepGPDLayer(ABC, torch.nn.Module):
 
         m = w[:, :self.m_channels].permute(0, 2, 3, 1)
         s = F.sigmoid(w[:, self.m_channels:self.m_channels + self.s_channels])
-        s = self.smin * (1 - s) + self.smax * s
+        s = self.sigma_min * (1 - s) + self.sigma_max * s
         a = torch.pi * F.tanh(w[:, self.m_channels + self.s_channels:])
 
         S, _, _ = self.covariance_matrix(s, a)
