@@ -36,11 +36,10 @@ class SepGPD(ABC, torch.nn.Module):
     def create_layer(self, in_channels: int, out_channels: int, s_range: List[int], **kwargs) -> SepGPDLayer:
         return NotImplemented
 
-    def forward(self, x: torch.Tensor, w: torch.Tensor=None) -> MultivariateNormal:
+    def forward(self, x: torch.Tensor) -> MultivariateNormal:
         g_ = []
-        for layer in self.layers:
-            g = layer(x,w)
-            g_.append(g)
+        for _g, _x in zip(self.layers, x):
+            g_.append(_g(_x))
         return g_
 
     def cond_distrib_predictor(self, x: torch.Tensor):
