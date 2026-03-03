@@ -36,10 +36,10 @@ class SepGPD(ABC, torch.nn.Module):
     def create_layer(self, in_channels: int, out_channels: int, s_range: List[int], **kwargs) -> SepGPDLayer:
         return NotImplemented
 
-    def forward(self, x: torch.Tensor) -> MultivariateNormal:
+    def forward(self, x: torch.Tensor, w: torch.Tensor=None) -> MultivariateNormal:
         g_ = []
         for layer in self.layers:
-            g = layer(x)
+            g = layer(x,w)
             g_.append(g)
         return g_
 
