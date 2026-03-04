@@ -23,7 +23,7 @@ class SepGPDLayer(ABC, torch.nn.Module):
 
         m_channels = out_channels
         s_channels = out_channels
-        a_channels = s_channels * (s_channels - 1) // 2
+        a_channels = m_channels * (m_channels - 1) // 2
 
         self.m_channels = m_channels
         self.s_channels = s_channels
@@ -65,6 +65,9 @@ class SepGPDLayer(ABC, torch.nn.Module):
                 rij[:, :, :, j, i] = sij
                 R = rij if c == 0 else torch.matmul(R, rij)
                 c += 1
+
+        if R is None:
+            R = torch.ones((B,H,W,1,1)).to(s.device)
 
         # D
         D = torch.diag_embed(s.permute(0, 2, 3, 1))

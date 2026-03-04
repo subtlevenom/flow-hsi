@@ -15,25 +15,26 @@ class SepGPD(ABC, torch.nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        n_layers: int = 3,
+        num_layers: int = 3,
         **kwargs,
     ):
         super(SepGPD, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = in_channels
-        self.n_layers = n_layers
+        self.num_layers = num_layers
 
         self.layers = nn.ModuleList([
             self.create_layer(
                 in_channels=in_channels,
                 out_channels=out_channels,
                 **kwargs,
-            ) for _ in range(n_layers)
+            ) for _ in range(num_layers)
         ])
 
     @abstractmethod
-    def create_layer(self, in_channels: int, out_channels: int, s_range: List[int], **kwargs) -> SepGPDLayer:
+    def create_layer(self, in_channels: int, out_channels: int,
+                     s_range: List[int], **kwargs) -> SepGPDLayer:
         return NotImplemented
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:

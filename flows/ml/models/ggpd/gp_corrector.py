@@ -9,43 +9,36 @@ from flows.ml.layers.sep_gpd import MultivariateNormal
 from .gpd import GPD, GPDLayer
 
 
-class GPEncoder(nn.Module):
+class GPCorrector(nn.Module):
 
     def __init__(
         self,
         in_channels: int = 3,
         out_channels: int = 3,
-        num_layers: int = 1,
-        **kwargs,
     ):
-        super(GPEncoder, self).__init__()
+        super(GPCorrector, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.num_layers = num_layers
 
-        self.gpd = GPD(
+        self.proj = FFN(
             in_channels=in_channels,
             out_channels=out_channels,
-            num_layers=num_layers,
-            alg = None,
-            **kwargs
         )
 
     def forward(
         self,
-        w: List[torch.Tensor],
-        x: List[torch.Tensor],
-        y: List[torch.Tensor],
+        *v: List[torch.Tensor],
     ):
-        g = self.gpd(w)
-        p = [_g.log_prob(_x) for _g,_x in zip(g,x)]
+        y = v[:3]
+        p = v[3:]
 
         p = torch.stack(p, dim=1)
-        sum_p = torch.sum(torch.exp(p), dim=1)
         p = torch.softmax(p, dim=1)
+
         y = torch.stack(y, dim=1)
+        y = torch.sum(y * p, dim=1)
 
-        sum_y = torch.sum(y * p, dim=1)
+        y = self.proj(y)
 
-        return sum_y, sum_p
+        return y

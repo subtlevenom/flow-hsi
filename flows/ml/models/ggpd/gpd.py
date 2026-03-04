@@ -44,12 +44,14 @@ class GPDLayer(SepGPDLayer):
                 return LightCMEncoder(in_channels, out_channels)
             case 'cm':
                 return CMEncoder(in_channels, out_channels)
-            case _:
+            case 'mix':
                 return MSABCMProjector(
                     in_channels=in_channels,
                     out_channels=out_channels,
                     num_blocks=kwargs.get('num_blocks', [2, 2]),
                 )
+            case _:
+                return None
 
 
 class GPD(SepGPD):

@@ -36,12 +36,14 @@ class GPProjector(nn.Module):
         ])
 
     def forward(self, x: torch.Tensor):
+        w_ = []
         x_ = []
         y_ = []
         for projector in self.projectors:
             v = projector(x)
-            _x, _y = torch.split(v, list(self.out_channels), dim=1)
+            _w, _x, _y = torch.split(v, list(self.out_channels), dim=1)
+            w_.append(_w)
             x_.append(_x)
             y_.append(_y)
 
-        return x_, y_
+        return w_,x_, y_
