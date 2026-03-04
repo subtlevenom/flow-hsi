@@ -8,7 +8,6 @@ from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.mst import MSAB
 from flows.ml.layers.sep_gpd import MultivariateNormal
 from flows.ml.models.cmkan_original import CmKAN
-from flows.ml.models.ggpd import GGPD
 
 
 class HSGPD(nn.Module):

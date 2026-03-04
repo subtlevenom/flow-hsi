@@ -7,7 +7,7 @@ from einops import rearrange, einsum
 from .gpd import GPD, GPDLayer
 
 
-class GPProjector(nn.Module):
+class GPYProjector(nn.Module):
 
     def __init__(
         self,
@@ -18,7 +18,7 @@ class GPProjector(nn.Module):
         num_points: int = 7,
         **kwargs,
     ):
-        super(GPProjector, self).__init__()
+        super(GPYProjector, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -37,13 +37,11 @@ class GPProjector(nn.Module):
 
     def forward(self, x: torch.Tensor):
         w_ = []
-        x_ = []
         y_ = []
         for projector in self.projectors:
             v = projector(x)
-            _w, _x, _y = torch.split(v, list(self.out_channels), dim=1)
+            _w, _y = torch.split(v, list(self.out_channels), dim=1)
             w_.append(_w)
-            x_.append(_x)
             y_.append(_y)
 
-        return w_,x_, y_
+        return w_, y_

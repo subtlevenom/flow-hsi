@@ -9,7 +9,7 @@ from flows.ml.layers.sep_gpd import MultivariateNormal
 from .gpd import GPD, GPDLayer
 
 
-class GPEncoder(nn.Module):
+class GPAggregator(nn.Module):
 
     def __init__(
         self,
@@ -18,7 +18,7 @@ class GPEncoder(nn.Module):
         num_layers: int = 1,
         **kwargs,
     ):
-        super(GPEncoder, self).__init__()
+        super(GPAggregator, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -34,17 +34,17 @@ class GPEncoder(nn.Module):
 
     def forward(
         self,
+        x: torch.Tensor,
         w: List[torch.Tensor],
-        x: List[torch.Tensor],
         y: List[torch.Tensor],
     ):
         g = self.gpd(w)
-        p = [_g.log_prob(_x) for _g,_x in zip(g,x)]
+        p = [_g.log_prob(x) for _g in g]
 
         p = torch.stack(p, dim=1)
         p = torch.softmax(p, dim=1)
-        y = torch.stack(y, dim=1)
 
+        y = torch.stack(y, dim=1)
         y = torch.sum(y * p, dim=1)
 
         return y
