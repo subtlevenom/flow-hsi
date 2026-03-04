@@ -42,10 +42,9 @@ class GPEncoder(nn.Module):
         p = [_g.log_prob(_x) for _g,_x in zip(g,x)]
 
         p = torch.stack(p, dim=1)
-        sum_p = torch.sum(torch.exp(p), dim=1)
         p = torch.softmax(p, dim=1)
         y = torch.stack(y, dim=1)
 
-        sum_y = torch.sum(y * p, dim=1)
+        y = torch.sum(y * p, dim=1)
 
-        return sum_y, sum_p
+        return y

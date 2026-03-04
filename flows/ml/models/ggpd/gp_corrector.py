@@ -21,24 +21,19 @@ class GPCorrector(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        self.proj = FFN(
+        self.proj = GPDLayer.create_encoder(
+            self,
             in_channels=in_channels,
             out_channels=out_channels,
+            alg='msab',
+            num_blocks=[2, 2],
         )
 
     def forward(
         self,
-        *v: List[torch.Tensor],
+        *y: List[torch.Tensor],
     ):
-        y = v[:2]
-        p = v[2:]
-
-        p = torch.stack(p, dim=1)
-        p = torch.softmax(p, dim=1)
-
-        y = torch.stack(y, dim=1)
-        y = torch.sum(y * p, dim=1)
-
+        y = torch.cat(y, dim=1)
         y = self.proj(y)
 
         return y
