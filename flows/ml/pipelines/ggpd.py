@@ -71,8 +71,9 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
-        # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
+        # MODEL_PATH = '.experiments/ggpd.msab.huawei/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model.layers.projector1, 'model.layers.projector1', MODEL_PATH)
+        # models.load_model(self.model.layers.encoder1, 'model.layers.encoder1', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder.gpd_x, requires_grad=False)
 
         Logger.info('Initialized model weights with isp pipeline.')
@@ -99,14 +100,15 @@ class GGPDPipeline(L.LightningModule):
 
     def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
-        return pred['res']
+        return pred['y1'], pred['y2'], pred['y2'], pred['res']
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y = self(src, tgt)
+        y1, y2, y3, y = self(src, tgt)
 
-        mae_loss = self.mae_loss(y, tgt)
+        mae_loss = self.mae_loss(y, tgt) + self.mae_loss(
+            y1, tgt) + self.mae_loss(y2, tgt) + self.mae_loss(y3, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
@@ -126,7 +128,7 @@ class GGPDPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y = self(src, tgt)
+        y1, y2, y3, y = self(src, tgt)
 
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
@@ -148,7 +150,7 @@ class GGPDPipeline(L.LightningModule):
     def test_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y = self(src, tgt)
+        y1, y2, y3, y = self(src, tgt)
 
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)

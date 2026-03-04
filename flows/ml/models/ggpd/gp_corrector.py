@@ -30,8 +30,8 @@ class GPCorrector(nn.Module):
         self,
         *v: List[torch.Tensor],
     ):
-        y = v[:3]
-        p = v[3:]
+        y = v[:2]
+        p = v[2:]
 
         p = torch.stack(p, dim=1)
         p = torch.softmax(p, dim=1)
