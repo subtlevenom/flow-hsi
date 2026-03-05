@@ -1,0 +1,69 @@
+name: flow
+params:
+  metadata:
+
+    # --- layer 1 ---- 
+
+    - layer: x_projector
+      inputs:
+        - src
+      outputs:
+        - x
+
+    - layer: cat
+      inputs:
+        - src
+        - x
+      outputs:
+        - x_src
+
+    - layer: y_projector
+      inputs:
+        - x_src
+      outputs:
+        - w_
+        - y_
+
+    - layer: aggregator
+      inputs:
+        - x
+        - w_
+        - y_
+      outputs:
+        - res
+
+  layers:
+
+    cat:
+      model: layers.common.Concat
+      params:
+        dim: 1
+
+    x_projector:
+      model: ggpd.GPXProjector
+      params:
+        in_channels: 3
+        out_channels: 5
+        alg: mst
+        num_blocks:
+          - 2
+          - 2
+
+    y_projector:
+      model: ggpd.GPYProjector
+      params:
+        in_channels: 8
+        out_channels: 
+          - 20
+          - 3
+        alg: mst
+        num_blocks:
+          - 2
+          - 2
+        num_points: 4
+
+    aggregator:
+      model: ggpd.GPAggregator
+      params:
+        out_channels: 5
+        num_layers: 4

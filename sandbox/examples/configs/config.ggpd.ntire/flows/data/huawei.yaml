@@ -3,11 +3,11 @@ params:
   train:
     source: '/data/korepanov/datasets/color-transfer/huawei/dataset/train/source'
     target: '/data/korepanov/datasets/color-transfer/huawei/dataset/train/target'
-    batch_size: 4
+    batch_size: 8
   val:
     source: '/data/korepanov/datasets/color-transfer/huawei/dataset/val/source'
     target: '/data/korepanov/datasets/color-transfer/huawei/dataset/val/target'
-    batch_size: 4
+    batch_size: 8
   test:
     source: '/data/korepanov/datasets/color-transfer/huawei/dataset/test/source'
     target: '/data/korepanov/datasets/color-transfer/huawei/dataset/test/target'
