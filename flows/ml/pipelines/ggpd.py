@@ -148,7 +148,7 @@ class GGPDPipeline(L.LightningModule):
 
     def test_step(self, batch, batch_idx):
         src, tgt = batch
-
+        src /= 1023.
         y = self(src, tgt)
 
         mae_loss = self.mae_loss(y, tgt)
