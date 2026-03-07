@@ -15,7 +15,7 @@ from .dataset import Dataset
 from flows.core import Logger
 from flows.ml.transforms.pair_trransform import PairTransform
 
-CROP = 240
+CROP = 256
 IMG_EXTS: Tuple[str] = (".npy")
 
 class DataModule(L.LightningDataModule):
@@ -132,10 +132,10 @@ class DataModule(L.LightningDataModule):
     def setup(self, stage: str) -> None:
         if stage == 'fit' or stage is None:
             self.train_dataset = Dataset(
-                self.train_paths_source, self.train_paths_target, self.image_train_transform, self.train_image_p_transform,
+                self.train_paths_source, self.train_paths_target, self.image_train_transform, #self.train_image_p_transform,
             )
             self.val_dataset = Dataset(
-                self.val_paths_source, self.val_paths_target, self.image_val_transform, self.val_image_p_transform,
+                self.val_paths_source, self.val_paths_target, self.image_val_transform, #self.val_image_p_transform,
             )
         if stage == 'test' or stage is None:
             self.test_dataset = Dataset(

@@ -35,7 +35,7 @@ class Dataset(Dataset):
         h,w = x.shape[-2:]
         w = 4*(w // 4)
         h = 4*(h // 4)
-        x = x[:,:h,:w]
+        x = x[:,:h,:w] / 1023.
         y = y[:,:h,:w]
 
         if self.filename:
