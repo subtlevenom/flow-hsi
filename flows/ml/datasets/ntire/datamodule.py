@@ -139,7 +139,7 @@ class DataModule(L.LightningDataModule):
             )
         if stage == 'test' or stage is None:
             self.test_dataset = Dataset(
-                self.test_paths_source, self.test_paths_target, self.image_test_transform, self.test_image_p_transform,
+                self.test_paths_source, self.test_paths_target, self.image_test_transform, #self.test_image_p_transform,
             )
         if stage == 'predict' or stage is None:
             self.predict_dataset = Dataset(

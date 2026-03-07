@@ -72,6 +72,7 @@ class GGPDPipeline(L.LightningModule):
                         nn.init.constant_(m.bias, 0)
 
         # MSTpp
+        """
         MODEL_PATH = '.experiments/mstpp.ntire.v8/logs/checkpoints/MSTpp_NTIRE_v1_best.pth'
         checkpoint: dict = torch.load(
             MODEL_PATH,
@@ -79,9 +80,10 @@ class GGPDPipeline(L.LightningModule):
             map_location=torch.device('cuda:0'))['model']
         self.model.layers.encoder.load_state_dict(checkpoint, strict=True)
         models.require_grad(self.model.layers.encoder, requires_grad=False)
+        """
 
-        # MODEL_PATH = '.experiments/ggpd.msab.huawei/logs/checkpoints/_last.ckpt'
-        # models.load_model(self.model.layers.projector2, 'model.layers.projector1', MODEL_PATH)
+        # MODEL_PATH = '.experiments/ggpd.mst.ntire/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model, 'model', MODEL_PATH)
         # models.load_model(self.model.layers.encoder2, 'model.layers.encoder1', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder.gpd_x, requires_grad=False)
 
