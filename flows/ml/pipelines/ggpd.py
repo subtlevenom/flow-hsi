@@ -191,6 +191,8 @@ class GGPDPipeline(L.LightningModule):
             self.start_time = time.perf_counter()
 
         src, tgt, name = batch
+        src /= 1023.
+
         y = self(src, tgt)
         elapsed = time.perf_counter() - self.start_time
 
