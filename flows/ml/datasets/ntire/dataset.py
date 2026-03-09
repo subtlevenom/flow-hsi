@@ -35,6 +35,12 @@ class Dataset(Dataset):
         if self.filename:
             return x, y, Path(path).name
 
+        h,w = x.shape[-2:]
+        h = 4 * (h//4)
+        w = 4 * (w//4)
+        x = x[:,:h,:w]
+        y = y[:,:h,:w]
+
         return x / 1023., y
 
     def __len__(self) -> int:
