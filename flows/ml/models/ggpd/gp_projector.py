@@ -4,10 +4,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, einsum
-from .gpd import GPD, GPDLayer
+from .gpd import create_encoder
 
 
-class GPXProjector(nn.Module):
+class GPProjector(nn.Module):
 
     def __init__(
         self,
@@ -17,13 +17,12 @@ class GPXProjector(nn.Module):
         num_blocks: List[int] = [2, 2],
         **kwargs,
     ):
-        super(GPXProjector, self).__init__()
+        super(GPProjector, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        self.projector = GPDLayer.create_encoder(
-            self,
+        self.projector = create_encoder(
             in_channels=in_channels,
             out_channels=out_channels,
             alg=alg,

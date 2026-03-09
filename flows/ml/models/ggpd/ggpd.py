@@ -8,7 +8,7 @@ from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.mst import MSAB
 from flows.ml.layers.sep_gpd import MultivariateNormal
 from .gp_aggregator import GPEncoder
-from .gp_x_projector import GPProjector
+from .gp_projector import GPProjector
 
 
 class GGPD(nn.Module):

@@ -4,10 +4,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from einops import rearrange, einsum
-from .gpd import GPD, GPDLayer
+from .gpd import create_encoder
 
 
-class GPYProjector(nn.Module):
+class GPEncoder(nn.Module):
 
     def __init__(
         self,
@@ -18,15 +18,14 @@ class GPYProjector(nn.Module):
         num_points: int = 7,
         **kwargs,
     ):
-        super(GPYProjector, self).__init__()
+        super(GPEncoder, self).__init__()
 
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_points = num_points
 
         self.projectors = nn.ModuleList([
-            GPDLayer.create_encoder(
-                self,
+            create_encoder(
                 in_channels=in_channels,
                 out_channels=sum(out_channels),
                 alg=alg,
@@ -36,12 +35,13 @@ class GPYProjector(nn.Module):
         ])
 
     def forward(self, x: torch.Tensor):
-        w_ = []
         y_ = []
         for projector in self.projectors:
-            v = projector(x)
-            _w, _y = torch.split(v, list(self.out_channels), dim=1)
-            w_.append(_w)
-            y_.append(_y)
+            y = projector(x)
+            y_.append(y)
 
-        return w_, y_
+        y_ = torch.stack(y_,dim=0) # nbchw
+        if len(self.out_channels) > 1:
+            y_ = torch.split(y_, list(self.out_channels), dim=2)
+
+        return y_

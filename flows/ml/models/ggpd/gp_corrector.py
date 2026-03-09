@@ -6,7 +6,7 @@ from einops import rearrange, einsum
 from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.encoders.sg_encoder import FFN, LayerNorm
 from flows.ml.layers.sep_gpd import MultivariateNormal
-from .gpd import GPD, GPDLayer
+from .gpd import create_encoder
 
 
 class GPCorrector(nn.Module):
@@ -21,8 +21,7 @@ class GPCorrector(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-        self.proj = GPDLayer.create_encoder(
-            self,
+        self.proj = create_encoder(
             in_channels=in_channels,
             out_channels=out_channels,
             alg='msab',

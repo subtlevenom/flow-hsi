@@ -1,4 +1,3 @@
-from abc import ABC, abstractmethod
 from typing import List
 import numpy as np
 import torch
@@ -7,22 +6,20 @@ import einops
 from .multivariate_normal import MultivariateNormal
 
 
-class SepGPDLayer(ABC, torch.nn.Module):
+class SepGPDLayer(torch.nn.Module):
 
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
+        dim: int,
         sigma_range: List[int] = [1e-3, 1e+3],
         **kwargs,
     ):
         super(SepGPDLayer, self).__init__()
 
-        self.in_channels = in_channels
-        self.out_channels = out_channels
+        self.dim = dim
 
-        m_channels = out_channels
-        s_channels = out_channels
+        m_channels = dim
+        s_channels = dim
         a_channels = m_channels * (m_channels - 1) // 2
 
         self.m_channels = m_channels
@@ -32,16 +29,6 @@ class SepGPDLayer(ABC, torch.nn.Module):
         sigma_range = kwargs.get('sigma_range', [1e-3, 1e+3])
         self.sigma_min = sigma_range[0]
         self.sigma_max = sigma_range[1]
-
-        self.encoder = self.create_encoder(
-            in_channels,
-            m_channels + s_channels + a_channels,
-            **kwargs,
-        )
-
-    @abstractmethod
-    def create_encoder(self, in_channels: int, out_channels: int, **kwargs):
-        return NotImplemented
 
     def covariance_matrix(self, s: torch.Tensor, a: torch.Tensor):
         B, C, H, W = s.shape
@@ -81,12 +68,10 @@ class SepGPDLayer(ABC, torch.nn.Module):
 
     def forward(self, x: torch.Tensor) -> MultivariateNormal:
 
-        w = x if self.encoder is None else self.encoder(x)
-
-        m = w[:, :self.m_channels].permute(0, 2, 3, 1)
-        s = F.sigmoid(w[:, self.m_channels:self.m_channels + self.s_channels])
+        m = x[:, :self.m_channels].permute(0, 2, 3, 1)
+        s = F.sigmoid(x[:, self.m_channels:self.m_channels + self.s_channels])
         s = self.sigma_min * (1 - s) + self.sigma_max * s
-        a = torch.pi * F.tanh(w[:, self.m_channels + self.s_channels:])
+        a = torch.pi * F.tanh(x[:, self.m_channels + self.s_channels:])
 
         S, _, _ = self.covariance_matrix(s, a)
         S = 0.5 * (S + S.transpose(3, 4))  # to minimize rounding errors
