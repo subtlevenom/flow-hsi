@@ -35,7 +35,7 @@ class Dataset(Dataset):
         if self.filename:
             return x, y, Path(path).name
 
-        return x, y
+        return x / 1023., y
 
     def __len__(self) -> int:
         return len(self.paths_a)

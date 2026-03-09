@@ -15,9 +15,11 @@ class PairTransform(nn.Module):
         random.seed(seed)
 
     def forward(self, image1: torch.Tensor, image2: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
         i, j, h, w = RandomCrop.get_params(image1, output_size=(self.crop_size, self.crop_size))
         image1 = F.crop(image1, i, j, h, w)
         image2 = F.crop(image2, i, j, h, w)
+        """
         
         if random.random() > self.p:
             image1 = F.hflip(image1)
