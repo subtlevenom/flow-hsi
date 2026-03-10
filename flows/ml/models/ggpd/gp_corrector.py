@@ -25,7 +25,7 @@ class GPCorrector(nn.Module):
             in_channels=in_channels,
             out_channels=out_channels,
             alg='msab',
-            num_blocks=[2, 2],
+            num_blocks=[1, 1],
         )
 
     def forward(
