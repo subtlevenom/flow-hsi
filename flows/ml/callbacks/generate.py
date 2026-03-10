@@ -1,9 +1,11 @@
+from typing import Any
 from lightning.pytorch.callbacks import Callback
 from lightning import LightningModule, Trainer
 import torch.nn.functional as F
 import torch
 import torchvision
 import os
+from tools.files import write
 
 
 class GenerateCallback(Callback):
@@ -72,3 +74,23 @@ class GenerateCallback(Callback):
             save_path = os.path.join(self.save_dir, f"test_{trainer.current_epoch}.png")
             os.makedirs(self.save_dir, exist_ok=True)
             torchvision.utils.save_image(grid, save_path)
+
+    def on_predict_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
+        self.save_dir = torch.Path(trainer.log_dir).joinpath('figures')
+        self.save_dir.mkdir(parents=True, exist_ok=True)
+
+    def on_predict_batch_end(
+        self,
+        trainer: Trainer,
+        pl_module: LightningModule,
+        outputs: torch.Tensor,
+        batch: Any,
+        batch_idx: int,
+    ) -> None:
+
+        images = outputs['image']
+        filenames = outputs['filenames']
+        for i in range(images.shape[0]):
+            image = images[i].permute(1,2,0).detach().cpu().numpy()
+            path = self.save_dir.joinpath(f'{filenames[i]}')
+            write(path, image)
