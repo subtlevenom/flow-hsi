@@ -82,8 +82,8 @@ class GGPDPipeline(L.LightningModule):
         models.require_grad(self.model.layers.encoder, requires_grad=False)
         """
 
-        MODEL_PATH = '.experiments/ggpd.mst.ntire/logs/checkpoints/_last.ckpt'
-        models.load_model(self.model, 'model', MODEL_PATH)
+        # MODEL_PATH = '.experiments/ggpd.mst.ntire/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model, 'model', MODEL_PATH)
         # models.load_model(self.model.layers.encoder2, 'model.layers.encoder1', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder.gpd_x, requires_grad=False)
 
@@ -109,7 +109,7 @@ class GGPDPipeline(L.LightningModule):
             "monitor": "val_loss"
         }
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, y: torch.Tensor=None) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
         return pred['res']
 
@@ -229,4 +229,4 @@ class GGPDPipeline(L.LightningModule):
             },
         })
 
-        return {'loss': de_loss}
+        return {'loss': de_loss, 'filenames':name, 'image': y}
