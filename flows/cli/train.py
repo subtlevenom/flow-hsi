@@ -48,14 +48,14 @@ def train_default(config: DictConfig) -> None:
             ModelCheckpoint(
                 filename="{epoch}-{val_loss:.2f}",
                 monitor='val_loss',
-                save_top_k=5,
+                save_top_k=2,
                 save_last=True,
             ),
             RichModelSummary(),
             RichProgressBar(),
             LearningRateMonitor(logging_interval='epoch', ),
             GenerateCallback(every_n_epochs=1, ),
-            StochasticWeightAveraging(swa_lrs=config.pipeline.params.lr * 10.)
+            #StochasticWeightAveraging(swa_lrs=config.pipeline.params.lr * 10.)
         ],
     )
 

@@ -71,8 +71,8 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/ggpd.msab.huawei/logs/checkpoints/_last.ckpt'
-        # models.load_model(self.model.layers.projector2, 'model.layers.projector1', MODEL_PATH)
+        # MODEL_PATH = '.experiments/ggpd.mst.2.ntire/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model, 'model', MODEL_PATH)
         # models.load_model(self.model.layers.encoder2, 'model.layers.encoder1', MODEL_PATH)
         # models.require_grad(self.model.layers.encoder.gpd_x, requires_grad=False)
 
@@ -112,7 +112,7 @@ class GGPDPipeline(L.LightningModule):
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
         de_loss = self.de_metric(y[:, self.metrics_channels], tgt[:, self.metrics_channels])
-        loss = mae_loss + 0.15 * (1 - ssim_loss)
+        loss = mae_loss #+ 0.1*sam_loss + 0.15 * (1 - ssim_loss)
 
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
@@ -141,7 +141,7 @@ class GGPDPipeline(L.LightningModule):
         self.log('val_ssim', ssim_loss, prog_bar=True, logger=True)
         self.log('val_sam', sam_loss, prog_bar=True, logger=True)
         self.log('val_de', de_loss, prog_bar=True, logger=True)
-        self.log('val_loss', de_loss, prog_bar=True, logger=True)
+        self.log('val_loss', sam_loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
 
