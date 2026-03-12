@@ -112,7 +112,7 @@ class GGPDPipeline(L.LightningModule):
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
         de_loss = self.de_metric(y[:, self.metrics_channels], tgt[:, self.metrics_channels])
-        loss = mae_loss + 0.15 * (1 - ssim_loss)
+        loss = mae_loss #+ 0.15 * (1 - ssim_loss)
 
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
