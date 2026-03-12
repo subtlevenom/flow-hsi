@@ -10,7 +10,7 @@ from tools.files import reader
 
 
 class Dataset(Dataset):
-    def __init__(self, paths_a: List[str], paths_b: List[str], transform: Compose, p_transform: PairTransform = None, filename=False) -> None:
+    def __init__(self, paths_a: List[str], paths_b: List[str], transform: Compose, p_transform: PairTransform = None, filename=False, norm=1.) -> None:
         assert len(paths_a) == len(paths_b), "paths_a and paths_b must have same length"
         self.paths_a = paths_a
         self.paths_b = paths_b
@@ -32,16 +32,16 @@ class Dataset(Dataset):
         if self.p_transform is not None:
             x, y = self.p_transform(x, y)
 
-        if self.filename:
-            return x, y, Path(path).name
-
         h,w = x.shape[-2:]
         h = 4 * (h//4)
         w = 4 * (w//4)
         x = x[:,:h,:w]
         y = y[:,:h,:w]
 
-        return x / 1023., y
+        if self.filename:
+            return x / norm, y, Path(path).name
+
+        return x / norm, y
 
     def __len__(self) -> int:
         return len(self.paths_a)
