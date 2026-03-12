@@ -17,6 +17,7 @@ class Dataset(Dataset):
         self.transform = transform
         self.p_transform = p_transform
         self.filename = filename
+        self.norm = norm
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
         path = self.paths_a[idx]
@@ -39,9 +40,9 @@ class Dataset(Dataset):
         y = y[:,:h,:w]
 
         if self.filename:
-            return x / norm, y, Path(path).name
+            return x / self.norm, y, Path(path).name
 
-        return x / norm, y
+        return x / self.norm, y
 
     def __len__(self) -> int:
         return len(self.paths_a)
