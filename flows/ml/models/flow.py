@@ -13,7 +13,7 @@ class Flow(nn.Module):
     def compose(self, metadata):
         ops = [
             gk.operation(
-                name=f'{i}.{m.layer}', needs=list(m.inputs),
+                name=f'{i}.{m.layer}', needs=list(m.get('inputs',[])),
                 provides=list(m.outputs))(self.layers[m.layer])
             for i, m in enumerate(metadata)
         ]
