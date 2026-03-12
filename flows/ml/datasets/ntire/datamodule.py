@@ -127,24 +127,30 @@ class DataModule(L.LightningDataModule):
                 self.train_paths_target,
                 self.image_train_transform,
                 self.train_image_p_transform,
+                norm = 1023.,
             )
             self.val_dataset = Dataset(
                 self.val_paths_source,
                 self.val_paths_target,
                 self.image_val_transform,
                 self.val_image_p_transform,
+                norm = 1023.,
             )
         if stage == 'test' or stage is None:
             self.test_dataset = Dataset(
                 self.test_paths_source,
                 self.test_paths_target,
                 self.image_test_transform,
+                norm = 1023.,
             )
         if stage == 'predict' or stage is None:
-            self.predict_dataset = Dataset(self.predict_paths_source,
-                                           self.predict_paths_target,
-                                           self.image_predict_transform,
-                                           filename=True)
+            self.predict_dataset = Dataset(
+                self.predict_paths_source,
+                self.predict_paths_target,
+                self.image_predict_transform,
+                filename=True,
+                norm = 1023.,
+                                           )
 
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
