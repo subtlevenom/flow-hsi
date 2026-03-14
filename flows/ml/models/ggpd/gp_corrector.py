@@ -15,6 +15,8 @@ class GPCorrector(nn.Module):
         self,
         in_channels: int = 3,
         out_channels: int = 3,
+        num_blocks: List[int] = [2, 2],
+        **kwargs,
     ):
         super(GPCorrector, self).__init__()
 
@@ -25,7 +27,7 @@ class GPCorrector(nn.Module):
             in_channels=in_channels,
             out_channels=out_channels,
             alg='msab',
-            num_blocks=[2, 2],
+            num_blocks=num_blocks,
         )
 
     def forward(
