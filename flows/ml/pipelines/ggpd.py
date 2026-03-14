@@ -141,7 +141,7 @@ class GGPDPipeline(L.LightningModule):
         self.log('val_ssim', ssim_loss, prog_bar=True, logger=True)
         self.log('val_sam', sam_loss, prog_bar=True, logger=True)
         self.log('val_de', de_loss, prog_bar=True, logger=True)
-        self.log('val_loss', de_loss, prog_bar=True, logger=True)
+        self.log('val_loss', loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
 

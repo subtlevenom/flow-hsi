@@ -9,23 +9,30 @@ from flows.ml.layers.sep_gpd import MultivariateNormal
 from flows.ml.layers.sep_gpd import SepGPD, SepGPDLayer
 
 
-class GPMultiplicator(nn.Module):
+class GPSplit(nn.Module):
 
     def __init__(
         self,
+        split: int = 0,
         **kwargs,
     ):
-        super(GPMultiplicator, self).__init__()
+        super(GPSplit, self).__init__()
+        self.split = split
 
     def forward(
         self,
         x: torch.Tensor,
-        p: torch.Tensor,
     ):
         """ 
-        x: NBCHW
-        w: NB1HW
+        x: B(NC)HW -> NBCHW
         """
 
-        y = torch.sum(x * p, dim=0)
+        B, C, H, W = x.shape
+        y = rearrange(
+            x,
+            'b (n c) h w -> n b c h w',
+            n=self.split,
+            c=C // self.split,
+        )
+
         return y

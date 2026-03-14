@@ -4,3 +4,4 @@ from .gp_encoder import GPEncoder
 from .gp_corrector import GPCorrector
 from .gp_pdf import GPPdf
 from .gp_multiplicator import GPMultiplicator
+from .gp_split import GPSplit
