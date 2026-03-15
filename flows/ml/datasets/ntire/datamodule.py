@@ -15,7 +15,6 @@ from .dataset import Dataset
 from flows.core import Logger
 from flows.ml.transforms.pair_trransform import PairTransform
 
-CROP = 256
 IMG_EXTS: Tuple[str] = (".npy")
 
 
@@ -30,6 +29,7 @@ class DataModule(L.LightningDataModule):
         num_workers: int = min(12,
                                os.cpu_count() - 2),
         seed: int = 43,
+        **kwargs,
     ) -> None:
         super().__init__()
 
@@ -89,18 +89,35 @@ class DataModule(L.LightningDataModule):
         self.predict_paths_source = sorted(paths_source)
         self.predict_paths_target = sorted(paths_target)
         #
-        self.batch_size = train.batch_size
+        self.train_batch_size = train.batch_size
+        self.train_crop_size = train.get('crop_size',0)
         self.val_batch_size = val.batch_size
+        self.val_crop_size = val.get('crop_size',0)
         self.test_batch_size = test.batch_size
+        self.test_crop_size = test.get('crop_size',0)
         self.predict_batch_size = predict.batch_size
-        # self.image_p_transform = None
-        self.train_image_p_transform = PairTransform(crop_size=CROP,
-                                                     p=0.5,
-                                                     seed=seed)
-        # self.val_image_p_transform = None
-        self.val_image_p_transform = PairTransform(crop_size=CROP,
-                                                   p=0.0,
-                                                   seed=seed)
+        self.predict_crop_size = predict.get('crop_size',0)
+        # pair transforms
+        self.train_image_p_transform = PairTransform(
+            crop_size=self.train_crop_size,
+            p=0.5,
+            seed=seed,
+        )
+        self.val_image_p_transform = PairTransform(
+            crop_size=self.val_crop_size,
+            p=0.0,
+            seed=seed,
+        )
+        self.test_image_p_transform = PairTransform(
+            crop_size=self.test_crop_size,
+            p=0.0,
+            seed=seed,
+        )
+        self.predict_image_p_transform = PairTransform(
+            crop_size=self.predict_crop_size,
+            p=0.0,
+            seed=seed,
+        )
 
         self.image_train_transform = Compose([
             ToImage(),
@@ -141,6 +158,7 @@ class DataModule(L.LightningDataModule):
                 self.test_paths_source,
                 self.test_paths_target,
                 self.image_test_transform,
+                self.test_image_p_transform,
                 norm=1023.,
             )
         if stage == 'predict' or stage is None:
@@ -148,6 +166,7 @@ class DataModule(L.LightningDataModule):
                 self.predict_paths_source,
                 self.predict_paths_target,
                 self.image_predict_transform,
+                self.predict_image_p_transform,
                 filename=True,
                 norm=1023.,
             )
@@ -155,7 +174,7 @@ class DataModule(L.LightningDataModule):
     def train_dataloader(self) -> DataLoader:
         return DataLoader(
             self.train_dataset,
-            batch_size=self.batch_size,
+            batch_size=self.train_batch_size,
             shuffle=True,
             num_workers=self.num_workers,
             pin_memory=True,
