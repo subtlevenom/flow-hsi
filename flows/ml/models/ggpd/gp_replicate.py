@@ -17,7 +17,7 @@ class GPReplicate(nn.Module):
         dim: int=0,
         **kwargs,
     ):
-        super(GPSplit, self).__init__()
+        super(GPReplicate, self).__init__()
         self.n = n
         self.dim=dim
 
