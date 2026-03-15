@@ -88,15 +88,22 @@ class DataModule(L.LightningDataModule):
         ]
         self.predict_paths_source = sorted(paths_source)
         self.predict_paths_target = sorted(paths_target)
-        #
+        # train
         self.train_batch_size = train.batch_size
         self.train_crop_size = train.get('crop_size',0)
+        self.train_norm = train.get('norm',1.0)
+        # val
         self.val_batch_size = val.batch_size
         self.val_crop_size = val.get('crop_size',0)
+        self.val_norm = train.get('norm',1.0)
+        # test
         self.test_batch_size = test.batch_size
         self.test_crop_size = test.get('crop_size',0)
+        self.test_norm = train.get('norm',1.0)
+        # predict
         self.predict_batch_size = predict.batch_size
         self.predict_crop_size = predict.get('crop_size',0)
+        self.predict_norm = train.get('norm',1.0)
         # pair transforms
         self.train_image_p_transform = PairTransform(
             crop_size=self.train_crop_size,
@@ -144,14 +151,14 @@ class DataModule(L.LightningDataModule):
                 self.train_paths_target,
                 self.image_train_transform,
                 self.train_image_p_transform,
-                norm=1023.,
+                norm=self.train_norm,
             )
             self.val_dataset = Dataset(
                 self.val_paths_source,
                 self.val_paths_target,
                 self.image_val_transform,
                 self.val_image_p_transform,
-                norm=1023.,
+                norm=self.val_norm,
             )
         if stage == 'test' or stage is None:
             self.test_dataset = Dataset(
@@ -159,7 +166,7 @@ class DataModule(L.LightningDataModule):
                 self.test_paths_target,
                 self.image_test_transform,
                 self.test_image_p_transform,
-                norm=1023.,
+                norm=self.test_norm,
             )
         if stage == 'predict' or stage is None:
             self.predict_dataset = Dataset(
@@ -167,8 +174,8 @@ class DataModule(L.LightningDataModule):
                 self.predict_paths_target,
                 self.image_predict_transform,
                 self.predict_image_p_transform,
+                norm=self.predict_norm,
                 filename=True,
-                norm=1023.,
             )
 
     def train_dataloader(self) -> DataLoader:
