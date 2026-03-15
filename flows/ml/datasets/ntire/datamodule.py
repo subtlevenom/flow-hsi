@@ -95,15 +95,15 @@ class DataModule(L.LightningDataModule):
         # val
         self.val_batch_size = val.batch_size
         self.val_crop_size = val.get('crop_size',0)
-        self.val_norm = train.get('norm',1.0)
+        self.val_norm = val.get('norm',1.0)
         # test
         self.test_batch_size = test.batch_size
         self.test_crop_size = test.get('crop_size',0)
-        self.test_norm = train.get('norm',1.0)
+        self.test_norm = test.get('norm',1.0)
         # predict
         self.predict_batch_size = predict.batch_size
         self.predict_crop_size = predict.get('crop_size',0)
-        self.predict_norm = train.get('norm',1.0)
+        self.predict_norm = predict.get('norm',1.0)
         # pair transforms
         self.train_image_p_transform = PairTransform(
             crop_size=self.train_crop_size,
