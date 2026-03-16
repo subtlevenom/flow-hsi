@@ -5,3 +5,4 @@ from .se_net import SENet
 from .linear import Linear
 from .conv_1d import Conv1d
 from .basis import Basis
+from .ffn import FFN
