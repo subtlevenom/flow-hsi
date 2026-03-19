@@ -12,6 +12,6 @@ def register_parsers(parsers: dict, method: str):
             parsers[suffix] = parser
 
     for importer, modname, ispkg in pkgutil.iter_modules(__path__):
-        module = importer.find_module(modname).load_module(modname)
+        module = importer.find_spec(modname).loader.load_module(modname)
         formats = getattr(module, '__FORMATS__')
         register(formats, getattr(module, method))
