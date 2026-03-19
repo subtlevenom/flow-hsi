@@ -11,5 +11,5 @@ def register_converters(converters: dict, method: str):
         converters[name] = converter
 
     for importer, modname, ispkg in pkgutil.iter_modules(__path__):
-        module = importer.find_module(modname).load_module(modname)
+        module = importer.find_spec(modname).loader.load_module(modname)
         register(modname, getattr(module, method))
