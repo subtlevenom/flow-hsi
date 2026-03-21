@@ -12,11 +12,11 @@ class Rearrange(torch.nn.Module):
     ):
         super(Rearrange, self).__init__()
         self.pattern = pattern
-        self.axes_lengths = axes_lengths
+        self.axes_lengths = axes_lengths or {}
 
     def forward(
         self,
-        *x: Union[torch.Tensor, List[torch.Tensor]],
+        x: torch.Tensor,
     ) -> torch.Tensor:
         y = rearrange(
             x,
