@@ -1,0 +1,41 @@
+[build-system]
+requires = [
+    "setuptools >= 44.0.0",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rodrigues"
+authors = [
+  { name="Artem Nikonorov", email="artniko@gmail.com" },
+]
+maintainers = [
+  { name="Artem Nikonorov", email="artniko@gmail.com" },
+]
+description = "Color transfer"
+requires-python = ">=3.10.12"
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "License :: Other/Proprietary License",
+]
+dynamic = ["dependencies", "version", "readme"]
+
+[project.scripts]
+rodrigues = "rodrigues:main"
+
+[project.urls]
+"Homepage" = "https://dev.azure.com/samarauniversity/rodrigues"
+"Bug Tracker" = "https://dev.azure.com/samarauniversity/rodrigues/_workitems"
+
+[tool.setuptools.packages.find]
+where = [""]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+version = {file = ["VERSION"]}
+readme = {file = ["README.md"]}
+
+[tool.setuptools.package-data]
+"*" = ["*.pth", "*.npy"]
