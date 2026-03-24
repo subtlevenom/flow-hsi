@@ -10,7 +10,7 @@ RUN apt-get update && \
         build-essential \
         gcc
 
-WORKDIR /flows
+WORKDIR /flow-hsi
 COPY . ./
 
 RUN python3 -m venv $VIRTUAL_ENV && \
@@ -19,7 +19,7 @@ RUN python3 -m venv $VIRTUAL_ENV && \
     pip install .
 
 # Stage 2: Runtime
-FROM nvidia/cuda:11.6.2-runtime-ubuntu20.04
+FROM nvidia/cuda:11.6.2-runtime-ubuntu24.04
 
 LABEL desc="flow-hsi docker container"
 

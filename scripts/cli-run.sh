@@ -1,10 +1,10 @@
 #!/bin/bash
 
-IMAGE_NAME=$(id -u -n)/flow-hsi:latest
 CONTAINER_NAME=flow-hsi
+IMAGE_NAME=$(id -u -n)/flow-hsi:latest
 
 WORK_PATH=~/work/flow-hsi
-DATA_PATH=~/data
+DATA_PATH=/data/korepanov/datasets
 
 #-u $(id -u):$(id -g) \
 docker run --rm -it \
