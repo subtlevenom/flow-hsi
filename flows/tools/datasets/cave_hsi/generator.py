@@ -9,9 +9,9 @@ import imageio
 from scipy import io
 import albumentations as A
 from omegaconf import DictConfig
-from tools.utils.concurrent import concurrent
-from tools.optics import create_cdf
-from tools.files import reader, writer
+from flows.tools.utils.concurrent import concurrent
+from flows.tools.optics import create_cdf
+from flows.tools.files import reader, writer
 
 
 def generate(input_path: str, output_path:str, **kwargs) -> None:

@@ -2,7 +2,7 @@ import torch
 from typing import List
 from functools import reduce
 from torchmetrics import Metric
-from tools.utils.colors import rgb_to_lab
+from flows.tools.utils.colors import rgb_to_lab
 
 
 def _tsplit(a: torch.Tensor,

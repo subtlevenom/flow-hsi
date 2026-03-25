@@ -1,6 +1,6 @@
 from omegaconf import DictConfig, OmegaConf
-from tools.utils import text
-import tools
+from flows.tools.utils import text
+from flows import tools
 
 
 def main(config: DictConfig) -> None:

@@ -6,12 +6,12 @@ import cv2
 import random
 import numpy as np
 import imageio
+from scipy import io
 import albumentations as A
 from omegaconf import DictConfig
-from tools.utils.concurrent import concurrent
-from tools.utils import images
-from tools.files import reader
-from scipy import io
+from flows.tools.utils.concurrent import concurrent
+from flows.tools.utils import images
+from flows.tools.files import reader
 
 THREADS = 1
 

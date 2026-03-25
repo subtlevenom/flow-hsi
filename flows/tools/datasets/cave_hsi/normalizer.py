@@ -2,8 +2,8 @@ import sys
 from pathlib import Path
 import shutil
 import numpy as np
-from tools.files import reader
-from tools.files.iterators import files
+from flows.tools.files import reader
+from flows.tools.files.iterators import files
 
 
 def normalize(gt_path: str, src_path: str, output_path: str, **kwargs) -> None:

@@ -10,7 +10,7 @@ from torch import optim
 import torch.nn.functional as F
 import torchvision
 import time
-from tools.utils import models, text
+from flows.tools.utils import models, text
 from flows.core import Logger
 from flows.ml.losses import GPDFLoss
 from ..models import Flow

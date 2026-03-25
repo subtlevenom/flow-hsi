@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import torch
 import torchvision
 import os
-from tools.files import write
+from flows.tools.files import write
 
 
 class GenerateCallback(Callback):

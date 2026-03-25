@@ -1,5 +1,5 @@
 from omegaconf import DictConfig
-from tools.utils import text
+from flows.tools.utils import text
 from . import cave_hsi, icvl, ntire, hydra
 
 

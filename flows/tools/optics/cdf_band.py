@@ -13,7 +13,7 @@ from scipy.io import savemat
 from .lens import Lens
 from .bayer import Bayer
 from tqdm import tqdm
-from tools.utils import images
+from flows.tools.utils import images
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(DEVICE)
