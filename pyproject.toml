@@ -5,15 +5,16 @@ requires = [
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "rodrigues"
+name = "flow-hsi"
 authors = [
-  { name="Artem Nikonorov", email="artniko@gmail.com" },
+  { name="Anrei Korepanov", email="andrew.korepanov@gmail.com" },
 ]
+version = "0.1.1"
 maintainers = [
-  { name="Artem Nikonorov", email="artniko@gmail.com" },
+  { name="Andrei Korepanov", email="andrew.korepanov@gmail.com" },
 ]
-description = "Color transfer"
-requires-python = ">=3.10.12"
+description = "HSI flows"
+requires-python = "==3.10.12"
 classifiers = [
     "Private :: Do Not Upload",
     "Programming Language :: Python :: 3",
@@ -22,20 +23,24 @@ classifiers = [
 ]
 dynamic = ["dependencies", "version", "readme"]
 
-[project.scripts]
-rodrigues = "rodrigues:main"
-
-[project.urls]
-"Homepage" = "https://dev.azure.com/samarauniversity/rodrigues"
-"Bug Tracker" = "https://dev.azure.com/samarauniversity/rodrigues/_workitems"
-
-[tool.setuptools.packages.find]
-where = [""]
-
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
 version = {file = ["VERSION"]}
 readme = {file = ["README.md"]}
+
+[project.urls]
+"Homepage" = "https://github.com/subtlevenom/flow-hsi"
+"Bug Tracker" = "https://github.com/subtlevenom/flow-hsi"
+
+[project.scripts]
+flow = "flow-hsi:main"
+
+[tool.setuptools]
+package-dir = { "" = "flows" }
+
+[tool.pytest.ini_options]
+pythonpath = [".", "src"]
+addopts = "--cov=flow --cov=flow_helpers --cov-report=term-missing --cov-report=lcov:coverage.lcov"
 
 [tool.setuptools.package-data]
 "*" = ["*.pth", "*.npy"]

@@ -1,6 +1,6 @@
 
 # Stage 1: Builder/Compiler
-FROM python:3.10.12-slim as builder
+FROM python:3.10.12-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV VIRTUAL_ENV=/opt/venv
@@ -19,7 +19,7 @@ RUN python3 -m venv $VIRTUAL_ENV && \
     pip install .
 
 # Stage 2: Runtime
-FROM nvidia/cuda:11.6.2-runtime-ubuntu24.04
+FROM nvidia/cuda:13.2.0-runtime-ubuntu24.04
 
 LABEL desc="flow-hsi docker container"
 
@@ -31,7 +31,6 @@ COPY --from=builder --chmod=777 $VIRTUAL_ENV $VIRTUAL_ENV
 
 RUN apt-get update && \ 
     apt-get install --no-install-recommends -y \
-        ffmpeg \
         python3 \
         python3-distutils && \
     apt-get clean && \
