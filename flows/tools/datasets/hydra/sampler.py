@@ -120,4 +120,4 @@ def _copy_data(
             save_tgt_path = output_ref_dir.joinpath(save_name)
             np.save(save_tgt_path, tgt_img)
         except Exception as e:
-            print(e)
+            print(f'{input_src_file.name}: {e}')
