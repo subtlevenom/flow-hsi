@@ -18,13 +18,18 @@ from flows.tools.files.iterators import files
 
 THREADS = 1
 
-SOURCE = 'source'
-TARGET = 'target'
+SOURCE = "source"
+TARGET = "target"
 
 
-def split(source_path:str, target_path:str, output_path:str, split:dict) -> None:
+def split(
+    source_path: str,
+    target_path: str,
+    output_path: str,
+    split: dict,
+) -> None:
     """
-    ICVL: 
+    ICVL:
     """
 
     source_dir = Path(source_path)
@@ -32,14 +37,14 @@ def split(source_path:str, target_path:str, output_path:str, split:dict) -> None
     output_dir = Path(output_path)
 
     if not source_dir.is_dir():
-        raise Exception(f'No such directory: {source_dir}')
+        raise Exception(f"No such directory: {source_dir}")
     if not target_dir.is_dir():
-        raise Exception(f'No such directory: {source_dir}')
+        raise Exception(f"No such directory: {source_dir}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    source_files = set([f.name for f in files(source_dir, '.npy')])
-    target_files = set([f.name for f in files(target_dir, '.npy')])
+    source_files = set([f.name for f in files(source_dir, ".npy")])
+    target_files = set([f.name for f in files(target_dir, ".npy")])
     common_files = list(source_files & target_files)
 
     # split
@@ -49,7 +54,7 @@ def split(source_path:str, target_path:str, output_path:str, split:dict) -> None
 
     with Progress() as progress:
         for name, sfiles in zip(split.keys(), split_files):
-            pb = progress.add_task(f"[cyan]{name}", total=2*len(sfiles))
+            pb = progress.add_task(f"[cyan]{name}", total=2 * len(sfiles))
             try:
                 # source
                 output_split_dir = output_dir.joinpath(name, SOURCE)
@@ -69,4 +74,4 @@ def split(source_path:str, target_path:str, output_path:str, split:dict) -> None
                     progress.update(pb, advance=1)
 
             except Exception as e:
-                print(f'Skip split {name} with exception {e}')
+                print(f"Skip split {name} with exception {e}")
