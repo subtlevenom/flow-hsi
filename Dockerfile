@@ -41,6 +41,7 @@ RUN apt update && \
     . $VIRTUAL_ENV/bin/activate
 
 RUN python3 -m pip install --upgrade pip
+RUN pip install -U torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 
 WORKDIR /flow-hsi
 
