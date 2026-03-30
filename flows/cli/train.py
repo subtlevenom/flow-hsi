@@ -12,9 +12,8 @@ from lightning.pytorch.callbacks import (
     LearningRateMonitor,
     StochasticWeightAveraging,
 )
-from flows.ml.callbacks import GenerateCallback
 from lightning.pytorch.loggers import CSVLogger
-from flows import cli
+from flows.ml.callbacks import GenerateCallback
 from flows.tools.utils import text
 
 

@@ -1,5 +1,4 @@
 from typing import List, Tuple
-import cv2 as cv
 import numpy as np
 from scipy.signal.windows import gaussian
 # np.set_printoptions(threshold=sys.maxsize)

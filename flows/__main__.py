@@ -2,12 +2,15 @@ import sys
 from typing import Optional
 import hydra
 from omegaconf import DictConfig
-from flows import main as flows_main
+from . import main as flows_main
 
 
-@hydra.main(version_base="1.3.2", config_path=".configs/config", config_name="config")
+@hydra.main(
+    version_base="1.3.2", config_path="../.configs/config", config_name="config"
+)
 def main(cfg: DictConfig) -> Optional[float]:
     flows_main(cfg)
+
 
 if __name__ == "__main__":
     # fixes hydra changing cwd

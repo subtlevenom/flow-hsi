@@ -9,38 +9,36 @@ name = "flow-hsi"
 authors = [
   { name="Anrei Korepanov", email="andrew.korepanov@gmail.com" },
 ]
-version = "0.1.1"
 maintainers = [
   { name="Andrei Korepanov", email="andrew.korepanov@gmail.com" },
 ]
+license = "GPL-3.0-or-later"
 description = "HSI flows"
 requires-python = "==3.10.12"
 classifiers = [
     "Private :: Do Not Upload",
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
-    "License :: Other/Proprietary License",
 ]
 dynamic = ["dependencies", "version", "readme"]
+
+[project.urls]
+"Homepage" = "https://github.com/subtlevenom/flow-hsi"
+"Repository" = "https://github.com/subtlevenom/flow-hsi" 
+"Bug Tracker" = "https://github.com/subtlevenom/flow-hsi"
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
 version = {file = ["VERSION"]}
 readme = {file = ["README.md"]}
 
-[project.urls]
-"Homepage" = "https://github.com/subtlevenom/flow-hsi"
-"Bug Tracker" = "https://github.com/subtlevenom/flow-hsi"
-
-[project.scripts]
-flow = "flow-hsi:main"
-
 [tool.setuptools]
-package-dir = { "" = "flows" }
-
-[tool.pytest.ini_options]
-pythonpath = [".", "src"]
-addopts = "--cov=flow --cov=flow_helpers --cov-report=term-missing --cov-report=lcov:coverage.lcov"
+packages = ["flows"]
 
 [tool.setuptools.package-data]
 "*" = ["*.pth", "*.npy"]
+
+[tool.pytest.ini_options]
+pythonpath = [".", "flows"]
+addopts = "--cov=ml --cov=ml_helpers --cov-report=term-missing --cov-report=lcov:coverage.lcov"
+
