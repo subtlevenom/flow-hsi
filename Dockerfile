@@ -44,4 +44,4 @@ RUN python3 -m pip install --upgrade pip
 
 WORKDIR /flow-hsi
 
-# CMD ["/bin/bash", "scripts/cli-env.sh"]
+SHELL ["/bin/bash", "-c", ". /opt/venv/bin/activate"]
