@@ -41,7 +41,10 @@ RUN apt update && \
     . $VIRTUAL_ENV/bin/activate
 
 RUN python3 -m pip install --upgrade pip
-RUN pip install -U torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+# d13 NVIDIA driver CUDA version fix
+# https://stackoverflow.com/questions/79665616/cuda-error-no-kernel-image-is-available-for-execution-on-the-device
+# pip install -U torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+# RUN pip install -U torch torchvision
 
 WORKDIR /flow-hsi
 
