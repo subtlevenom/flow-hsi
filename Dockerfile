@@ -7,8 +7,8 @@ ENV VIRTUAL_ENV=/opt/venv
 
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
-        build-essential \
-        gcc
+    build-essential \
+    gcc
 
 WORKDIR /flow-hsi
 COPY . ./
@@ -16,10 +16,10 @@ COPY . ./
 RUN python3 -m venv $VIRTUAL_ENV && \
     . $VIRTUAL_ENV/bin/activate && \
     python3 -m pip install --upgrade pip && \
-    pip install .
+    pip install -r ./requirements.txt
 
 # Stage 2: Runtime
-FROM nvidia/cuda:13.2.0-runtime-ubuntu24.04
+FROM nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
 
 LABEL desc="flow-hsi docker container"
 
@@ -29,12 +29,12 @@ ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
 COPY --from=builder --chmod=777 $VIRTUAL_ENV $VIRTUAL_ENV
 
-RUN apt-get update && \ 
-    apt-get install --no-install-recommends -y \
-        python3 \
-        python3-distutils && \
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y python3 && \
+    apt-get install --no-install-recommends -y vifm && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
-    ln -sf /usr/bin/python3 $VIRTUAL_ENV/bin/python3
+    ln -sf /usr/bin/python3 $VIRTUAL_ENV/bin/python3 && \
+    . $VIRTUAL_ENV/bin/activate
 
-WORKDIR /workspace
+WORKDIR /flow-hsi
