@@ -8,6 +8,7 @@ DATA_PATH=/data/korepanov/datasets
 
 #-u $(id -u):$(id -g) \
 docker run --rm -it \
+    --runtime=nvidia --gpus all \
     -p 8888:8888 -p 6006:6006 \
     -v $WORK_PATH:/flow-hsi \
     -v $DATA_PATH:/data \
