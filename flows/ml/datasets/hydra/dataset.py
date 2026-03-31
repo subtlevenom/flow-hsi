@@ -32,6 +32,12 @@ class Dataset(Dataset):
         if self.p_transform is not None:
             x, y = self.p_transform(x, y)
 
+        h,w = x.shape[-2:]
+        h = 4 * (h//4)
+        w = 4 * (w//4)
+        x = x[:,:h,:w]
+        y = y[:,:h,:w]
+
         if self.filename:
             return x, y, Path(path).name
 
