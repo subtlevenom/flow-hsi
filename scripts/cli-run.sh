@@ -7,7 +7,7 @@ WORK_PATH=~/work/flow-hsi
 DATA_PATH=/data/korepanov/datasets
 
 #-u $(id -u):$(id -g) \
-docker run --rm -it \
+docker run --rm -it --shm-size=24g \
     --runtime=nvidia --gpus all \
     -p 8888:8888 -p 6006:6006 \
     -v $WORK_PATH:/flow-hsi \
