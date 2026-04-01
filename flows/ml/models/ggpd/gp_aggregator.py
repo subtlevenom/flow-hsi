@@ -6,48 +6,50 @@ from einops import rearrange, einsum
 from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.encoders.sg_encoder import FFN, LayerNorm
 from flows.ml.layers.sep_gpd import MultivariateNormal
-from flows.ml.layers.sep_gpd import SepGPD, SepGPDLayer
+from flows.ml.layers.sep_kan import SepKANLayer
+from .gp_projector import GPProjector
 
 
 class GPAggregator(nn.Module):
 
     def __init__(
         self,
-        in_channels: int = 3,
-        num_layers: int = 1,
+        grid_size: int = 7,
+        spline_order: int = 5,
+        residual_std: float = 0.1,
+        grid_range: List[float] = [0, 1],
         **kwargs,
     ):
         super(GPAggregator, self).__init__()
 
-        self.in_channels = in_channels
-        self.num_layers = num_layers
-
-        self.gpd = SepGPD(
-            dim=in_channels,
-            num_layers=num_layers,
-            **kwargs
+        self.kan_layer = SepKANLayer(
+            in_channels=1,
+            out_channels=1,
+            grid_size=grid_size,
+            spline_order=spline_order,
+            residual_std=residual_std,
+            grid_range=grid_range,
         )
 
     def forward(
         self,
-        x: Union[List[torch.Tensor], torch.Tensor],
-        w: List[torch.Tensor],
-        y: List[torch.Tensor],
+        x: torch.Tensor,
+        w: torch.Tensor,
     ):
         """ 
-        x: NBCHW or 1BCHW
-        y,w: NBCHW
+        x: NBCHW
         """
-        g = self.gpd(w)
-        
-        if len(x.shape) == len(y.shape):
-            p = [_g.log_prob(_x) for _x,_g in zip(x,g)]
-        else:
-            p = [_g.log_prob(x) for _g in g]
+        N,B,C,H,W = x.shape
 
-        p = torch.stack(p, dim=0)
-        p = torch.softmax(p, dim=0)
+        x = rearrange(x, 'n b c h w -> (n b) c h w')
+        w = rearrange(w, 'n b c h w -> (n b) c h w')
 
-        y = torch.sum(y * p, dim=0)
+        y = []
+        for c in range(x.shape[1]):
+            _x = x[:,c:c+1]
+            _y = self.kan_layer(_x, w)
+            y.append(_y)
+        y = sum(y).squeeze(1)
+        y = rearrange(y, '(n b) h w -> b n h w', n=N, b=B)
 
         return y

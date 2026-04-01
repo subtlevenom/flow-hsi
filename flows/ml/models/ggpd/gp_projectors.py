@@ -7,22 +7,23 @@ from einops import rearrange, einsum
 from .gp_projector import GPProjector
 
 
-class GPEncoder(nn.Module):
+class GPProjectors(nn.Module):
 
     def __init__(
         self,
         in_channels: int = 3,
-        mid_channels: int = 14,
         out_channels: int = 3,
         alg: str = 'mix',
         num_blocks: List[int] = [2, 2],
         **kwargs,
     ):
-        super(GPEncoder, self).__init__()
+        super(GPProjectors, self).__init__()
 
         self.in_channels = in_channels
-        self.mid_channels = mid_channels
+        self.mid_channels = 2 * in_channels + 1
         self.out_channels = out_channels
+
+        self.index = torch.arange(self.mid_channels).unsqueeze(0).unsqueeze(-1).unsqueeze(-1)
 
         self.projectors = nn.ModuleList([
             GPProjector(
@@ -35,9 +36,15 @@ class GPEncoder(nn.Module):
         ])
 
     def forward(self, x: torch.Tensor):
+        """
+        BCHW -> NB(2C+1)HW
+        C - in_channels
+        N - out_channels
+        """
         y = []
         for projector in self.projectors:
             _y = projector(x)
-            y.append(_y)
-        y = torch.stack(y, dim=0)  # nbchw
+            _y = torch.cumsum(F.sigmoid(_y), dim=1)
+            y.append(_y + self.index.to(x.device))
+        y = torch.stack(y,dim=0) # nbchw
         return y

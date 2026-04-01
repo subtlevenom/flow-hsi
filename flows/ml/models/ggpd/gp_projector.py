@@ -12,7 +12,7 @@ class GPProjector(nn.Module):
     def __init__(
         self,
         in_channels: int = 3,
-        out_channels: int = 3,
+        out_channels: int = 7,
         alg: str = 'mix',
         num_blocks: List[int] = [2, 2],
         **kwargs,
