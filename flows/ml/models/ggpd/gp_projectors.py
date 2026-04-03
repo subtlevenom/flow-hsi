@@ -41,10 +41,13 @@ class GPProjectors(nn.Module):
         C - in_channels
         N - out_channels
         """
+        s = self.index.to(x.device)
+        n = self.mid_channels - 1
+
         y = []
         for projector in self.projectors:
             _y = projector(x)
             _y = torch.cumsum(F.sigmoid(_y), dim=1)
-            y.append(_y + self.index.to(x.device))
+            y.append((_y + s) / n)
         y = torch.stack(y,dim=0) # nbchw
         return y
