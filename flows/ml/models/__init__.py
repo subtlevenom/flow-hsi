@@ -3,7 +3,7 @@ from torch import nn
 import torch
 from flows.ml import layers
 from .flow import Flow
-from . import cmkan_original, ggpir, ggpd
+from . import cmkan_original, ggpir, ggpd, sagf
 
 
 def create_layer(name: str, params) -> nn.Module:

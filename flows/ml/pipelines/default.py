@@ -96,7 +96,7 @@ class DefaultPipeline(L.LightningModule):
             "monitor": "val_loss"
         }
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, y: torch.Tensor = None) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
         return pred['res']
 
@@ -125,7 +125,7 @@ class DefaultPipeline(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y = self(src, tgt)
+        y = self(src)
 
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
@@ -147,7 +147,7 @@ class DefaultPipeline(L.LightningModule):
     def test_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y = self(src, tgt)
+        y = self(src)
 
         mae_loss = self.mae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
@@ -178,7 +178,7 @@ class DefaultPipeline(L.LightningModule):
             self.start_time = time.perf_counter()
 
         src, tgt, name = batch
-        y = self(src, tgt)
+        y = self(src)
         elapsed = time.perf_counter() - self.start_time
 
         mae_loss = self.mae_loss(y, tgt)
