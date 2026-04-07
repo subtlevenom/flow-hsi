@@ -2,9 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from flows.ml.layers.mst import MSAB
 
 # MSAB из MST: LayerNorm + MS-MSA + FFN
-class MSAB(nn.Module):
+class _MSAB(nn.Module):
     def __init__(self, dim, num_heads=4, ff_dim=None, mask=None):
         super().__init__()
         ff_dim = ff_dim or 2 * dim
@@ -76,28 +77,47 @@ class ColorContextEncoderMSAB(nn.Module):
         super().__init__()
         self.embed = nn.Conv2d(in_ch, feat_ch, 3, stride=2, padding=1, bias=False)
         self.bn = nn.BatchNorm2d(feat_ch)
-        
-        self.blocks = nn.ModuleList([
-            MSAB(feat_ch) for _ in range(num_blocks)
-        ])
+
+        self.blocks = nn.ModuleList(
+            [
+                MSAB(
+                    dim=feat_ch,
+                    dim_head=feat_ch // 4,
+                    heads=4,
+                    num_blocks=2,
+                )
+                for _ in range(num_blocks)
+            ]
+        )
+        self.up = nn.Upsample(scale_factor=2, mode='bilinear')
         self.proj = nn.Conv2d(feat_ch, feat_ch, 1)
 
     def forward(self, x):
         feat = F.gelu(self.bn(self.embed(x)))  # [B, C, H/2, W/2]
-        
+
         for block in self.blocks:
             feat = block(feat)  # MSAB stack как в MST
-        
-        return self.proj(feat)
+
+        return self.proj(self.up(feat))
 
 # 3. Parameter Generator с MSAB + Cross-Attention
 class SAGFParameterGeneratorMSAB(nn.Module):
     def __init__(self, feat_ch=64, M=8, num_blocks=2):
         super().__init__()
         self.M = M
-        self.cross_attn = nn.MultiheadAttention(feat_ch, 4, batch_first=True)
-        self.msab_blocks = nn.ModuleList([MSAB(feat_ch) for _ in range(num_blocks)])
-        
+        # self.cross_attn = nn.MultiheadAttention(feat_ch, 4, batch_first=True)
+        self.msab_blocks = nn.ModuleList(
+            [
+                MSAB(
+                    dim=feat_ch,
+                    dim_head=feat_ch // 4,
+                    heads=4,
+                    num_blocks=2,
+                )
+                for _ in range(num_blocks)
+            ]
+        )
+
         self.fusion = nn.Sequential(
             nn.Conv2d(feat_ch * 2, 128, 3, padding=1, bias=False),  # illum + color
             nn.BatchNorm2d(128),
@@ -107,41 +127,41 @@ class SAGFParameterGeneratorMSAB(nn.Module):
 
     def forward(self, src_illum, src_color, ref_color=None):
         B, C, H, W = src_color.shape
-        
+
         if ref_color is None:
             ref_color = torch.zeros_like(src_color)
-        
+
         # Cross-attention: source vs ref (flatten spatial)
         src_flat = src_color.flatten(2).transpose(1, 2)  # [B, HW, C]
         ref_flat = ref_color.flatten(2).transpose(1, 2)
-        cross_out, _ = self.cross_attn(src_flat, ref_flat, ref_flat)
-        cross_out = cross_out.transpose(1, 2).reshape(B, C, H, W)
-        
+        # cross_out, _ = self.cross_attn(src_flat, ref_flat, ref_flat)
+        cross_out = src_flat.transpose(1, 2).reshape(B, C, H, W)
+
         # MSAB refinement
         feat = cross_out
         for block in self.msab_blocks:
             feat = block(feat)
-        
+
         fused = self.fusion(torch.cat([src_illum, feat], dim=1))
         params = self.param_head(fused)
         return params
 
 # 4. SAGF Core (формула 3, без изменений)
 class SAGFConvCore(nn.Module):
-    def __init__(self, M=8, q_max=7):
+    def __init__(self, ch=64, M=8, q_max=7):
         super().__init__()
         self.M = M
         self.q_max = q_max
         self.out_head = nn.Sequential(
-            nn.Conv2d(q_max + 1, 64, 1),
+            nn.Conv2d(q_max + 1, ch, 1),
             nn.GELU(),
-            nn.Conv2d(64, 3, 1)
+            nn.Conv2d(ch, 3, 1)
         )
 
     def forward(self, params):
         B, _, H, W = params.shape
         a = params[:, :self.M]
-        mu = params[:, self.M:2*self.M]
+        mu = F.tanh(params[:, self.M:2*self.M]) + 0.5
         sigma = F.softplus(params[:, 2*self.M:3*self.M]) + 1e-4
 
         q = torch.arange(self.q_max + 1, device=a.device, dtype=a.dtype).view(1, self.q_max + 1, 1, 1)
@@ -161,10 +181,10 @@ class SAGF(nn.Module):
     def __init__(self, M=8, q_max=7):
         super().__init__()
         self.src_illum = IlluminationEstimator(3, 32)
-        self.src_color = ColorContextEncoderMSAB(3, 64, num_blocks=4)  # MSAB stack
-        self.ref_color = ColorContextEncoderMSAB(3, 64, num_blocks=4)
+        self.src_color = ColorContextEncoderMSAB(3, 32, num_blocks=4)  # MSAB stack
+        self.ref_color = ColorContextEncoderMSAB(3, 32, num_blocks=4)
         
-        self.param_gen = SAGFParameterGeneratorMSAB(feat_ch=64, M=M, num_blocks=2)
+        self.param_gen = SAGFParameterGeneratorMSAB(feat_ch=32, M=M, num_blocks=2)
         self.sagf_core = SAGFConvCore(M=M, q_max=q_max)
 
     def forward(self, src, ref=None):
