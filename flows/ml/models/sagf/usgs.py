@@ -2,14 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 class ResidualContextBlock(nn.Module):
-    """Блок с механизмом Global Context (GCNet) для извлечения глобальных признаков."""
-
+    """Блок с механизмом Global Context (GCNet)."""
     def __init__(self, in_channels):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
-        # Global Context Modeling
         self.channel_add_conv = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(in_channels, in_channels // 2, kernel_size=1),
@@ -25,118 +22,124 @@ class ResidualContextBlock(nn.Module):
         context = self.channel_add_conv(out)
         return self.act(out + context + residual)
 
-
-class ParameterEncoder(nn.Module):
-    """Специализированный энкодер для конкретного параметра (a, mu или sigma)."""
-
-    def __init__(self, out_dim):
+class FullSizeParameterEncoder(nn.Module):
+    """Декодер для полноразмерных карт параметров."""
+    def __init__(self, out_dim, in_channels=64):
         super().__init__()
-        self.net = nn.Sequential(
-            ResidualContextBlock(64),
-            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),  # 1/2
+        self.down = nn.Sequential(
+            nn.Conv2d(in_channels, 128, kernel_size=3, stride=2, padding=1),
             ResidualContextBlock(128),
-            nn.AdaptiveAvgPool2d(1),
-            nn.Flatten(),
-            nn.Linear(128, 256),
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1),
+            ResidualContextBlock(128),
+        )
+        self.up = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.PixelShuffle(2),
             nn.SiLU(),
-            nn.Linear(256, out_dim),
+            nn.Conv2d(64, 64, kernel_size=3, padding=1),
+            nn.PixelShuffle(2),
+            nn.SiLU(),
+            nn.Conv2d(16, out_dim, kernel_size=3, padding=1),
         )
 
     def forward(self, x):
-        return self.net(x)
-
-
-class TrainableNodes(nn.Module):
-
-    def __init__(self, num_nodes):
-        super().__init__()
-        # Инициализируем равномерные интервалы
-        init_deltas = torch.ones(num_nodes) / num_nodes
-        self.deltas = nn.Parameter(init_deltas)
-
-    def forward(self):
-        # Гарантируем положительность шага и нормализуем, чтобы сумма была 2 (диапазон от -1 до 1)
-        normalized_deltas = F.softplus(self.deltas)
-        normalized_deltas = 2.0 * normalized_deltas / normalized_deltas.sum()
-
-        # Вычисляем позиции узлов через кумулятивную сумму
-        nodes = torch.cumsum(normalized_deltas, dim=0) - 1.0
-        return nodes
+        feat = self.down(x)
+        return self.up(feat)
 
 
 class USGS(nn.Module):
-    def __init__(self, M=12, num_nodes=32):
+    def __init__(self, M=12, Q=7):
         super().__init__()
-        self.M = M
-        self.num_nodes = num_nodes
+        self.M = M  # Количество Гауссиан (внутренняя сумма)
+        self.Q = Q  # Количество адаптивных узлов (внешняя сумма)
 
-        # Общий входной блок (Stem)
         self.stem = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=3, padding=1),
             nn.InstanceNorm2d(64),
             nn.SiLU(),
         )
 
-        # 1. Раздельные энкодеры параметров
-        self.enc_amplitude = ParameterEncoder(M)
-        self.enc_center = ParameterEncoder(M)
-        self.enc_sigma = ParameterEncoder(M)
+        # 1. Энкодеры параметров SAGF (амплитуда, центр, сигма)
+        self.enc_amplitude = FullSizeParameterEncoder(out_dim=M)
+        self.enc_center = FullSizeParameterEncoder(out_dim=M)
+        self.enc_sigma = FullSizeParameterEncoder(out_dim=M)
 
-        # 2. Блок оценки освещенности (Illumination Estimator)
-        # Оценивает глобальный коэффициент экспозиции и гамму
+        # 2. Адаптивная сетка узлов сканирования (q_nodes)
+        # Генерирует Q значений узлов на основе глобального контекста изображения
+        self.node_generator = nn.Sequential(
+            ResidualContextBlock(64),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(64, 64),
+            nn.SiLU(),
+            nn.Linear(64, Q),
+            nn.Sigmoid() # Узлы всегда в диапазоне [0, 1]
+        )
+
+        # 3. Оценка базовой освещенности
         self.illum_estimator = nn.Sequential(
             ResidualContextBlock(64),
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
             nn.Linear(64, 32),
             nn.SiLU(),
-            nn.Linear(32, 2),  # [gain, gamma]
+            nn.Linear(32, 2),
         )
 
-        # 3. Внешняя активация chi (Superposition)
-        self.chi = nn.Sequential(nn.Linear(1, 32), nn.Tanh(), nn.Linear(32, 1))
+        # 4. Внешняя суперпозиция (chi_q)
+        # Используем свертку 1x1 с группами, чтобы эффективно реализовать Q разных функций chi
+        self.chi_superposition = nn.Sequential(
+            nn.Conv2d(Q * 3, Q * 9, kernel_size=1, groups=Q),
+            nn.SiLU(),
+            nn.Conv2d(Q * 9, 3, kernel_size=1),  # Финальное смешивание в RGB
+        )
 
-        # self.register_buffer('q_nodes', torch.linspace(-1, 1, num_nodes))
-        self.node_generator = TrainableNodes(num_nodes)
+        self.psi_norm = nn.InstanceNorm2d(Q * 3)
 
     def forward(self, x, train=False):
         b, c, h, w = x.shape
         feat = self.stem(x)
 
-        _a = self.enc_amplitude(feat)  # [B, M, 1]
-        _mu = self.enc_center(feat)  # [B, M, 1]
-        # _sigma = torch.exp(self.enc_sigma(feat)) + 1e-4
-        _sigma = F.softplus(self.enc_sigma(feat)) + 1e-5
+        # --- ГЕНЕРАЦИЯ ПАРАМЕТРОВ ---
+        a = torch.tanh(self.enc_amplitude(feat)).unsqueeze(1) # [B, 1, M, H, W]
+        mu = torch.sigmoid(self.enc_center(feat)).unsqueeze(1) # [B, 1, M, H, W]
+        sigma = F.softplus(self.enc_sigma(feat)) + 0.1
+        sigma = sigma.unsqueeze(1)
 
-        # Извлечение параметров
-        a = _a.unsqueeze(-1)  # [B, M, 1]
-        mu = _mu.unsqueeze(-1)  # [B, M, 1]
-        sigma = _sigma.unsqueeze(-1)
+        # Генерируем адаптивные узлы сканирования: [B, Q] -> [B, 1, 1, Q, 1, 1]
+        q_nodes = self.node_generator(feat).view(b, 1, 1, self.Q, 1, 1)
+        # Сортируем узлы для сохранения топологического порядка яркости
+        q_nodes, _ = torch.sort(q_nodes, dim=3)
 
-        # Оценка освещенности
-        illum_params = self.illum_estimator(feat)
-        # gain = torch.sigmoid(illum_params[:, 0:1]) * 2.0  # Усиление [0, 2]
-        gain = torch.tanh(illum_params[:, 0:1])  # Усиление [0, 2]
-        # gamma = torch.exp(illum_params[:, 1:2])  # Гамма-коррекция
-        gamma = F.softplus(illum_params[:, 1:2])  # Гамма-коррекция
+        # --- БАЗОВАЯ КОРРЕКЦИЯ ---
+        illum = self.illum_estimator(feat)
+        gain = (torch.sigmoid(illum[:, 0:1]) + 0.5).view(b, 1, 1, 1)
+        bias = (torch.tanh(illum[:, 1:2]) * 0.5).view(b, 1, 1, 1)
+        x_adj = x * gain + bias
 
-        # USGS Ядро
-        # y = self.q_nodes.view(1, 1, -1)
-        q_nodes = self.node_generator()  # [num_nodes]
-        y = q_nodes.view(1, 1, -1)
-        gaussians = a * torch.exp(-((y - mu) ** 2) / (2 * sigma**2))
-        psi_q = torch.sum(gaussians, dim=1)  # [B, num_nodes]
+        # --- ВНУТРЕННЯЯ СУММА (SAGF) ---
+        # Вычисляем значение поля в адаптивных узлах q_nodes
+        # mu: [B, 1, M, 1, H, W], q_nodes: [B, 1, 1, Q, 1, 1]
+        diff = (q_nodes - mu.unsqueeze(3)) ** 2
+        gaussians = a.unsqueeze(3) * torch.exp(-diff / (2 * sigma.unsqueeze(3)**2))
 
-        # Суперпозиция
-        chi_val = self.chi(psi_q.view(-1, 1)).view(b, self.num_nodes)
-        color_factor = torch.sum(chi_val, dim=1).view(b, 1, 1, 1)
+        # S_M_q: [B, 1, Q, H, W] (значение поля в каждом адаптивном узле)
+        S_M_q = torch.sum(gaussians, dim=2)
 
-        # Финальная трансформация: USGS + Illumination
-        # Применяем коррекцию освещенности и USGS-маппинг
-        x_adj = torch.pow(F.sigmoid(x + gain.view(b, 1, 1, 1)), gamma.view(b, 1, 1, 1))
-        out = x_adj * color_factor
+        # --- ВНЕШНЯЯ СУПЕРПОЗИЦИЯ ---
+        # Модулируем входное изображение значениями поля в узлах
+        # Подготавливаем тензор: для каждого узла Q создаем 3 канала RGB
+        # chi_input: [B, Q*3, H, W]
+        chi_input = (S_M_q * x_adj.unsqueeze(2)).view(b, self.Q * 3, h, w)
+        chi_input = self.psi_norm(chi_input)
+
+        color_residual = self.chi_superposition(chi_input)
+
+        # Финальный результат
+        out = x_adj + color_residual
+        out = torch.clamp(out, 0.0, 1.0)
 
         if train:
-            return out, _a, _mu, _sigma
+            return out, a, mu, sigma
 
         return out
