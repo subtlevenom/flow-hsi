@@ -180,11 +180,11 @@ class SAGFConvCore(nn.Module):
 class SAGF(nn.Module):
     def __init__(self, M=8, q_max=7):
         super().__init__()
-        self.src_illum = IlluminationEstimator(3, 32)
-        self.src_color = ColorContextEncoderMSAB(3, 32, num_blocks=4)  # MSAB stack
-        self.ref_color = ColorContextEncoderMSAB(3, 32, num_blocks=4)
+        self.src_illum = IlluminationEstimator(3, 64)
+        self.src_color = ColorContextEncoderMSAB(3, 64, num_blocks=4)  # MSAB stack
+        self.ref_color = ColorContextEncoderMSAB(3, 64, num_blocks=4)
         
-        self.param_gen = SAGFParameterGeneratorMSAB(feat_ch=32, M=M, num_blocks=2)
+        self.param_gen = SAGFParameterGeneratorMSAB(feat_ch=64, M=M, num_blocks=2)
         self.sagf_core = SAGFConvCore(M=M, q_max=q_max)
 
     def forward(self, src, ref=None):
