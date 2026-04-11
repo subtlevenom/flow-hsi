@@ -25,9 +25,9 @@ class USGSPipeline(L.LightningModule):
         model: Flow,
         optimizer: str = "adam",
         lr: float = 1e-3,
-        weight_decay: float = 0,
-        lambda_reg: float = 1e-5,
-        warmup_epochs: int = 5,
+        weight_decay: float = 1e-4,
+        lambda_reg: float = 1e-4,
+        warmup_epochs: int = 10,
         metrics_channels: List[int] = [0, 1, 2],
     ) -> None:
         super(USGSPipeline, self).__init__()
@@ -51,69 +51,55 @@ class USGSPipeline(L.LightningModule):
         self.save_hyperparameters(ignore=["model"])
 
     def _initialize_model_weights(self):
-        """Инициализация под адаптивную USGS-схему с динамическими узлами."""
+        """Инициализация под HC-USGS с AdvancedParameterEncoder."""
         usgs = self.model.layers.usgs
         with torch.no_grad():
             M = usgs.M
             Q = usgs.Q
 
-            # 1. Центры Гауссиан (mu)
+            # 1. Инициализация энкодеров параметров (AdvancedParameterEncoder)
+            # В новой модели финальный слой - это fusion[-1]
+            encoders = [usgs.enc_amplitude, usgs.enc_center, usgs.enc_sigma]
+            for enc in encoders:
+                nn.init.constant_(enc.fusion[-1].weight, 0.0)
+                nn.init.constant_(enc.fusion[-1].bias, 0.0)
+
+            # 2. Специфические смещения для центров (mu) и сигм
+            # Центры распределяем равномерно [0.1, 0.9]
             initial_mu = torch.linspace(0.1, 0.9, M)
-            usgs.enc_center.up[-1].bias.copy_(initial_mu)
-            usgs.enc_center.up[-1].weight.fill_(0)
+            usgs.enc_center.fusion[-1].bias.copy_(initial_mu)
 
-            # 2. Амплитуды (a)
-            usgs.enc_amplitude.up[-1].bias.fill_(0.0)
-            usgs.enc_amplitude.up[-1].weight.fill_(0)
+            # Сигмы делаем широкими на старте
+            usgs.enc_sigma.fusion[-1].bias.fill_(1.0)
 
-            # 3. Сигмы (sigma)
-            usgs.enc_sigma.up[-1].bias.fill_(1.0)
-            usgs.enc_sigma.up[-1].weight.fill_(0)
-
-            # 4. Генератор узлов (node_generator)
-            # ИСПРАВЛЕНО: Обращаемся к Linear слою перед Sigmoid (индекс -2)
-            node_linear = usgs.node_generator[-2] 
+            # 3. Генератор узлов (node_generator)
+            # Linear слой перед Sigmoid имеет индекс -2
+            node_linear = usgs.node_generator[-2]
             nn.init.constant_(node_linear.weight, 0.0)
-            # Создаем линейную прогрессию для bias, чтобы узлы были распределены [0.12, 0.88]
-            node_bias = torch.linspace(-2.0, 2.0, Q) 
+            node_bias = torch.linspace(-2.0, 2.0, Q)
             node_linear.bias.copy_(node_bias)
 
-            # 5. Блок суперпозиции (chi_superposition)
-            # ИСПРАВЛЕНО: Последний слой - это Conv2d (индекс -1)
-            chi_final = usgs.chi_superposition[-1]
-            nn.init.constant_(chi_final.bias, 0.0)
-            nn.init.normal_(chi_final.weight, std=1e-4)
-            
-            # Первый слой chi_superposition (групповая свертка, индекс 0)
-            chi_first = usgs.chi_superposition[0]
-            nn.init.kaiming_normal_(chi_first.weight, mode='fan_out', nonlinearity='relu')
+            # 4. Блок суперпозиции (chi_superposition)
+            # Финальный слой Conv2d (индекс -1) в 0
+            nn.init.constant_(usgs.chi_superposition[-1].bias, 0.0)
+            nn.init.normal_(usgs.chi_superposition[-1].weight, std=1e-4)
+
+            # Первый слой (групповая свертка)
+            nn.init.kaiming_normal_(usgs.chi_superposition[0].weight, mode='fan_out', nonlinearity='relu')
 
     def setup(self, stage: str) -> None:
         """
         Initialize model weights before training
         """
         if stage == "fit" or stage is None:
+            # Общая инициализация Kaiming для всех слоев
             for m in self.model.modules():
-                if isinstance(m, nn.Conv1d):
-                    nn.init.kaiming_normal_(
-                        m.weight, mode="fan_out", nonlinearity="relu"
-                    )
-                    if m.bias is not None:
-                        nn.init.constant_(m.bias, 0)
-                if isinstance(m, nn.Conv2d):
-                    nn.init.kaiming_normal_(
-                        m.weight, mode="fan_out", nonlinearity="relu"
-                    )
-                    if m.bias is not None:
-                        nn.init.constant_(m.bias, 0)
-                elif isinstance(m, nn.BatchNorm2d):
-                    nn.init.constant_(m.weight, 1)
-                    nn.init.constant_(m.bias, 0)
-                elif isinstance(m, nn.Linear):
-                    nn.init.normal_(m.weight, 0, 0.01)
+                if isinstance(m, (nn.Conv2d, nn.Linear)):
+                    nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
+            # Специфическая инициализация для USGS
             self._initialize_model_weights()
 
         # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
@@ -124,32 +110,25 @@ class USGSPipeline(L.LightningModule):
 
     def configure_optimizers(self):
         if self.optimizer_type == "adamw":
-            # Разделяем параметры для разного LR и Weight Decay
             usgs_params = []
             base_params = []
-
             for name, param in self.model.named_parameters():
-                if "enc_" in name or "chi" in name or "node_generator" in name:
+                # Включаем node_generator и новые энкодеры в группу с повышенным LR
+                if any(x in name for x in ["enc_", "chi", "node_generator"]):
                     usgs_params.append(param)
                 else:
                     base_params.append(param)
 
-            optimizer = optim.AdamW(
-                [
-                    {
-                        "params": base_params,
-                        "lr": self.lr,
-                        "weight_decay": self.weight_decay,
-                    },
-                    {
-                        "params": usgs_params,
-                        "lr": self.lr * 5,  # Ускоряем обучение цветовых кривых
-                        "weight_decay": 0.0,  # Не зануляем амплитуды принудительно
-                    },
-                ]
-            )
+            optimizer = optim.AdamW([{
+                "params": base_params,
+                "lr": self.lr,
+                "weight_decay": self.weight_decay,
+            }, {
+                "params": usgs_params,
+                "lr": self.lr * 5,
+                "weight_decay": 0.0,
+            }])
 
-            # Планировщик с учетом выхода из warmup
             scheduler = optim.lr_scheduler.MultiStepLR(
                 optimizer,
                 milestones=[
@@ -157,8 +136,8 @@ class USGSPipeline(L.LightningModule):
                     self.warmup_epochs + 40,
                     self.warmup_epochs + 80,
                 ],
-                gamma=0.5,
-            )
+                gamma=0.5)
+
         elif self.optimizer_type == "adam":
             optimizer = optim.Adam(
                 self.parameters(),
@@ -193,16 +172,13 @@ class USGSPipeline(L.LightningModule):
         }
 
     def on_train_epoch_start(self):
-        """Разморозка USGS после warmup."""
         usgs = self.model.layers.usgs
-        if self.current_epoch < self.warmup_epochs:
-            for name, param in usgs.named_parameters():
-                if "enc_" in name or "chi" in name:
-                    param.requires_grad = False
-                else:
-                    param.requires_grad = True
-        else:
-            for param in usgs.parameters():
+        # Warmup: обучаем только базовую освещенность (illum_estimator) и stem
+        is_warmup = self.current_epoch < self.warmup_epochs
+        for name, param in usgs.named_parameters():
+            if any(x in name for x in ["enc_", "chi", "node_generator"]):
+                param.requires_grad = not is_warmup
+            else:
                 param.requires_grad = True
 
     def _spatial_smoothness_loss(self, x):
@@ -223,34 +199,34 @@ class USGSPipeline(L.LightningModule):
         y, a_maps, mu_maps, sigma_maps = self.model.layers.usgs(src, True)
 
         # 1. Комбинированный лосс (L1 + SSIM) - критично для cmKAN
-        l1_loss = self.mae_loss(y, tgt)
+        # Основные лоссы
+        mae_loss = self.mae_loss(y, tgt)
         ssim_loss = self.ssim_metric(y, tgt)
         loss_ssim = 1 - ssim_loss
 
-        # Основные лоссы
-        l1_loss = self.mae_loss(y, tgt)
+        # 2. Регуляризация (TV-loss для гладкости карт параметров)
         reg_smooth = (
             self._spatial_smoothness_loss(a_maps)
             + self._spatial_smoothness_loss(mu_maps)
             + self._spatial_smoothness_loss(sigma_maps)
         )
 
-        # Итоговый лосс: 70% L1 + 30% SSIM + TV-reg
-        total_loss = 0.7 * l1_loss + 0.3 * loss_ssim + self.lambda_reg * reg_smooth
+        # 3. Repulsion Loss для узлов (чтобы не слипались)
+        # Извлекаем узлы напрямую из модели для лосса
+        q_nodes = self.model.layers.usgs.node_generator(self.model.layers.usgs.stem(self.model.layers.usgs.coord_adder(src)))
+        q_nodes, _ = torch.sort(q_nodes, dim=1)
+        node_dist = torch.diff(q_nodes, dim=1)
+        loss_repulsion = torch.mean(F.relu(0.1 - node_dist)) # Минимальный зазор 0.1
 
-        # Регуляризация
-        # reg = self.gaussian_regularization(a, mu, sigma)
-        # laplace = self.laplacian_pyramid_loss(y, tgt)
-        # total_loss = l1 + 0.5 * laplace + self.lambda_reg * reg
+        loss = 0.7 * mae_loss + 0.3 * loss_ssim + self.lambda_reg * reg_smooth + 0.01 * loss_repulsion
 
         psnr_loss = self.psnr_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
         de_loss = self.de_metric(
             y[:, self.metrics_channels], tgt[:, self.metrics_channels]
         )
-        loss = total_loss
 
-        self.log("mae", total_loss, prog_bar=True, logger=True)
+        self.log("mae", mae_loss, prog_bar=True, logger=True)
         self.log("psnr", psnr_loss, prog_bar=True, logger=True)
         self.log("ssim", ssim_loss, prog_bar=True, logger=True)
         self.log("sam", sam_loss, prog_bar=True, logger=True)
