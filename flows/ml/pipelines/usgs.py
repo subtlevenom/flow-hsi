@@ -129,7 +129,7 @@ class USGSPipeline(L.LightningModule):
                 {
                     "params": usgs_params,
                     "lr": self.lr * 2,
-                    "weight_decay": 1e-5,
+                    "weight_decay": 1e-6,
                 }  # Небольшой WD для стабильности
             ])
 
@@ -222,7 +222,7 @@ class USGSPipeline(L.LightningModule):
         loss_repulsion = torch.mean(F.relu(0.1 - node_dist))
 
         # Итоговый комбинированный лосс
-        loss = 0.7 * mae_loss + 0.3 * loss_ssim + self.lambda_reg * reg_smooth + 0.1 * loss_repulsion
+        loss = mae_loss + 0.15 * loss_ssim + self.lambda_reg * reg_smooth + 0.05 * loss_repulsion
 
         psnr_loss = self.psnr_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
