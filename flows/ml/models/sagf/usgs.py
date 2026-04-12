@@ -252,8 +252,6 @@ class USGSEncoder(nn.Module):
             out_channels=mid_channels,
         )
 
-        self.coord_adder = AddCoords()
-
         # Индивидуальные cmKAN-энкодеры для каждого типа параметров
         self.enc_amplitude = ParamsEncoder(mid_channels, M)
         self.enc_center = ParamsEncoder(mid_channels, M)
@@ -280,7 +278,7 @@ class USGSEncoder(nn.Module):
         # Ограничиваем mu [-0.5, 1.5] для стабильности Гауссиан
         mu = (torch.tanh(self.enc_center(feat)) + 0.5).unsqueeze(1).unsqueeze(1)
         # Ограничиваем sigma [0.05, 0.5] для стабильности Гауссиан
-        sigma = (torch.sigmoid(self.enc_sigma(feat)) * 0.45 + 0.05).unsqueeze(1).unsqueeze(1)
+        sigma = (torch.sigmoid(self.enc_sigma(feat)) * 0.95 + 0.05).unsqueeze(1).unsqueeze(1)
 
         # 2. Адаптивные узлы
         q_nodes = self.node_generator(feat).view(B, C, self.Q, 1, 1, 1)
