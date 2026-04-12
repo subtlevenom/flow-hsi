@@ -100,7 +100,7 @@ class USGSPipeline(L.LightningModule):
                         nn.init.constant_(m.bias, 0)
 
             # Специфическая инициализация для USGS
-            self._initialize_model_weights()
+            # self._initialize_model_weights()
 
         # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
         # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
@@ -115,7 +115,7 @@ class USGSPipeline(L.LightningModule):
             for name, param in self.model.named_parameters():
                 # Группируем все параметры USGS и CMKAN-энкодеров
                 if any(x in name for x in
-                       ["enc_", "chi", "node_generator", "illum_estimator"]):
+                       ["enc_", "chi_"]):
                     usgs_params.append(param)
                 else:
                     base_params.append(param)
@@ -129,7 +129,7 @@ class USGSPipeline(L.LightningModule):
                 {
                     "params": usgs_params,
                     "lr": self.lr * 2,
-                    "weight_decay": 1e-6,
+                    "weight_decay": self.weight_decay,
                 }  # Небольшой WD для стабильности
             ])
 
@@ -173,6 +173,7 @@ class USGSPipeline(L.LightningModule):
         }
 
     def on_train_epoch_start(self):
+        return
         usgs = self.model.layers.usgs
         # Warmup: обучаем только базовую освещенность (illum_estimator) и stem
         is_warmup = self.current_epoch < self.warmup_epochs
@@ -212,17 +213,8 @@ class USGSPipeline(L.LightningModule):
             + self._spatial_smoothness_loss(sigma_maps)
         )
 
-        # 3. Repulsion Loss для узлов
-        # Чтобы не вычислять заново, можно прокинуть q_nodes через forward,
-        # но здесь для краткости возьмем из модели
-        feat = self.model.layers.usgs.stem(self.model.layers.usgs.coord_adder(src))
-        q_nodes = self.model.layers.usgs.node_generator(feat)
-        q_nodes, _ = torch.sort(q_nodes, dim=1)
-        node_dist = torch.diff(q_nodes, dim=1)
-        loss_repulsion = torch.mean(F.relu(0.1 - node_dist))
-
         # Итоговый комбинированный лосс
-        loss = mae_loss + 0.15 * loss_ssim + self.lambda_reg * reg_smooth + 0.05 * loss_repulsion
+        loss = mae_loss + 0.15 * loss_ssim + self.lambda_reg * reg_smooth
 
         psnr_loss = self.psnr_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
