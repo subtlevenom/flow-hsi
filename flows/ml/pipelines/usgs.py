@@ -110,15 +110,10 @@ class USGSPipeline(L.LightningModule):
 
     def configure_optimizers(self):
         if self.optimizer_type == "adamw":
-            usgs_params = []
+
             base_params = []
             for name, param in self.model.named_parameters():
-                # Группируем все параметры USGS и CMKAN-энкодеров
-                if any(x in name for x in
-                       ["enc_", "chi_"]):
-                    usgs_params.append(param)
-                else:
-                    base_params.append(param)
+                base_params.append(param)
 
             optimizer = optim.AdamW([
                 {
@@ -126,11 +121,6 @@ class USGSPipeline(L.LightningModule):
                     "lr": self.lr,
                     "weight_decay": self.weight_decay,
                 },
-                {
-                    "params": usgs_params,
-                    "lr": self.lr * 2,
-                    "weight_decay": self.weight_decay,
-                }  # Небольшой WD для стабильности
             ])
 
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -183,13 +173,6 @@ class USGSPipeline(L.LightningModule):
             else:
                 param.requires_grad = True
 
-    def _spatial_smoothness_loss(self, x):
-        """TV-loss для тензоров произвольной размерности [..., H, W]."""
-        # Берем разности по последним двум осям (H, W)
-        dy = torch.abs(x[..., 1:, :] - x[..., :-1, :])
-        dx = torch.abs(x[..., :, 1:] - x[..., :, :-1])
-        return torch.mean(dy) + torch.mean(dx)
-
     def forward(self, x: torch.Tensor, y: torch.Tensor = None) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
         return pred["res"]
@@ -198,7 +181,7 @@ class USGSPipeline(L.LightningModule):
         src, tgt = batch
 
         # Финальный результат модели
-        y, a_maps, mu_maps, sigma_maps = self.model.layers.usgs(src, True)
+        y = self.model.layers.usgs(src)
 
         # 1. Комбинированный лосс (L1 + SSIM) - критично для cmKAN
         # Основные лоссы
@@ -206,15 +189,8 @@ class USGSPipeline(L.LightningModule):
         ssim_loss = self.ssim_metric(y, tgt)
         loss_ssim = 1 - ssim_loss
 
-        # 2. Регуляризация (TV-loss для гладкости карт параметров)
-        reg_smooth = (
-            self._spatial_smoothness_loss(a_maps)
-            + self._spatial_smoothness_loss(mu_maps)
-            + self._spatial_smoothness_loss(sigma_maps)
-        )
-
         # Итоговый комбинированный лосс
-        loss = mae_loss + 0.15 * loss_ssim + self.lambda_reg * reg_smooth
+        loss = mae_loss + 0.15 * loss_ssim
 
         psnr_loss = self.psnr_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
