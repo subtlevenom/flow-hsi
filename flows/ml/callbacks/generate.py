@@ -76,8 +76,9 @@ class GenerateCallback(Callback):
             torchvision.utils.save_image(grid, save_path)
 
     def on_predict_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        self.save_dir = torch.Path(trainer.log_dir).joinpath('figures')
-        self.save_dir.mkdir(parents=True, exist_ok=True)
+        pass
+        # self.save_dir = torch.Path(trainer.log_dir).joinpath('figures')
+        # self.save_dir.mkdir(parents=True, exist_ok=True)
 
     def on_predict_batch_end(
         self,
@@ -87,7 +88,7 @@ class GenerateCallback(Callback):
         batch: Any,
         batch_idx: int,
     ) -> None:
-
+        return
         images = outputs['image']
         filenames = outputs['filenames']
         for i in range(images.shape[0]):

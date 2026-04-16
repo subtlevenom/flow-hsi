@@ -1,2 +1,2 @@
 from .sagf import SAGF
-from .usgs import DeepVibrativeMatcherV2 as USGS
+from .usgs import ResonantColorMatcher as USGS
