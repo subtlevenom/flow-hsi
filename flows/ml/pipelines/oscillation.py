@@ -51,41 +51,41 @@ class USGSPipeline(L.LightningModule):
         self.save_hyperparameters(ignore=["model"])
 
     def _initialize_model_weights(self):
-        """Инициализация под HC-USGS с AdvancedParameterEncoder."""
+        """Инициализация под CMKAN-энкодеры и локальный Illum."""
         usgs = self.model.layers.usgs
         with torch.no_grad():
             M = usgs.M
             Q = usgs.Q
 
-            # 1. Инициализация энкодеров параметров (AdvancedParameterEncoder)
-            # В новой модели финальный слой - это fusion[-1]
+            # 1. Инициализация CMKAN-энкодеров (a, mu, sigma)
+            # Финальный слой в CMKANEncoder — это fusion[-1]
             encoders = [usgs.enc_amplitude, usgs.enc_center, usgs.enc_sigma]
             for enc in encoders:
                 nn.init.constant_(enc.fusion[-1].weight, 0.0)
                 nn.init.constant_(enc.fusion[-1].bias, 0.0)
 
-            # 2. Специфические смещения для центров (mu) и сигм
-            # Центры распределяем равномерно [0.1, 0.9]
+            # Распределяем центры mu равномерно [0.1, 0.9]
             initial_mu = torch.linspace(0.1, 0.9, M)
             usgs.enc_center.fusion[-1].bias.copy_(initial_mu)
 
-            # Сигмы делаем широкими на старте
-            usgs.enc_sigma.fusion[-1].bias.fill_(1.0)
+            # Сигмы инициализируем так, чтобы после sigmoid было ~0.3
+            usgs.enc_sigma.fusion[-1].bias.fill_(0.0)
+
+            # 2. Локальный Illumination Estimator
+            # Инициализируем в 0, чтобы на старте gain=1.0 (sigmoid(0)+0.5) и bias=0.0
+            nn.init.constant_(usgs.illum_estimator[-1].weight, 0.0)
+            nn.init.constant_(usgs.illum_estimator[-1].bias, 0.0)
 
             # 3. Генератор узлов (node_generator)
-            # Linear слой перед Sigmoid имеет индекс -2
             node_linear = usgs.node_generator[-2]
             nn.init.constant_(node_linear.weight, 0.0)
-            node_bias = torch.linspace(-3.0, 3.0, Q)
+            node_bias = torch.linspace(-2.0, 2.0, Q)
             node_linear.bias.copy_(node_bias)
 
-            # 4. Блок суперпозиции (chi_superposition)
-            # Финальный слой Conv2d (индекс -1) в 0
+            # 4. Блок суперпозиции (Chi)
+            # Финальный слой в 0, чтобы модель начинала с базовой коррекции illum
+            nn.init.constant_(usgs.chi_superposition[-1].weight, 0.0)
             nn.init.constant_(usgs.chi_superposition[-1].bias, 0.0)
-            nn.init.normal_(usgs.chi_superposition[-1].weight, std=1e-4)
-
-            # Первый слой (групповая свертка)
-            nn.init.kaiming_normal_(usgs.chi_superposition[0].weight, mode='fan_out', nonlinearity='relu')
 
     def setup(self, stage: str) -> None:
         """
@@ -100,7 +100,7 @@ class USGSPipeline(L.LightningModule):
                         nn.init.constant_(m.bias, 0)
 
             # Специфическая инициализация для USGS
-            self._initialize_model_weights()
+            # self._initialize_model_weights()
 
         # MODEL_PATH = '.experiments/ggpd.huawei/logs/checkpoints/_last.ckpt'
         # models.load_model(self.model.layers.encoder, 'model.layers.encoder', MODEL_PATH)
@@ -110,33 +110,24 @@ class USGSPipeline(L.LightningModule):
 
     def configure_optimizers(self):
         if self.optimizer_type == "adamw":
-            usgs_params = []
+
             base_params = []
             for name, param in self.model.named_parameters():
-                # Включаем node_generator и новые энкодеры в группу с повышенным LR
-                if any(x in name for x in ["enc_", "chi", "node_generator"]):
-                    usgs_params.append(param)
-                else:
-                    base_params.append(param)
+                base_params.append(param)
 
-            optimizer = optim.AdamW([{
-                "params": base_params,
-                "lr": self.lr,
-                "weight_decay": self.weight_decay,
-            }, {
-                "params": usgs_params,
-                "lr": self.lr * 2,
-                "weight_decay": 0.0,
-            }])
+            optimizer = optim.AdamW([
+                {
+                    "params": base_params,
+                    "lr": self.lr,
+                    "weight_decay": self.weight_decay,
+                },
+            ])
 
-            scheduler = optim.lr_scheduler.MultiStepLR(
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
                 optimizer,
-                milestones=[
-                    self.warmup_epochs,
-                    self.warmup_epochs + 40,
-                    self.warmup_epochs + 80,
-                ],
-                gamma=0.5)
+                T_max=200,
+                eta_min=1e-6,
+            )
 
         elif self.optimizer_type == "adam":
             optimizer = optim.Adam(
@@ -172,6 +163,7 @@ class USGSPipeline(L.LightningModule):
         }
 
     def on_train_epoch_start(self):
+        return
         usgs = self.model.layers.usgs
         # Warmup: обучаем только базовую освещенность (illum_estimator) и stem
         is_warmup = self.current_epoch < self.warmup_epochs
@@ -181,13 +173,6 @@ class USGSPipeline(L.LightningModule):
             else:
                 param.requires_grad = True
 
-    def _spatial_smoothness_loss(self, x):
-        """TV-loss для тензоров произвольной размерности [..., H, W]."""
-        # Берем разности по последним двум осям (H, W)
-        dy = torch.abs(x[..., 1:, :] - x[..., :-1, :])
-        dx = torch.abs(x[..., :, 1:] - x[..., :, :-1])
-        return torch.mean(dy) + torch.mean(dx)
-
     def forward(self, x: torch.Tensor, y: torch.Tensor = None) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
         return pred["res"]
@@ -196,7 +181,7 @@ class USGSPipeline(L.LightningModule):
         src, tgt = batch
 
         # Финальный результат модели
-        y, a_maps, mu_maps, sigma_maps = self.model.layers.usgs(src, True)
+        y = self.model.layers.usgs(src)
 
         # 1. Комбинированный лосс (L1 + SSIM) - критично для cmKAN
         # Основные лоссы
@@ -204,21 +189,8 @@ class USGSPipeline(L.LightningModule):
         ssim_loss = self.ssim_metric(y, tgt)
         loss_ssim = 1 - ssim_loss
 
-        # 2. Регуляризация (TV-loss для гладкости карт параметров)
-        reg_smooth = (
-            self._spatial_smoothness_loss(a_maps)
-            + self._spatial_smoothness_loss(mu_maps)
-            + self._spatial_smoothness_loss(sigma_maps)
-        )
-
-        # 3. Repulsion Loss для узлов (чтобы не слипались)
-        # Извлекаем узлы напрямую из модели для лосса
-        q_nodes = self.model.layers.usgs.node_generator(self.model.layers.usgs.stem(self.model.layers.usgs.coord_adder(src)))
-        q_nodes, _ = torch.sort(q_nodes, dim=1)
-        node_dist = torch.diff(q_nodes, dim=1)
-        loss_repulsion = torch.mean(F.relu(0.1 - node_dist)) # Минимальный зазор 0.1
-
-        loss = 0.9 * mae_loss + 0.15 * loss_ssim + self.lambda_reg * reg_smooth + 0.01 * loss_repulsion
+        # Итоговый комбинированный лосс
+        loss = mae_loss + 0.15 * loss_ssim
 
         psnr_loss = self.psnr_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)

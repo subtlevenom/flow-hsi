@@ -1,2 +1,3 @@
 from .sagf import SAGF
-from .usgs import DeepVibrativeMatcherV2 as USGS
+from .oscillation import DeepVibrativeMatcherV2
+from .usgs import USGS
