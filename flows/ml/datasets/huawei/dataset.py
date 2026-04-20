@@ -10,12 +10,23 @@ from flows.tools.files import reader
 
 
 class Dataset(Dataset):
-    def __init__(self, paths_a: List[str], paths_b: List[str], transform: Compose, p_transform: PairTransform = None, filename=False) -> None:
-        assert len(paths_a) == len(paths_b), "paths_a and paths_b must have same length"
+
+    def __init__(
+        self,
+        paths_a: List[str],
+        paths_b: List[str],
+        transform: Compose,
+        p_transform: PairTransform = None,
+        noise_transform: PairTransform = None,
+        filename=False,
+    ) -> None:
+        assert len(paths_a) == len(
+            paths_b), "paths_a and paths_b must have same length"
         self.paths_a = paths_a
         self.paths_b = paths_b
         self.transform = transform
         self.p_transform = p_transform
+        self.noise_transform = noise_transform
         self.filename = filename
 
     def __getitem__(self, idx: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -31,6 +42,9 @@ class Dataset(Dataset):
 
         if self.p_transform is not None:
             x, y = self.p_transform(x, y)
+
+        if self.noise_transform is not None:
+            x = self.noise_transform(x)
 
         if self.filename:
             return x, y, Path(path).name

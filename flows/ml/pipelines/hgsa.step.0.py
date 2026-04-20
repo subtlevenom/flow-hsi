@@ -10,23 +10,14 @@ from typing import List, Dict
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 from flows.core import Logger
 
-# Предполагаем наличие Charbonnier или используем реализацию ниже
-class CharbonnierLoss(nn.Module):
-    def __init__(self, eps=1e-3):
-        super().__init__()
-        self.eps = eps
-    def forward(self, x, y):
-        return torch.mean(torch.sqrt((x - y)**2 + self.eps**2))
-
-
 
 class HSGAPipeline_v2(L.LightningModule):
 
     def __init__(self,
                  model: nn.Module,
                  optimizer: str = 'adam',
-                 lr: float = 1e-4, 
-                 weight_decay: float = 1e-4,
+                 lr: float = 2e-4, 
+                 weight_decay: float = 1e-5,
                  metrics_channels: List[int] = [0, 1, 2]) -> None:
         super().__init__()
         self.model = model
@@ -35,7 +26,6 @@ class HSGAPipeline_v2(L.LightningModule):
         self.metrics_channels = metrics_channels
 
         self.mae_loss = nn.L1Loss()
-        self.charbonnier_loss = CharbonnierLoss()
         self.psnr_metric = PSNR(data_range=(0, 1))
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.de_metric = DeltaE()
@@ -67,30 +57,28 @@ class HSGAPipeline_v2(L.LightningModule):
             print('HGSA-v2 Identity initialization applied.')
 
     def configure_optimizers(self):
-        # Разделяем параметры на 3 группы для более точного контроля
-        main_params = []
-        aux_params = [] # Damping, Amplifier, Attention
+        # Выделяем параметры Гауссова ядра в отдельную группу (учим чуть осторожнее)
         gaussian_params = []
+        base_params = []
 
         for name, param in self.model.named_parameters():
             if 'gaussian_core' in name:
                 gaussian_params.append(param)
-            elif any(x in name for x in ['damping', 'amplifier', 'attn']):
-                aux_params.append(param)
             else:
-                main_params.append(param)
+                base_params.append(param)
 
-        optimizer = optim.AdamW([
-            {'params': main_params, 'lr': self.lr, 'weight_decay': self.weight_decay},
-            {'params': aux_params, 'lr': self.lr * 0.5, 'weight_decay': self.weight_decay},
-            {'params': gaussian_params, 'lr': self.lr * 0.1, 'weight_decay': 0.0} 
-        ])
+        optimizer = optim.AdamW(
+            [
+                {'params': base_params, 'lr': self.lr},
+                {'params': gaussian_params, 'lr': self.lr * 0.5} # Не 0.1, так как ядро теперь плоское
+            ],
+            weight_decay=self.weight_decay)
 
-        # Используем OneCycleLR для "пробития" плато или Cosine с длинным циклом
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer, 
-            T_max=self.trainer.max_epochs, # Рассчитываем на длинный доубуч
-            eta_min=1e-7
+            T_0=10, 
+            T_mult=2, 
+            eta_min=1e-6
         )
 
         return {
@@ -101,19 +89,6 @@ class HSGAPipeline_v2(L.LightningModule):
             }
         }
 
-    def safe_de_loss(self, y, tgt):
-        # Вычисляем dE
-        de = self.de_metric(y, tgt)
-        
-        # 1. Защита от NaN: заменяем любые NaN в тензоре на 0
-        de = torch.where(torch.isnan(de), torch.zeros_like(de), de)
-        
-        # 2. Ограничение (Clamping): dE выше 50 обычно ошибка, 
-        # а dE близкий к 0 дает бесконечный градиент
-        de_stable = torch.clamp(de, min=1e-3, max=50.0)
-        
-        return de_stable.mean()
-
     def forward(self, x: torch.Tensor, y: torch.Tensor = None) -> torch.Tensor:
         # В v2 модель возвращает тензор напрямую
         return self.model(src=x, tgt=y)['res']
@@ -123,54 +98,36 @@ class HSGAPipeline_v2(L.LightningModule):
         y = self.forward(src)
 
         l1_loss = self.mae_loss(y, tgt)
-        # 1. Charbonnier для PSNR
-        loss_charb = self.charbonnier_loss(y, tgt)
-        # 2. SSIM для структурности (cmKAN силен в этом)
         ssim_loss = self.ssim_metric(y, tgt)
-        loss_ssim = 1.0 - ssim_loss
-        # 3. DeltaE (минимальный вес, только для коррекции цвета)
-         # Безопасный DeltaE с очень малым весом
-        # Мы используем его только как "подсказку" для цвета
-        loss_de = self.safe_de_loss(y, tgt) 
 
-        # Итоговый комбинированный лосс
-        loss = 1.0 * loss_charb + 0.5 * loss_ssim
-        # loss = 1.0 * loss_charb + 0.5 * loss_ssim + 0.001 * loss_de
+        # Комбинированный лосс для PSNR и структурной целостности
+        loss = 1.0 * l1_loss + 0.5 * (1.0 - ssim_loss)
 
         with torch.no_grad():
             psnr_val = self.psnr_metric(y, tgt)
+            de_val = self.de_metric(y, tgt)
             self.log('mae', l1_loss, prog_bar=True, logger=True)
             self.log('psnr', psnr_val, prog_bar=True, logger=True)
             self.log('ssim', ssim_loss, prog_bar=True, logger=True)
-            self.log('de', loss_de, prog_bar=True, logger=True)
+            self.log('de', de_val, prog_bar=True, logger=True)
             self.log('train_loss', loss, prog_bar=True, logger=True)
-
-        if torch.isnan(loss):
-                print("Warning: NaN loss detected! Skipping step.")
-                return None
 
         return loss
 
     def on_before_optimizer_step(self, optimizer):
-        # Более строгий клиппинг для стабилизации Fine-tuning
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.3)
+        # Клиппинг важен для предотвращения взрывов в экспонентах Гауссиан
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
 
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
         y = self.forward(src)
 
         psnr_val = self.psnr_metric(y, tgt)
-        de_val = self.de_metric(y, tgt).mean()
-        ssim_val = self.ssim_metric(y, tgt)
+        de_val = self.de_metric(y, tgt)
 
-        # Теперь главная метрика для сохранения чекпоинтов - PSNR
-        self.log('val_psnr', psnr_val, prog_bar=True, sync_dist=True)
+        self.log('val_psnr', psnr_val, prog_bar=True)
         self.log('val_de', de_val, prog_bar=True)
-        self.log('val_ssim', ssim_val, prog_bar=True)
-        
-        # val_loss теперь ориентирован на качество, а не только на цвет
-        combined_val = (1.0 - ssim_val) + (de_val / 10.0)
-        self.log('val_loss', combined_val, prog_bar=True)
+        self.log('val_loss', de_val, prog_bar=True)
 
         return de_val
 

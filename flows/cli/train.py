@@ -54,14 +54,18 @@ def train_default(config: DictConfig) -> None:
             ),
             RichModelSummary(),
             RichProgressBar(),
-            LearningRateMonitor(logging_interval='epoch', ),
-            GenerateCallback(every_n_epochs=1, ),
-            StochasticWeightAveraging(swa_lrs=5e-6, swa_epoch_start=200)
+            LearningRateMonitor(logging_interval='epoch'),
+            GenerateCallback(every_n_epochs=1),
+            StochasticWeightAveraging(swa_lrs=1e-6, swa_epoch_start=200)
         ],
     )
 
     ckpt_path = os.path.join(config.save_dir, config.experiment,
                              'logs/checkpoints/last.ckpt')
+
+    # 2. Загружаем только веса (weights only) из старого чекпоинта
+    # checkpoint = torch.load(ckpt_path)
+    # pipeline.load_state_dict(checkpoint['state_dict'], strict=False)
 
     trainer.fit(
         model=pipeline,

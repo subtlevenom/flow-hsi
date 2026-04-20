@@ -11,6 +11,8 @@ from torchvision.transforms.v2 import (
 )
 from torch.utils.data import DataLoader
 from typing import Tuple
+
+from flows.ml.transforms.noise_trransform import NoiseTransform
 from .dataset import Dataset
 from flows.core import Logger
 from flows.ml.transforms.pair_trransform import PairTransform
@@ -18,15 +20,18 @@ from flows.ml.transforms.pair_trransform import PairTransform
 CROP = 256
 IMG_EXTS: Tuple[str] = (".jpg")
 
+
 class DataModule(L.LightningDataModule):
+
     def __init__(
-            self,
-            train: dict,
-            val: dict = None,
-            test: dict = None,
-            predict: dict = None,
-            num_workers: int = min(12, os.cpu_count() - 2),
-            seed: int = 43,
+        self,
+        train: dict,
+        val: dict = None,
+        test: dict = None,
+        predict: dict = None,
+        num_workers: int = min(12,
+                               os.cpu_count() - 2),
+        seed: int = 43,
     ) -> None:
         super().__init__()
 
@@ -43,25 +48,21 @@ class DataModule(L.LightningDataModule):
         # train
         paths_source = [
             os.path.join(train.source, fname)
-            for fname in os.listdir(train.source)
-            if fname.endswith(IMG_EXTS)
+            for fname in os.listdir(train.source) if fname.endswith(IMG_EXTS)
         ]
         paths_target = [
             os.path.join(train.target, fname)
-            for fname in os.listdir(train.target)
-            if fname.endswith(IMG_EXTS)
+            for fname in os.listdir(train.target) if fname.endswith(IMG_EXTS)
         ]
         self.train_paths_source = sorted(paths_source)
         self.train_paths_target = sorted(paths_target)
         # validation
         paths_source = [
-            os.path.join(val.source, fname)
-            for fname in os.listdir(val.source)
+            os.path.join(val.source, fname) for fname in os.listdir(val.source)
             if fname.endswith(IMG_EXTS)
         ]
         paths_target = [
-            os.path.join(val.target, fname)
-            for fname in os.listdir(val.target)
+            os.path.join(val.target, fname) for fname in os.listdir(val.target)
             if fname.endswith(IMG_EXTS)
         ]
         self.val_paths_source = sorted(paths_source)
@@ -69,26 +70,22 @@ class DataModule(L.LightningDataModule):
         # test
         paths_source = [
             os.path.join(test.source, fname)
-            for fname in os.listdir(test.source)
-            if fname.endswith(IMG_EXTS)
+            for fname in os.listdir(test.source) if fname.endswith(IMG_EXTS)
         ]
         paths_target = [
             os.path.join(test.target, fname)
-            for fname in os.listdir(test.target)
-            if fname.endswith(IMG_EXTS)
+            for fname in os.listdir(test.target) if fname.endswith(IMG_EXTS)
         ]
         self.test_paths_source = sorted(paths_source)
         self.test_paths_target = sorted(paths_target)
         # predict
         paths_source = [
             os.path.join(predict.source, fname)
-            for fname in os.listdir(predict.source)
-            if fname.endswith(IMG_EXTS)
+            for fname in os.listdir(predict.source) if fname.endswith(IMG_EXTS)
         ]
         paths_target = [
             os.path.join(predict.target, fname)
-            for fname in os.listdir(predict.target)
-            if fname.endswith(IMG_EXTS)
+            for fname in os.listdir(predict.target) if fname.endswith(IMG_EXTS)
         ]
         self.predict_paths_source = sorted(paths_source)
         self.predict_paths_target = sorted(paths_target)
@@ -99,17 +96,28 @@ class DataModule(L.LightningDataModule):
         self.predict_batch_size = predict.batch_size
         # self.image_p_transform = None
         self.train_image_p_transform = PairTransform(
-            crop_size=CROP, p=0.1, seed=seed
+            crop_size=CROP,
+            p=0.1,
+            seed=seed,
+        )
+        self.train_image_noise_transform = NoiseTransform(
+            sigma=0.01,
+            p=0.1,
+            seed=seed,
         )
         # self.val_image_p_transform = None
         self.val_image_p_transform = PairTransform(
-            crop_size=CROP, p=0.0, seed=seed
+            crop_size=CROP,
+            p=0.0,
+            seed=seed,
         )
         # self.test_image_p_transform = None
         self.test_image_p_transform = PairTransform(
-            crop_size=CROP, p=0.0, seed=seed
+            crop_size=CROP,
+            p=0.0,
+            seed=seed,
         )
-
+        # image transforms
         self.image_train_transform = Compose([
             ToImage(),
             ToDtype(dtype=torch.float32, scale=True),
@@ -131,18 +139,31 @@ class DataModule(L.LightningDataModule):
     def setup(self, stage: str) -> None:
         if stage == 'fit' or stage is None:
             self.train_dataset = Dataset(
-                self.train_paths_source, self.train_paths_target, self.image_train_transform, self.train_image_p_transform,
+                self.train_paths_source,
+                self.train_paths_target,
+                self.image_train_transform,
+                self.train_image_p_transform,
+                self.train_image_noise_transform,
             )
             self.val_dataset = Dataset(
-                self.val_paths_source, self.val_paths_target, self.image_val_transform, self.val_image_p_transform,
+                self.val_paths_source,
+                self.val_paths_target,
+                self.image_val_transform,
+                self.val_image_p_transform,
             )
         if stage == 'test' or stage is None:
             self.test_dataset = Dataset(
-                self.test_paths_source, self.test_paths_target, self.image_test_transform, self.test_image_p_transform,
+                self.test_paths_source,
+                self.test_paths_target,
+                self.image_test_transform,
+                self.test_image_p_transform,
             )
         if stage == 'predict' or stage is None:
             self.predict_dataset = Dataset(
-                self.predict_paths_source, self.predict_paths_target, self.image_predict_transform, filename=True
+                self.predict_paths_source,
+                self.predict_paths_target,
+                self.image_predict_transform,
+                filename=True,
             )
 
     def train_dataloader(self) -> DataLoader:
