@@ -111,7 +111,7 @@ class DefaultPipeline(L.LightningModule):
         sam_loss = self.sam_metric(y, tgt)
         de_loss = self.de_metric(y[:, self.metrics_channels],
                                  tgt[:, self.metrics_channels])
-        loss = mae_loss
+        loss = mae_loss + 0.15 * (1 - ssim_loss)
 
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
@@ -140,7 +140,7 @@ class DefaultPipeline(L.LightningModule):
         self.log('val_ssim', ssim_loss, prog_bar=True, logger=True)
         self.log('val_sam', sam_loss, prog_bar=True, logger=True)
         self.log('val_de', de_loss, prog_bar=True, logger=True)
-        self.log('val_loss', loss, prog_bar=True, logger=True)
+        self.log('val_loss', de_loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
 

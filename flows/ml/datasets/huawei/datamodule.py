@@ -99,7 +99,7 @@ class DataModule(L.LightningDataModule):
         self.predict_batch_size = predict.batch_size
         # self.image_p_transform = None
         self.train_image_p_transform = PairTransform(
-            crop_size=CROP, p=0.5, seed=seed
+            crop_size=CROP, p=0.1, seed=seed
         )
         # self.val_image_p_transform = None
         self.val_image_p_transform = PairTransform(

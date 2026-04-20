@@ -42,7 +42,9 @@ def train_default(config: DictConfig) -> None:
         logger=logger,
         default_root_dir=os.path.join(config.save_dir, config.experiment),
         max_epochs=config.epochs,
+        precision="16-mixed",
         devices=1,
+        gradient_clip_val=0.5,
         callbacks=[
             ModelCheckpoint(
                 filename="{epoch}-{val_loss:.2f}",

@@ -20,11 +20,11 @@ class PairTransform(nn.Module):
             image1 = F.crop(image1, i, j, h, w)
             image2 = F.crop(image2, i, j, h, w)
         
-        if random.random() > self.p:
+        if random.random() < self.p:
             image1 = F.hflip(image1)
             image2 = F.hflip(image2)
         
-        if random.random() > self.p:
+        if random.random() < 0.1 * self.p:
             image1 = F.vflip(image1)
             image2 = F.vflip(image2)
 
