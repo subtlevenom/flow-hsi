@@ -13,9 +13,11 @@ from flows.core import Logger
 
 # Предполагаем наличие Charbonnier или используем реализацию ниже
 class CharbonnierLoss(nn.Module):
+
     def __init__(self, eps=1e-3):
         super().__init__()
         self.eps = eps
+
     def forward(self, x, y):
         return torch.mean(torch.sqrt((x - y)**2 + self.eps**2))
 
@@ -25,7 +27,7 @@ class HSGAPipeline_v3(L.LightningModule):
     def __init__(self,
                  model: nn.Module,
                  optimizer: str = 'adamw',
-                 lr: float = 2e-4, 
+                 lr: float = 2e-4,
                  weight_decay: float = 1e-4,
                  metrics_channels: List[int] = [0, 1, 2]) -> None:
         super().__init__()
@@ -39,57 +41,63 @@ class HSGAPipeline_v3(L.LightningModule):
         self.psnr_metric = PSNR(data_range=(0, 1))
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.de_metric = DeltaE()
-        
+
         self.save_hyperparameters(ignore=['model'])
 
     def setup(self, stage: str) -> None:
         if stage == 'fit' or stage is None:
             for name, m in self.model.named_modules():
-                # 1. Стандартная инициализация для сверток и линейных слоев
+                # 1. Инициализация сверток и линейных слоев (SiLU/ReLU)
                 if isinstance(m, (nn.Conv2d, nn.Linear)):
-                    # Используем "relu", так как для silu/swish это ближайшая аппроксимация
-                    nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                    nn.init.kaiming_normal_(m.weight,
+                                            mode="fan_out",
+                                            nonlinearity="relu")
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-                # 2. Инициализация голов генератора Гауссиан (важно для сходимости)
-                # Ищем головы в MultiHeadGaussianGenerator
-                if 'generator.heads' in name and isinstance(m, nn.Linear):
-                    # Инициализируем веса очень малыми значениями
+                # 2. Специфическая инициализация для Attention (temperature)
+                if 'temperature' in name:
+                    nn.init.constant_(m, 1.0)
+
+                # 3. Инициализация голов генератора Гауссиан (mu в центр, малая амплитуда)
+                if 'param_head' in name and isinstance(m, nn.Linear):
                     nn.init.normal_(m.weight, mean=0.0, std=0.001)
                     if m.bias is not None:
-                        # Смещение 0 даст mu=0.5 (центр) после sigmoid в слое
                         nn.init.constant_(m.bias, 0)
 
-            print('HGSA Sprecher initialization applied.')
+            print('Gaussian-USGS (cmKAN Encoder) initialization applied.')
 
     def configure_optimizers(self):
-        # Разделяем параметры для стабильности Гауссова слоя
-        hypernet_params = [] # Параметры генератора (самые важные)
-        projector_params = [] # xi_proj и chi
-        base_params = [] # stem, final_head, illum_est
+        # Разделяем параметры на 3 группы для стабильности тяжелого энкодера
+        encoder_params = []  # DWT, Transformer, Attention
+        hypernet_params = []  # param_head (генерация mu, sigma, w)
+        projector_params = []  # xi_proj, chi, lambdas
 
         for name, param in self.model.named_parameters():
-            if 'generator' in name:
+            if 'encoder' in name:
+                encoder_params.append(param)
+            elif 'param_head' in name:
                 hypernet_params.append(param)
-            elif any(x in name for x in ['xi_proj', 'chi']):
-                projector_params.append(param)
             else:
-                base_params.append(param)
+                projector_params.append(param)
 
-        # Гиперсеть учим чуть медленнее, чтобы Гауссианы не "разлетались" сразу
-        optimizer = optim.AdamW([
-            {'params': base_params, 'lr': self.lr, 'weight_decay': self.weight_decay},
-            {'params': projector_params, 'lr': self.lr, 'weight_decay': self.weight_decay},
-            {'params': hypernet_params, 'lr': self.lr * 0.5, 'weight_decay': self.weight_decay * 0.1} 
-        ])
+        optimizer = optim.AdamW([{
+            'params': encoder_params,
+            'lr': self.lr,
+            'weight_decay': self.weight_decay
+        }, {
+            'params': projector_params,
+            'lr': self.lr,
+            'weight_decay': self.weight_decay
+        }, {
+            'params': hypernet_params,
+            'lr': self.lr * 0.5,
+            'weight_decay': self.weight_decay * 0.1
+        }])
 
-        # Используем CosineAnnealing для плавного финиша
+        # Используем CosineAnnealing с теплым стартом (warmup) для Attention слоев
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, 
-            T_max=self.trainer.max_epochs,
-            eta_min=1e-7
-        )
+            optimizer, T_max=self.trainer.max_epochs, eta_min=1e-7)
 
         return {
             "optimizer": optimizer,
@@ -125,7 +133,7 @@ class HSGAPipeline_v3(L.LightningModule):
         with torch.no_grad():
             l1_val = self.mae_loss(y, tgt)
             psnr_val = self.psnr_metric(y, tgt)
-            de_val = self.safe_de_loss(y, tgt) 
+            de_val = self.safe_de_loss(y, tgt)
             self.log('mae', l1_val, prog_bar=True, logger=True)
             self.log('psnr', psnr_val, prog_bar=True, logger=True)
             self.log('ssim', ssim_loss, prog_bar=True, logger=True)
@@ -133,8 +141,8 @@ class HSGAPipeline_v3(L.LightningModule):
             self.log('train_loss', loss, prog_bar=True, logger=True)
 
         if torch.isnan(loss):
-                print("Warning: NaN loss detected! Skipping step.")
-                return None
+            print("Warning: NaN loss detected! Skipping step.")
+            return None
 
         return loss
 
@@ -154,7 +162,7 @@ class HSGAPipeline_v3(L.LightningModule):
         self.log('val_psnr', psnr_val, prog_bar=True, sync_dist=True)
         self.log('val_de', de_val, prog_bar=True)
         self.log('val_ssim', ssim_val, prog_bar=True)
-        
+
         # val_loss теперь ориентирован на качество, а не только на цвет
         combined_val = (1.0 - ssim_val) + (de_val / 20.0)
         self.log('val_loss', combined_val, prog_bar=True)
@@ -193,6 +201,7 @@ class HSGAPipeline_v3(L.LightningModule):
         n = batch_idx + 1
 
         if batch_idx % 5 == 0:
-            print(f"[{name[0]}] PSNR: {psnr:.2f} | AVG dE: {self.sum_de/n:.2f}")
+            print(
+                f"[{name[0]}] PSNR: {psnr:.2f} | AVG dE: {self.sum_de/n:.2f}")
 
         return y
