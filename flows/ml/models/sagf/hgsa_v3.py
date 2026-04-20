@@ -3,9 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
 
-# --- 1. Базовые утилиты cmKAN ---
 
-
+# --- Базовые утилиты (без изменений для совместимости) ---
 def to_3d(x):
     return rearrange(x, 'b c h w -> b (h w) c')
 
@@ -26,7 +25,6 @@ class LayerNorm(nn.Module):
 
 
 class DWTForward(nn.Module):
-    """ Имитация DWT через PixelUnshuffle для сохранения логики каналов cmKAN """
 
     def __init__(self):
         super(DWTForward, self).__init__()
@@ -35,9 +33,7 @@ class DWTForward(nn.Module):
         return F.pixel_unshuffle(x, 2)
 
 
-# --- 2. Компоненты cmKAN (Illumination, Attention, FFN) ---
-
-
+# --- Компоненты cmKAN ---
 class IlluminationEstimator(nn.Module):
 
     def __init__(self, n_fea_middle, n_fea_in=4, n_fea_out=3):
@@ -73,8 +69,6 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.temperature_a = nn.Parameter(torch.ones(num_heads, 1, 1))
         self.temperature_v = nn.Parameter(torch.ones(num_heads, 1, 1))
-
-        # q, k, a уменьшают разрешение (stride=2)
         self.q_proj = nn.Conv2d(dim,
                                 dim,
                                 kernel_size=3,
@@ -96,17 +90,13 @@ class Attention(nn.Module):
                       stride=2,
                       groups=dim,
                       bias=bias), nn.Conv2d(dim, dim // 2, kernel_size=1))
-        # v сохраняет разрешение для перемножения с illu_feat
         self.v_proj = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
         self.project_out = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
 
     def forward(self, x, illu_feat):
         b, c, h, w = x.shape
-        q = self.q_proj(x)
-        k = self.k_proj(x)
-        a = self.a_proj(x)
-        v = self.v_proj(x) * illu_feat  # Размер совпадает (h, w)
-
+        q, k, a = self.q_proj(x), self.k_proj(x), self.a_proj(x)
+        v = self.v_proj(x) * illu_feat
         q = rearrange(q,
                       'b (head c) h w -> b head c (h w)',
                       head=self.num_heads)
@@ -119,20 +109,15 @@ class Attention(nn.Module):
         v = rearrange(v,
                       'b (head c) h w -> b head c (h w)',
                       head=self.num_heads)
-
         q, k, a = F.normalize(q,
                               dim=-1), F.normalize(k,
                                                    dim=-1), F.normalize(a,
                                                                         dim=-1)
-
         attn_a = (q @ a.transpose(-2, -1)) * self.temperature_a
         attn_a = attn_a.softmax(dim=-1)
         attn_k = (a @ k.transpose(-2, -1)) * self.temperature_v
         attn_k = attn_k.softmax(dim=-1)
-
-        out_v = (attn_k @ v)
-        out = (attn_a @ out_v)
-        out = rearrange(out,
+        out = rearrange(attn_a @ (attn_k @ v),
                         'b head c (h w) -> b (head c) h w',
                         head=self.num_heads,
                         h=h,
@@ -157,7 +142,8 @@ class FFN(nn.Module):
         self.pointwise2 = nn.Conv2d(hidden_features,
                                     self.out_features,
                                     kernel_size=1)
-        self.act_layer = nn.ReLU(inplace=True)
+        self.act_layer = nn.SiLU(
+            inplace=True)  # Заменил на SiLU для лучших градиентов
 
     def forward(self, x):
         return self.pointwise2(
@@ -179,52 +165,32 @@ class TransformerBlock(nn.Module):
         return x
 
 
-# --- 3. Encoder2D (cmKAN Heavy) ---
-
-
 class Encoder2D(nn.Module):
 
     def __init__(self, in_dim, out_dim):
         super(Encoder2D, self).__init__()
         self.estimator = IlluminationEstimator(12, in_dim + 1, in_dim)
-
-        self.down1 = DWTForward()  # h -> h/2, c=3 -> 12
+        self.down1 = DWTForward()
         self.trans1 = TransformerBlock(12, 12, 12, 3, True)
         self.illu_down1 = nn.Sequential(nn.AvgPool2d(2), nn.Conv2d(12, 12, 1))
-
-        self.down2 = DWTForward()  # h/2 -> h/4, c=12 -> 48
+        self.down2 = DWTForward()
         self.trans2 = TransformerBlock(48, 48, 48, 3, True)
         self.illu_down2 = nn.Sequential(nn.AvgPool2d(4), nn.Conv2d(12, 48, 1))
-
         self.up1 = nn.Upsample(scale_factor=2, mode='bilinear')
         self.up2 = nn.Upsample(scale_factor=4, mode='bilinear')
-
-        # Вход в FFN: 3 (orig) + 12 (up1) + 48 (up2) = 63
-        self.conv_out = nn.Sequential(
-            LayerNorm(in_dim + 12 + 48),
-            FFN(in_dim + 12 + 48, out_dim, out_dim)  # Явно фиксируем out_dim
-        )
+        self.conv_out = nn.Sequential(LayerNorm(in_dim + 12 + 48),
+                                      FFN(in_dim + 12 + 48, out_dim, out_dim))
 
     def forward(self, x):
         illu_fea, illu_map = self.estimator(x)
         x_orig = x * illu_map + x
-
-        x1 = self.down1(x_orig)
-        i1 = self.illu_down1(illu_fea)
-        x1 = self.trans1(x1, i1)
-
-        x2 = self.down2(x1)
-        i2 = self.illu_down2(illu_fea)
-        x2 = self.trans2(x2, i2)
-
-        x1_up = self.up1(x1)
-        x2_up = self.up2(x2)
-
-        out = torch.cat([x_orig, x1_up, x2_up], dim=1)
+        x1 = self.trans1(self.down1(x_orig), self.illu_down1(illu_fea))
+        x2 = self.trans2(self.down2(x1), self.illu_down2(illu_fea))
+        out = torch.cat([x_orig, self.up1(x1), self.up2(x2)], dim=1)
         return self.conv_out(out)
 
 
-# --- 4. Финальная модель Gaussian-USGS (Sprecher Edition) ---
+# --- 4. Финальная модель HGSA_v4 (Spatial USGS) ---
 
 
 class HGSA_v3(nn.Module):
@@ -233,58 +199,69 @@ class HGSA_v3(nn.Module):
         super().__init__()
         self.num_gaussians = num_gaussians
         self.channels = in_channels
+        HIDDEN_FEAT = 64
 
         # 1. Тяжелый энкодер (cmKAN)
-        HIDDEN_FEAT = 64
         self.encoder = Encoder2D(in_channels, out_dim=HIDDEN_FEAT)
 
-        # 2. Генератор параметров Гауссиан
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.param_head = nn.Sequential(nn.Linear(HIDDEN_FEAT, 128), nn.SiLU(),
-                                        nn.Linear(128, num_gaussians * 3))
+        # 2. Пространственно-зависимый генератор параметров (Spatial-Variant)
+        # Выход: [B, num_gaussians * 3, H, W]
+        self.param_head = nn.Sequential(
+            nn.Conv2d(HIDDEN_FEAT, HIDDEN_FEAT, kernel_size=3, padding=1),
+            nn.SiLU(), nn.Conv2d(HIDDEN_FEAT, num_gaussians * 3,
+                                 kernel_size=1))
 
-        # 3. Внутренняя проекция xi (Шпрехер)
+        # 3. Внутренняя проекция xi
         self.xi_proj = FFN(in_channels, in_channels * 2, in_channels)
 
-        # 4. Внешняя функция Chi (Gated FFN)
-        self.chi_w1 = nn.Linear(in_channels, in_channels * 2)
-        self.chi_w2 = nn.Linear(in_channels, in_channels * 2)
-        self.chi_out = nn.Linear(in_channels * 2, in_channels)
+        # 4. Внешняя функция Chi (Gated Convolutional FFN)
+        # Реализуем через свертки для учета контекста
+        self.chi_gate = nn.Conv2d(in_channels,
+                                  in_channels,
+                                  kernel_size=3,
+                                  padding=1)
+        self.chi_feat = nn.Conv2d(in_channels,
+                                  in_channels,
+                                  kernel_size=3,
+                                  padding=1)
+        self.chi_out = nn.Conv2d(in_channels, in_channels, kernel_size=1)
 
-        # 5. Лямбды Шпрехера и финальная коррекция
+        # 5. Параметры Шпрехера
         self.lambdas = nn.Parameter(torch.ones(1, in_channels, 1, 1))
         self.final_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
         B, C, H, W = x.shape
 
-        # А. Извлечение признаков и генерация параметров
-        feat = self.encoder(x)  # [B, 64, H, W]
-        pooled = self.avg_pool(feat).view(B, -1)  # [B, 64]
-        params = self.param_head(pooled).view(B, self.num_gaussians, 3)
+        # А. Извлечение признаков и генерация пространственных параметров
+        feat = self.encoder(x)
+        # params: [B, G*3, H, W]
+        params = self.param_head(feat)
+        params = params.view(B, self.num_gaussians, 3, H, W)
 
         # Б. Подготовка xi
         xi = self.xi_proj(x)
 
-        # В. Сумма Гауссиан (USGS)
+        # В. Сумма Гауссиан (Spatial USGS)
         psi_total = torch.zeros_like(xi)
         for i in range(self.num_gaussians):
-            p = params[:, i, :]
-            w = torch.tanh(p[:, 0]).view(B, 1, 1, 1)
-            mu = torch.sigmoid(p[:, 1]).view(B, 1, 1, 1)
-            sigma = (F.softplus(p[:, 2]) + 0.05).view(B, 1, 1, 1)
+            p = params[:, i, :, :, :]  # [B, 3, H, W]
+
+            w = torch.tanh(p[:, 0:1, :, :])
+            # mu в диапазоне [-0.5, 1.5]
+            mu = torch.sigmoid(p[:, 1:2, :, :]) * 2.0 - 0.5
+            # sigma ограничена снизу 0.01 и сверху 0.51
+            sigma = torch.sigmoid(p[:, 2:3, :, :]) * 0.5 + 0.01
 
             diff = (xi - mu) / sigma
             psi_total = psi_total + w * torch.exp(-0.5 * diff**2)
 
-        # Г. Внешняя функция Chi (Gated)
-        combined = (psi_total * self.lambdas).permute(0, 2, 3,
-                                                      1).reshape(-1, C)
-        gate = self.chi_w1(combined)
-        feat_chi = self.chi_w2(combined)
-        res = self.chi_out(F.silu(gate) * feat_chi)
-
-        h = res.view(B, H, W, C).permute(0, 3, 1, 2)
+        # Г. Внешняя функция Chi (Gated Convolutional)
+        # Используем пространственную информацию вместо попиксельного Linear
+        modulated = psi_total * self.lambdas
+        gate = torch.sigmoid(self.chi_gate(modulated))
+        feat_chi = F.silu(self.chi_feat(modulated))
+        h = self.chi_out(gate * feat_chi)
 
         # Финальный выход с Residual
         return self.final_conv(h + x)
