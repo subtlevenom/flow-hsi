@@ -88,11 +88,11 @@ class HSGAPipeline_v3(L.LightningModule):
         }, {
             'params': projector_params,
             'lr': self.lr,
-            'weight_decay': self.weight_decay
+            'weight_decay': self.weight_decay * 10
         }, {
             'params': hypernet_params,
             'lr': self.lr * 0.5,
-            'weight_decay': self.weight_decay * 0.1
+            'weight_decay': self.weight_decay * 100
         }])
 
         # Используем CosineAnnealing с теплым стартом (warmup) для Attention слоев

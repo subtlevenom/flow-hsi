@@ -251,7 +251,7 @@ class HGSA_v3(nn.Module):
             # mu в диапазоне [-0.5, 1.5]
             mu = torch.sigmoid(p[:, 1:2, :, :]) * 2.0 - 0.5
             # sigma ограничена снизу 0.01 и сверху 0.51
-            sigma = torch.sigmoid(p[:, 2:3, :, :]) * 0.5 + 0.01
+            sigma = torch.sigmoid(p[:, 2:3, :, :]) * 10 + 0.05
 
             diff = (xi - mu) / sigma
             psi_total = psi_total + w * torch.exp(-0.5 * diff**2)

@@ -44,7 +44,7 @@ def train_default(config: DictConfig) -> None:
         max_epochs=config.epochs,
         precision="16-mixed",
         devices=1,
-        gradient_clip_val=0.5,
+        gradient_clip_val=1.0,
         callbacks=[
             ModelCheckpoint(
                 filename="{epoch}-{val_loss:.2f}",
