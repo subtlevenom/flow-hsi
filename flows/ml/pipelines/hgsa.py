@@ -10,6 +10,7 @@ from typing import List, Dict
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 from flows.core import Logger
 
+
 # Предполагаем наличие Charbonnier или используем реализацию ниже
 class CharbonnierLoss(nn.Module):
     def __init__(self, eps=1e-3):
@@ -19,13 +20,12 @@ class CharbonnierLoss(nn.Module):
         return torch.mean(torch.sqrt((x - y)**2 + self.eps**2))
 
 
-
-class HSGAPipeline_v2(L.LightningModule):
+class HSGAPipeline_v3(L.LightningModule):
 
     def __init__(self,
                  model: nn.Module,
-                 optimizer: str = 'adam',
-                 lr: float = 1e-4, 
+                 optimizer: str = 'adamw',
+                 lr: float = 2e-4, 
                  weight_decay: float = 1e-4,
                  metrics_channels: List[int] = [0, 1, 2]) -> None:
         super().__init__()
@@ -45,48 +45,46 @@ class HSGAPipeline_v2(L.LightningModule):
     def setup(self, stage: str) -> None:
         if stage == 'fit' or stage is None:
             for name, m in self.model.named_modules():
+                # 1. Стандартная инициализация для сверток и линейных слоев
                 if isinstance(m, (nn.Conv2d, nn.Linear)):
-                    # Стандартная инициализация Kaiming
+                    # Используем "relu", так как для silu/swish это ближайшая аппроксимация
                     nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-                # 1. Инициализация Гауссова ядра (делаем амплитуды маленькими в начале)
-                if 'gaussian_core.hyper' in name:
-                    if hasattr(m, 'weight') and m.weight is not None:
-                        nn.init.constant_(m.weight, 0)
-                    if hasattr(m, 'bias') and m.bias is not None:
+                # 2. Инициализация голов генератора Гауссиан (важно для сходимости)
+                # Ищем головы в MultiHeadGaussianGenerator
+                if 'generator.heads' in name and isinstance(m, nn.Linear):
+                    # Инициализируем веса очень малыми значениями
+                    nn.init.normal_(m.weight, mean=0.0, std=0.001)
+                    if m.bias is not None:
+                        # Смещение 0 даст mu=0.5 (центр) после sigmoid в слое
                         nn.init.constant_(m.bias, 0)
 
-                # 2. Матричная голова: инициализируем так, чтобы в начале был Identity
-                if 'matrix_head' in name:
-                    if isinstance(m, nn.Conv2d) and m.out_channels == 12:
-                        nn.init.constant_(m.weight, 0)
-                        nn.init.constant_(m.bias, 0)
-
-            print('HGSA-v2 Identity initialization applied.')
+            print('HGSA Sprecher initialization applied.')
 
     def configure_optimizers(self):
-        # Разделяем параметры на 3 группы для более точного контроля
-        main_params = []
-        aux_params = [] # Damping, Amplifier, Attention
-        gaussian_params = []
+        # Разделяем параметры для стабильности Гауссова слоя
+        hypernet_params = [] # Параметры генератора (самые важные)
+        projector_params = [] # xi_proj и chi
+        base_params = [] # stem, final_head, illum_est
 
         for name, param in self.model.named_parameters():
-            if 'gaussian_core' in name:
-                gaussian_params.append(param)
-            elif any(x in name for x in ['damping', 'amplifier', 'attn']):
-                aux_params.append(param)
+            if 'generator' in name:
+                hypernet_params.append(param)
+            elif any(x in name for x in ['xi_proj', 'chi']):
+                projector_params.append(param)
             else:
-                main_params.append(param)
+                base_params.append(param)
 
+        # Гиперсеть учим чуть медленнее, чтобы Гауссианы не "разлетались" сразу
         optimizer = optim.AdamW([
-            {'params': main_params, 'lr': self.lr, 'weight_decay': self.weight_decay},
-            {'params': aux_params, 'lr': self.lr * 0.5, 'weight_decay': self.weight_decay},
-            {'params': gaussian_params, 'lr': self.lr * 0.1, 'weight_decay': 0.0} 
+            {'params': base_params, 'lr': self.lr, 'weight_decay': self.weight_decay},
+            {'params': projector_params, 'lr': self.lr, 'weight_decay': self.weight_decay},
+            {'params': hypernet_params, 'lr': self.lr * 0.5, 'weight_decay': self.weight_decay * 0.1} 
         ])
 
-        # Используем OneCycleLR для "пробития" плато или Cosine с длинным циклом
+        # Используем CosineAnnealing для плавного финиша
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer, 
             T_max=self.trainer.max_epochs,
@@ -102,17 +100,10 @@ class HSGAPipeline_v2(L.LightningModule):
         }
 
     def safe_de_loss(self, y, tgt):
-        # Вычисляем dE
         de = self.de_metric(y, tgt)
-        
-        # 1. Защита от NaN: заменяем любые NaN в тензоре на 0
         de = torch.where(torch.isnan(de), torch.zeros_like(de), de)
-        
-        # 2. Ограничение (Clamping): dE выше 50 обычно ошибка, 
-        # а dE близкий к 0 дает бесконечный градиент
-        de_stable = torch.clamp(de, min=1e-3, max=50.0)
-        
-        return de_stable.mean()
+        # Clamping важен для Гауссиан, чтобы избежать бесконечных градиентов в начале
+        return torch.clamp(de, min=1e-3, max=50.0).mean()
 
     def forward(self, x: torch.Tensor, y: torch.Tensor = None) -> torch.Tensor:
         # В v2 модель возвращает тензор напрямую
@@ -122,27 +113,23 @@ class HSGAPipeline_v2(L.LightningModule):
         src, tgt = batch
         y = self.forward(src)
 
-        l1_loss = self.mae_loss(y, tgt)
         # 1. Charbonnier для PSNR
         loss_charb = self.charbonnier_loss(y, tgt)
         # 2. SSIM для структурности (cmKAN силен в этом)
         ssim_loss = self.ssim_metric(y, tgt)
         loss_ssim = 1.0 - ssim_loss
-        # 3. DeltaE (минимальный вес, только для коррекции цвета)
-         # Безопасный DeltaE с очень малым весом
-        # Мы используем его только как "подсказку" для цвета
-        loss_de = self.safe_de_loss(y, tgt) 
 
         # Итоговый комбинированный лосс
         loss = 1.0 * loss_charb + 0.5 * loss_ssim
-        # loss = 1.0 * loss_charb + 0.5 * loss_ssim + 0.001 * loss_de
 
         with torch.no_grad():
+            l1_val = self.mae_loss(y, tgt)
             psnr_val = self.psnr_metric(y, tgt)
-            self.log('mae', l1_loss, prog_bar=True, logger=True)
+            de_val = self.safe_de_loss(y, tgt) 
+            self.log('mae', l1_val, prog_bar=True, logger=True)
             self.log('psnr', psnr_val, prog_bar=True, logger=True)
             self.log('ssim', ssim_loss, prog_bar=True, logger=True)
-            self.log('de', loss_de, prog_bar=True, logger=True)
+            self.log('de', de_val, prog_bar=True, logger=True)
             self.log('train_loss', loss, prog_bar=True, logger=True)
 
         if torch.isnan(loss):
@@ -152,8 +139,8 @@ class HSGAPipeline_v2(L.LightningModule):
         return loss
 
     def on_before_optimizer_step(self, optimizer):
-        # Более строгий клиппинг для стабилизации Fine-tuning
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.3)
+        # Гауссианы чувствительны к резким скачкам, клиппинг обязателен
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
 
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
@@ -169,7 +156,7 @@ class HSGAPipeline_v2(L.LightningModule):
         self.log('val_ssim', ssim_val, prog_bar=True)
         
         # val_loss теперь ориентирован на качество, а не только на цвет
-        combined_val = (1.0 - ssim_val) + (de_val / 10.0)
+        combined_val = (1.0 - ssim_val) + (de_val / 20.0)
         self.log('val_loss', combined_val, prog_bar=True)
 
         return de_val
