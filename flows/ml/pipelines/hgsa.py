@@ -89,7 +89,7 @@ class HSGAPipeline_v2(L.LightningModule):
         # Используем OneCycleLR для "пробития" плато или Cosine с длинным циклом
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer, 
-            T_max=self.trainer.max_epochs, # Рассчитываем на длинный доубуч
+            T_max=self.trainer.max_epochs,
             eta_min=1e-7
         )
 
