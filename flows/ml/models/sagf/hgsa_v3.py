@@ -38,20 +38,26 @@ class IlluminationEstimator(nn.Module):
 
     def __init__(self, n_fea_middle, n_fea_in=4, n_fea_out=3):
         super(IlluminationEstimator, self).__init__()
-        self.conv1 = nn.Conv2d(n_fea_in,
-                               n_fea_middle,
-                               kernel_size=1,
-                               bias=True)
-        self.depth_conv = nn.Conv2d(n_fea_middle,
-                                    n_fea_middle,
-                                    kernel_size=5,
-                                    padding=2,
-                                    bias=True,
-                                    groups=n_fea_in)
-        self.conv2 = nn.Conv2d(n_fea_middle,
-                               n_fea_out,
-                               kernel_size=1,
-                               bias=True)
+        self.conv1 = nn.Conv2d(
+            n_fea_in,
+            n_fea_middle,
+            kernel_size=1,
+            bias=True,
+        )
+        self.depth_conv = nn.Conv2d(
+            n_fea_middle,
+            n_fea_middle,
+            kernel_size=5,
+            padding=2,
+            bias=True,
+            groups=n_fea_in,
+        )
+        self.conv2 = nn.Conv2d(
+            n_fea_middle,
+            n_fea_out,
+            kernel_size=1,
+            bias=True,
+        )
 
     def forward(self, img):
         mean_c = img.mean(dim=1).unsqueeze(1)
@@ -251,7 +257,7 @@ class HGSA_v3(nn.Module):
             # mu в диапазоне [-0.5, 1.5]
             mu = torch.sigmoid(p[:, 1:2, :, :]) * 2.0 - 0.5
             # sigma ограничена снизу 0.01 и сверху 0.51
-            sigma = torch.sigmoid(p[:, 2:3, :, :]) * 10 + 0.05
+            sigma = torch.sigmoid(p[:, 2:3, :, :]) * 2.0 + 0.1
 
             diff = (xi - mu) / sigma
             psi_total = psi_total + w * torch.exp(-0.5 * diff**2)
