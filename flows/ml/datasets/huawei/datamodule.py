@@ -100,11 +100,12 @@ class DataModule(L.LightningDataModule):
             p=0.1,
             seed=seed,
         )
-        self.train_image_noise_transform = NoiseTransform(
-            sigma=0.01,
-            p=0.1,
-            seed=seed,
-        )
+        self.train_image_noise_transform = None
+        #NoiseTransform(
+        #    sigma=0.01,
+        #    p=0.1,
+        #    seed=seed,
+        #)
         # self.val_image_p_transform = None
         self.val_image_p_transform = PairTransform(
             crop_size=CROP,

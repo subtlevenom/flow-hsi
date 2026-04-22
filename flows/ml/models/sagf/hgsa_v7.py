@@ -30,39 +30,27 @@ class DWTForward(nn.Module):
         return F.pixel_unshuffle(x, 2)
 
 
-# --- Оптимизированные компоненты v7 ---
+# --- Компоненты Xi-Net ---
 
 
 class XiContextBlock(nn.Module):
-    """
-    Эффективный блок глобального контекста для Xi-Net.
-    Заменяет тяжелый ViT на Global Context Modulation.
-    Сложность по памяти O(H*W), что позволяет работать на патчах 256+.
-    """
 
     def __init__(self, dim):
         super().__init__()
         self.norm = LayerNorm(dim)
-        # Глобальный агрегатор контекста (сжимает весь кадр в вектор)
         self.global_pool = nn.AdaptiveAvgPool2d(1)
         self.context_gen = nn.Sequential(nn.Conv2d(dim, dim, 1), nn.SiLU(),
                                          nn.Conv2d(dim, dim, 1), nn.Sigmoid())
-        # Локальная обработка
-        self.local_conv = nn.Conv2d(dim,
-                                    dim,
-                                    kernel_size=3,
-                                    padding=1,
-                                    groups=dim)
+        self.local_conv = nn.Conv2d(dim, dim, 3, padding=1, groups=dim)
 
     def forward(self, x):
         res = x
         x = self.norm(x)
-        # Вычисляем глобальный вектор состояния (свет, общий шум)
-        context = self.global_pool(x)
-        context = self.context_gen(context)
-        # Модулируем локальные признаки глобальным вектором
-        x = self.local_conv(x) * context
-        return x + res
+        context = self.context_gen(self.global_pool(x))
+        return self.local_conv(x) * context + res
+
+
+# --- Компоненты Chi-Net (Параллельный Dilated KAN) ---
 
 
 class DilatedKANLayer(nn.Module):
@@ -88,7 +76,47 @@ class DilatedKANLayer(nn.Module):
         return x + res
 
 
-# --- Компоненты cmKAN ---
+class SK_Attention(nn.Module):
+    """ Selective Kernel Attention для выбора лучшего масштаба dilation """
+
+    def __init__(self, dim, branches=3):
+        super().__init__()
+        self.branches = branches
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Sequential(nn.Conv2d(dim, dim // 4, 1), nn.SiLU(),
+                                nn.Conv2d(dim // 4, dim * branches, 1))
+
+    def forward(self, branch_list):
+        combined = torch.stack(branch_list, dim=1)  # B, branches, C, H, W
+        sum_feat = torch.sum(combined, dim=1)
+
+        z = self.fc(self.pool(sum_feat))
+        z = rearrange(z, 'b (br c) h w -> b br c h w', br=self.branches)
+
+        weights = F.softmax(z, dim=1)
+        return torch.sum(combined * weights, dim=1)
+
+
+class ParallelChiNet(nn.Module):
+
+    def __init__(self, in_dim, hidden_dim, out_dim):
+        super().__init__()
+        self.pre = nn.Conv2d(in_dim, hidden_dim, 1)
+        self.branch1 = DilatedKANLayer(hidden_dim, dilation=1)
+        self.branch2 = DilatedKANLayer(hidden_dim, dilation=2)
+        self.branch4 = DilatedKANLayer(hidden_dim, dilation=4)
+        self.sk_attn = SK_Attention(hidden_dim)
+        self.post = nn.Conv2d(hidden_dim, out_dim, 1)
+
+    def forward(self, x):
+        x = self.pre(x)
+        b1 = self.branch1(x)
+        b2 = self.branch2(x)
+        b4 = self.branch4(x)
+        return self.post(self.sk_attn([b1, b2, b4]))
+
+
+# --- Компоненты cmKAN (Encoder) ---
 
 
 class IlluminationEstimator(nn.Module):
@@ -120,25 +148,15 @@ class Attention(nn.Module):
         self.temperature_v = nn.Parameter(torch.ones(num_heads, 1, 1))
         self.q_proj = nn.Conv2d(dim,
                                 dim,
-                                kernel_size=3,
+                                3,
                                 padding=1,
                                 stride=2,
                                 groups=dim,
                                 bias=bias)
-        self.k_proj = nn.Conv2d(dim,
-                                dim,
-                                kernel_size=3,
-                                padding=1,
-                                stride=2,
-                                bias=bias)
+        self.k_proj = nn.Conv2d(dim, dim, 3, padding=1, stride=2, bias=bias)
         self.a_proj = nn.Sequential(
-            nn.Conv2d(dim,
-                      dim,
-                      kernel_size=3,
-                      padding=1,
-                      stride=2,
-                      groups=dim,
-                      bias=bias), nn.Conv2d(dim, dim // 2, kernel_size=1))
+            nn.Conv2d(dim, dim, 3, padding=1, stride=2, groups=dim, bias=bias),
+            nn.Conv2d(dim, dim // 2, kernel_size=1))
         self.v_proj = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
         self.project_out = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
 
@@ -168,17 +186,13 @@ class FFN(nn.Module):
         super().__init__()
         self.out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.pointwise1 = nn.Conv2d(in_features,
-                                    hidden_features,
-                                    kernel_size=1)
+        self.pointwise1 = nn.Conv2d(in_features, hidden_features, 1)
         self.depthwise = nn.Conv2d(hidden_features,
                                    hidden_features,
-                                   kernel_size=3,
+                                   3,
                                    padding=1,
                                    groups=hidden_features)
-        self.pointwise2 = nn.Conv2d(hidden_features,
-                                    self.out_features,
-                                    kernel_size=1)
+        self.pointwise2 = nn.Conv2d(hidden_features, self.out_features, 1)
         self.act_layer = nn.SiLU(inplace=True)
 
     def forward(self, x):
@@ -226,7 +240,7 @@ class Encoder2D(nn.Module):
         return self.conv_out(out)
 
 
-# --- HGSA v7 (Sprecher-KAN Реванш - Реализуемая версия) ---
+# --- HGSA v7 (Enhanced) ---
 
 
 class HGSA_v7(nn.Module):
@@ -234,63 +248,68 @@ class HGSA_v7(nn.Module):
     def __init__(self, in_channels=3, out_channels=3, num_gaussians=8):
         super().__init__()
         self.num_gaussians = num_gaussians
-        HIDDEN_FEAT = 32  # Оптимизировано для VRAM
+        HIDDEN_FEAT = 32
         XI_DIM = 16
 
-        # 1. Энкодер признаков
         self.encoder = Encoder2D(in_channels, out_dim=HIDDEN_FEAT)
 
-        # 2. Xi-Net: Глобальный контекст через Modulation (O(N) память)
         self.xi_net = nn.Sequential(
-            nn.Conv2d(in_channels, XI_DIM, kernel_size=3, padding=1),
-            XiContextBlock(XI_DIM),
-            nn.Conv2d(XI_DIM, in_channels, kernel_size=1),
+            nn.Conv2d(in_channels, XI_DIM, 3, padding=1),
+            XiContextBlock(XI_DIM), nn.Conv2d(XI_DIM, in_channels, 1),
             LayerNorm(in_channels))
 
-        # 3. Независимые головы параметров (5 параметров на канал)
         self.param_heads = nn.ModuleList([
             FFN(HIDDEN_FEAT, HIDDEN_FEAT, 5 * in_channels)
             for _ in range(num_gaussians)
         ])
 
         self.x_norm = LayerNorm(in_channels)
+        self.chi_net = ParallelChiNet(in_channels * 3, HIDDEN_FEAT,
+                                      out_channels)
 
-        # 4. Chi-Net (Внешняя сумма): Dilated KAN-Convolutions
-        self.chi_net = nn.Sequential(
-            nn.Conv2d(in_channels * 3, HIDDEN_FEAT, kernel_size=1),
-            DilatedKANLayer(HIDDEN_FEAT, dilation=1),
-            DilatedKANLayer(HIDDEN_FEAT, dilation=2),
-            DilatedKANLayer(HIDDEN_FEAT, dilation=4),
-            nn.Conv2d(HIDDEN_FEAT, out_channels, kernel_size=1))
+        # Голова для Auxiliary Loss (USGS Output)
+        self.usgs_to_img = nn.Conv2d(in_channels, out_channels, kernel_size=1)
 
     def forward(self, x):
         B, C, H, W = x.shape
-
-        # 1. Вычисление xi (глобально-информированный вектор состояния)
         xi = self.xi_net(x)
-
-        # 2. Извлечение признаков для управления USGS
         feat = self.encoder(x)
 
         psi_total = torch.zeros_like(xi)
+        p_list = []  # Список для TV-Loss
 
-        # 3. USGS: Попиксельная аппроксимация f(xi, x)
         for i in range(self.num_gaussians):
             p = self.param_heads[i](feat)
             p = p.view(B, C, 5, H, W)
+            p_list.append(p)  # Сохраняем сырые параметры
 
-            w = torch.tanh(p[:, :, 0, :, :])
-            mu = torch.tanh(p[:, :, 1, :, :]) * 2.0
-            sigma = torch.sigmoid(p[:, :, 2, :, :]) * 1.4 + 0.1
+            # Ослабленные ограничения
+            w = torch.tanh(p[:, :, 0, :, :]) * 1.5
+            mu = torch.tanh(p[:, :, 1, :, :]) * 4.0
+            sigma = torch.sigmoid(p[:, :, 2, :, :]) * 4.0 + 0.05
             gate = torch.sigmoid(p[:, :, 3, :, :])
-            tau = torch.sigmoid(p[:, :, 4, :, :]) * 1.5 + 0.5
+            tau = torch.sigmoid(p[:, :, 4, :, :]) * 2.0 + 0.2
 
-            diff = (xi - mu) / (sigma * tau)
+            diff = (xi - mu) / (sigma * tau + 1e-6)
             psi_total = psi_total + (gate * w * torch.exp(-0.5 * diff**2))
 
-        # 4. Сборка внешней суммы Chi
+        usgs_out = self.usgs_to_img(psi_total) + x
         x_n = self.x_norm(x)
         combined = torch.cat([x, x_n, psi_total], dim=1)
+        main_out = self.chi_net(combined)
 
-        out = self.chi_net(combined)
-        return out
+        if self.training:
+            return main_out, usgs_out, p_list  # Возвращаем параметры
+        return main_out
+
+    def get_trainable_params(self, phase='all'):
+        """ Фазовое обучение: 'gaussians_only' или 'all' """
+        if phase == 'gaussians_only':
+            for name, param in self.named_parameters():
+                if "param_heads" in name or "usgs_to_img" in name or "chi_net" in name:
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+        else:
+            for param in self.parameters():
+                param.requires_grad = True
