@@ -38,6 +38,7 @@ class HSGAPipeline(L.LightningModule):
         self.freeze_until_epoch = freeze_until_epoch
 
         # Лоссы
+        self.main_loss = nn.L1Loss() 
         self.charbonnier_loss = CharbonnierLoss()
         self.psnr_metric = PSNR(data_range=(0, 1))
         self.ssim_metric = SSIM(data_range=(0, 1))
@@ -163,7 +164,7 @@ class HSGAPipeline(L.LightningModule):
         y = self(src)
 
         # 1. Основные лоссы
-        loss_charb = self.charbonnier_loss(y, tgt)
+        loss_mae = self.main_loss(y, tgt)
         loss_ssim = 1.0 - self.ssim_metric(y, tgt)
 
         # 2. TV Loss (теперь корректно обрабатывает 4 параметра)
@@ -171,7 +172,7 @@ class HSGAPipeline(L.LightningModule):
         if self.current_epoch >= self.freeze_until_epoch:
             loss_tv = self.total_variation_loss(all_params)
 
-        loss = 1.0 * loss_charb + 0.7 * loss_ssim + 0.1 * loss_tv
+        loss = 1.0 * loss_mae + 0.8 * loss_ssim + 0.05 * loss_tv
 
         self.log('train_loss', loss, prog_bar=True)
         self.log('loss_tv', loss_tv, prog_bar=False)
