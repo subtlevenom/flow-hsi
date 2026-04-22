@@ -148,8 +148,7 @@ class FFN(nn.Module):
         self.pointwise2 = nn.Conv2d(hidden_features,
                                     self.out_features,
                                     kernel_size=1)
-        self.act_layer = nn.SiLU(
-            inplace=True)  # Заменил на SiLU для лучших градиентов
+        self.act_layer = nn.SiLU(inplace=True)
 
     def forward(self, x):
         return self.pointwise2(
@@ -198,76 +197,56 @@ class Encoder2D(nn.Module):
 
 # --- 4. Финальная модель HGSA_v4 (Spatial USGS) ---
 
-
-class HGSA_v3(nn.Module):
-
-    def __init__(self, in_channels=3, out_channels=3, num_gaussians=16):
+class HGSA_v5(nn.Module):
+    def __init__(self, in_channels=3, out_channels=3, num_gaussians=8):
         super().__init__()
         self.num_gaussians = num_gaussians
         self.channels = in_channels
         HIDDEN_FEAT = 64
 
-        # 1. Тяжелый энкодер (cmKAN)
+        # 1. Энкодер признаков
         self.encoder = Encoder2D(in_channels, out_dim=HIDDEN_FEAT)
 
-        # 2. Пространственно-зависимый генератор параметров (Spatial-Variant)
-        # Выход: [B, num_gaussians * 3, H, W]
-        self.param_head = nn.Sequential(
-            nn.Conv2d(HIDDEN_FEAT, HIDDEN_FEAT, kernel_size=3, padding=1),
-            nn.SiLU(), nn.Conv2d(HIDDEN_FEAT, num_gaussians * 3,
-                                 kernel_size=1))
+        # 2. Независимые головы для каждой гауссианы
+        self.param_heads = nn.ModuleList([
+            FFN(HIDDEN_FEAT, HIDDEN_FEAT // 2, 3 * in_channels)
+            for _ in range(num_gaussians)
+        ])
 
-        # 3. Внутренняя проекция xi
+        # 3. Проекция xi (может быть ненормированной)
         self.xi_proj = FFN(in_channels, in_channels * 2, in_channels)
 
-        # 4. Внешняя функция Chi (Gated Convolutional FFN)
-        # Реализуем через свертки для учета контекста
-        self.chi_gate = nn.Conv2d(in_channels,
-                                  in_channels,
-                                  kernel_size=3,
-                                  padding=1)
-        self.chi_feat = nn.Conv2d(in_channels,
-                                  in_channels,
-                                  kernel_size=3,
-                                  padding=1)
-        self.chi_out = nn.Conv2d(in_channels, in_channels, kernel_size=1)
-
-        # 5. Параметры Шпрехера
-        self.lambdas = nn.Parameter(torch.ones(1, in_channels, 1, 1))
-        self.final_conv = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        # 4. Финальный блок Chi (принимает x и psi_total)
+        # Исправлено: убрана опечатка 'ac', структура приведена в порядок
+        self.chi_net = FFN(in_channels * 2, HIDDEN_FEAT, out_channels)
 
     def forward(self, x):
         B, C, H, W = x.shape
 
-        # А. Извлечение признаков и генерация пространственных параметров
         feat = self.encoder(x)
-        # params: [B, G*3, H, W]
-        params = self.param_head(feat)
-        params = params.view(B, self.num_gaussians, 3, H, W)
-
-        # Б. Подготовка xi
         xi = self.xi_proj(x)
 
-        # В. Сумма Гауссиан (Spatial USGS)
         psi_total = torch.zeros_like(xi)
+        
         for i in range(self.num_gaussians):
-            p = params[:, i, :, :, :]  # [B, 3, H, W]
+            # Параметры p: [B, C*3, H, W]
+            p = self.param_heads[i](feat)
+            p = p.view(B, C, 3, H, W)
 
-            w = torch.tanh(p[:, 0:1, :, :])
-            # mu в диапазоне [-0.5, 1.5]
-            mu = torch.sigmoid(p[:, 1:2, :, :]) * 2.0 - 0.5
-            # sigma ограничена снизу 0.01 и сверху 0.51
-            sigma = torch.sigmoid(p[:, 2:3, :, :]) * 2.0 + 0.1
+            w = torch.tanh(p[:, :, 0, :, :])
+            
+            # mu в диапазоне [-3.0, 3.0] для ненормированного xi
+            mu = torch.tanh(p[:, :, 1, :, :]) * 3.0
+            
+            # sigma в диапазоне [0.1, 2.5]
+            sigma = torch.sigmoid(p[:, :, 2, :, :]) * 2.4 + 0.1
 
+            # Вычисление без eps, так как sigma >= 0.1
             diff = (xi - mu) / sigma
             psi_total = psi_total + w * torch.exp(-0.5 * diff**2)
 
-        # Г. Внешняя функция Chi (Gated Convolutional)
-        # Используем пространственную информацию вместо попиксельного Linear
-        modulated = psi_total * self.lambdas
-        gate = torch.sigmoid(self.chi_gate(modulated))
-        feat_chi = F.silu(self.chi_feat(modulated))
-        h = self.chi_out(gate * feat_chi)
+        # Конкатенация 3 каналов оригинала и 3 каналов суммы гауссиан
+        combined = torch.cat([x, psi_total], dim=1) 
+        out = self.chi_net(combined)
 
-        # Финальный выход с Residual
-        return self.final_conv(h + x)
+        return out
