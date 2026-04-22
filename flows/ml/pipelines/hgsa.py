@@ -10,16 +10,6 @@ from typing import List, Dict
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 
 
-class CharbonnierLoss(nn.Module):
-
-    def __init__(self, eps=1e-3):
-        super().__init__()
-        self.eps = eps
-
-    def forward(self, x, y):
-        return torch.mean(torch.sqrt((x - y)**2 + self.eps**2))
-
-
 class HSGAPipeline(L.LightningModule):
 
     def __init__(
@@ -27,7 +17,7 @@ class HSGAPipeline(L.LightningModule):
             model: nn.Module,
             optimizer: str = 'adamw',
             lr: float = 2e-4,
-            freeze_until_epoch: int = 30,  # Уменьшил порог, так как v5 сложнее
+            freeze_until_epoch: int = 20,
             weight_decay: float = 1e-4,
             metrics_channels: List[int] = [0, 1, 2]) -> None:
         super().__init__()
@@ -38,8 +28,8 @@ class HSGAPipeline(L.LightningModule):
         self.freeze_until_epoch = freeze_until_epoch
 
         # Лоссы
-        self.main_loss = nn.L1Loss() 
-        self.charbonnier_loss = CharbonnierLoss()
+        self.mae_loss = nn.L1Loss()
+        # Метрики (инициализация предполагается внешней или через импорт)
         self.psnr_metric = PSNR(data_range=(0, 1))
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.de_metric = DeltaE()
@@ -49,7 +39,7 @@ class HSGAPipeline(L.LightningModule):
     def setup(self, stage: str) -> None:
         if stage == 'fit' or stage is None:
             for name, m in self.model.named_modules():
-                # Стандартная инициализация сверток
+                # Стандартная инициализация
                 if isinstance(m, (nn.Conv2d, nn.Linear)):
                     nn.init.kaiming_normal_(m.weight,
                                             mode="fan_out",
@@ -57,29 +47,43 @@ class HSGAPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-                # Хирургическая инициализация для голов параметров Гауссиан (v5: param_heads)
-                # Мы инициализируем их очень малыми значениями, чтобы mu и sigma
-                # в начале обучения определялись только bias-ами или средними значениями активаций.
+                # Инициализация ViT в Xi-Net (Xavier для внимания)
+                if 'xi_net' in name and isinstance(m, nn.MultiheadAttention):
+                    nn.init.xavier_uniform_(m.in_proj_weight)
+                    nn.init.constant_(m.in_proj_bias, 0)
+                    nn.init.xavier_uniform_(m.out_proj.weight)
+
+                # Хирургическая инициализация для голов параметров (v7: 5 параметров)
                 if 'param_heads' in name and hasattr(m, 'weight'):
                     nn.init.normal_(m.weight, mean=0.0, std=0.0001)
 
-            print('HGSA_v5: Channel-wise FFN Heads Initialization Applied.')
+            print('HGSA_v7: ViT-Xi and Dilated KAN Initialization Applied.')
 
     def configure_optimizers(self):
-        # Группировка параметров для v5
-        encoder_params = []  # Основное тело (cmKAN)
-        param_heads_params = []  # Список FFN блоков для каждой гауссианы
-        other_params = []  # xi_proj, chi_net
+        # Группировка параметров для v7
+        xi_params = []  # Xi-Net (ViT + Conv)
+        encoder_params = []  # Encoder2D (cmKAN)
+        param_heads_params = []  # USGS Heads
+        chi_params = []  # Chi-Net (Dilated KAN)
 
         for name, param in self.model.named_parameters():
-            if 'encoder' in name:
+            if 'xi_net' in name:
+                xi_params.append(param)
+            elif 'encoder' in name:
                 encoder_params.append(param)
             elif 'param_heads' in name:
                 param_heads_params.append(param)
+            elif 'chi_net' in name:
+                chi_params.append(param)
             else:
-                other_params.append(param)
+                encoder_params.append(param)
 
         optimizer = optim.AdamW([
+            {
+                'params': xi_params,
+                'lr': self.lr * 0.5,  # ViT учим осторожнее
+                'weight_decay': self.weight_decay
+            },
             {
                 'params': encoder_params,
                 'lr': self.lr,
@@ -87,13 +91,11 @@ class HSGAPipeline(L.LightningModule):
             },
             {
                 'params': param_heads_params,
-                'lr': self.lr *
-                0.5,  # В v5 головы сложнее, даем чуть больше LR чем в v4
-                'weight_decay':
-                5e-2  # Повышенный WD для предотвращения резких пиков в mu/sigma
+                'lr': self.lr * 0.5,
+                'weight_decay': 5e-2  # Высокий WD для стабильности гауссиан
             },
             {
-                'params': other_params,
+                'params': chi_params,
                 'lr': self.lr,
                 'weight_decay': self.weight_decay
             }
@@ -112,7 +114,7 @@ class HSGAPipeline(L.LightningModule):
 
     def on_train_start(self):
         print(
-            f"HGSA_v5: Freezing 'param_heads' until epoch {self.freeze_until_epoch}"
+            f"HGSA_v7: Freezing 'param_heads' until epoch {self.freeze_until_epoch}"
         )
         for name, param in self.model.named_parameters():
             if 'param_heads' in name:
@@ -121,21 +123,21 @@ class HSGAPipeline(L.LightningModule):
     def on_train_epoch_start(self):
         if self.current_epoch == self.freeze_until_epoch:
             print(
-                f"HGSA_v5: Unfreezing 'param_heads' at epoch {self.current_epoch}"
+                f"HGSA_v7: Unfreezing 'param_heads' at epoch {self.current_epoch}"
             )
             for name, param in self.model.named_parameters():
                 if 'param_heads' in name:
                     param.requires_grad = True
 
     def on_before_optimizer_step(self, optimizer):
-        # Клиппинг градиентов для стабильности USGS
+        # Клиппинг градиентов важен для KAN и ViT структур
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
     def total_variation_loss(self, model_output_params_list):
         loss = 0
         for p_map in model_output_params_list:
-            # p_map: [B, C, 4, H, W]
-            # Штрафуем mu (1), sigma (2) и gate (3). Индекс 0 (w) обычно не трогаем.
+            # p_map: [B, C, 5, H, W]
+            # Штрафуем mu(1), sigma(2), gate(3), tau(4)
             diff_h = torch.abs(p_map[:, :, 1:, 1:, :] -
                                p_map[:, :, 1:, :-1, :])
             diff_w = torch.abs(p_map[:, :, 1:, :, 1:] -
@@ -144,34 +146,32 @@ class HSGAPipeline(L.LightningModule):
         return loss / len(model_output_params_list)
 
     def forward(self, x: torch.Tensor):
-        # В v5 модель принимает только x
+        # В v7 модель возвращает тензор напрямую
         return self.model(src=x)['res']
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
 
-        # Для TV-loss в v6 собираем все параметры (их теперь 4 на канал)
-        with torch.set_grad_enabled(True):
+        # Сбор параметров для TV-loss (теперь 5 параметров в v7)
+        with torch.no_grad():
             feat = self.model.layers.hgsa.encoder(src)
             all_params = []
             for head in self.model.layers.hgsa.param_heads:
                 p = head(feat)
-                # Динамически определяем количество параметров (num_p = 4 в v6)
-                num_p = p.shape[1] // src.shape[1]
+                num_p = 5  # w, mu, sigma, gate, tau
                 all_params.append(
                     p.view(src.shape[0], src.shape[1], num_p, *src.shape[2:]))
 
         y = self(src)
 
-        # 1. Основные лоссы
-        loss_mae = self.main_loss(y, tgt)
+        loss_mae = self.mae_loss(y, tgt)
         loss_ssim = 1.0 - self.ssim_metric(y, tgt)
 
-        # 2. TV Loss (теперь корректно обрабатывает 4 параметра)
         loss_tv = torch.tensor(0.0, device=self.device)
         if self.current_epoch >= self.freeze_until_epoch:
             loss_tv = self.total_variation_loss(all_params)
 
+        # Баланс лоссов для v7
         loss = 1.0 * loss_mae + 0.8 * loss_ssim + 0.05 * loss_tv
 
         self.log('train_loss', loss, prog_bar=True)
@@ -187,16 +187,18 @@ class HSGAPipeline(L.LightningModule):
         src, tgt = batch
         y = self(src)
 
+        mae_val = self.mae_loss(y, tgt)
         psnr_val = self.psnr_metric(y, tgt)
         ssim_val = self.ssim_metric(y, tgt)
         de_val = self.de_metric(y, tgt).mean()
 
+        self.log('val_mae', mae_val, prog_bar=True, sync_dist=True)
         self.log('val_psnr', psnr_val, prog_bar=True, sync_dist=True)
         self.log('val_ssim', ssim_val, prog_bar=True)
         self.log('val_de', de_val, prog_bar=True)
 
-        # Комбинированный лосс для выбора лучшего чекпоинта
-        val_loss = (1.0 - ssim_val) + (de_val / 40.0)
+        val_loss = 1.0 * mae_val + 0.8 * (1. - ssim_val)
+
         self.log('val_loss', val_loss)
         return val_loss
 
@@ -208,6 +210,5 @@ class HSGAPipeline(L.LightningModule):
         return psnr_val
 
     def predict_step(self, batch, batch_idx):
-        src, tgt, name = batch
-        y = self(src)
-        return y
+        src, tgt = batch
+        return self(src)
