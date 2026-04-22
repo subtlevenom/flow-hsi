@@ -11,6 +11,7 @@ from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 
 
 class CharbonnierLoss(nn.Module):
+
     def __init__(self, eps=1e-3):
         super().__init__()
         self.eps = eps
@@ -20,6 +21,7 @@ class CharbonnierLoss(nn.Module):
 
 
 class HSGAPipeline(L.LightningModule):
+
     def __init__(
             self,
             model: nn.Module,
@@ -48,12 +50,14 @@ class HSGAPipeline(L.LightningModule):
             for name, m in self.model.named_modules():
                 # Стандартная инициализация сверток
                 if isinstance(m, (nn.Conv2d, nn.Linear)):
-                    nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                    nn.init.kaiming_normal_(m.weight,
+                                            mode="fan_out",
+                                            nonlinearity="relu")
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
                 # Хирургическая инициализация для голов параметров Гауссиан (v5: param_heads)
-                # Мы инициализируем их очень малыми значениями, чтобы mu и sigma 
+                # Мы инициализируем их очень малыми значениями, чтобы mu и sigma
                 # в начале обучения определялись только bias-ами или средними значениями активаций.
                 if 'param_heads' in name and hasattr(m, 'weight'):
                     nn.init.normal_(m.weight, mean=0.0, std=0.0001)
@@ -62,9 +66,9 @@ class HSGAPipeline(L.LightningModule):
 
     def configure_optimizers(self):
         # Группировка параметров для v5
-        encoder_params = []      # Основное тело (cmKAN)
+        encoder_params = []  # Основное тело (cmKAN)
         param_heads_params = []  # Список FFN блоков для каждой гауссианы
-        other_params = []        # xi_proj, chi_net
+        other_params = []  # xi_proj, chi_net
 
         for name, param in self.model.named_parameters():
             if 'encoder' in name:
@@ -82,8 +86,10 @@ class HSGAPipeline(L.LightningModule):
             },
             {
                 'params': param_heads_params,
-                'lr': self.lr * 0.5,  # В v5 головы сложнее, даем чуть больше LR чем в v4
-                'weight_decay': 5e-2   # Повышенный WD для предотвращения резких пиков в mu/sigma
+                'lr': self.lr *
+                0.5,  # В v5 головы сложнее, даем чуть больше LR чем в v4
+                'weight_decay':
+                5e-2  # Повышенный WD для предотвращения резких пиков в mu/sigma
             },
             {
                 'params': other_params,
@@ -104,14 +110,18 @@ class HSGAPipeline(L.LightningModule):
         }
 
     def on_train_start(self):
-        print(f"HGSA_v5: Freezing 'param_heads' until epoch {self.freeze_until_epoch}")
+        print(
+            f"HGSA_v5: Freezing 'param_heads' until epoch {self.freeze_until_epoch}"
+        )
         for name, param in self.model.named_parameters():
             if 'param_heads' in name:
                 param.requires_grad = False
 
     def on_train_epoch_start(self):
         if self.current_epoch == self.freeze_until_epoch:
-            print(f"HGSA_v5: Unfreezing 'param_heads' at epoch {self.current_epoch}")
+            print(
+                f"HGSA_v5: Unfreezing 'param_heads' at epoch {self.current_epoch}"
+            )
             for name, param in self.model.named_parameters():
                 if 'param_heads' in name:
                     param.requires_grad = True
@@ -121,16 +131,14 @@ class HSGAPipeline(L.LightningModule):
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
     def total_variation_loss(self, model_output_params_list):
-        """
-        TV-loss для списка параметров. 
-        params_list содержит тензоры [B, C*3, H, W] для каждой гауссианы.
-        """
         loss = 0
         for p_map in model_output_params_list:
-            # Штрафуем только mu и sigma (каналы 1 и 2 в размерности 3)
-            # p_map: [B, C, 3, H, W]
-            diff_h = torch.abs(p_map[:, :, 1:, 1:, :] - p_map[:, :, 1:, :-1, :])
-            diff_w = torch.abs(p_map[:, :, 1:, :, 1:] - p_map[:, :, 1:, :, :-1])
+            # p_map: [B, C, 4, H, W]
+            # Штрафуем mu (1), sigma (2) и gate (3). Индекс 0 (w) обычно не трогаем.
+            diff_h = torch.abs(p_map[:, :, 1:, 1:, :] -
+                               p_map[:, :, 1:, :-1, :])
+            diff_w = torch.abs(p_map[:, :, 1:, :, 1:] -
+                               p_map[:, :, 1:, :, :-1])
             loss += (torch.mean(diff_h) + torch.mean(diff_w))
         return loss / len(model_output_params_list)
 
@@ -141,14 +149,16 @@ class HSGAPipeline(L.LightningModule):
     def training_step(self, batch, batch_idx):
         src, tgt = batch
 
-        # Для TV-loss в v5 нам нужно собрать выходы всех param_heads
-        # Это можно сделать, прогнав encoder один раз
+        # Для TV-loss в v6 собираем все параметры (их теперь 4 на канал)
         with torch.set_grad_enabled(True):
             feat = self.model.layers.hgsa.encoder(src)
             all_params = []
             for head in self.model.layers.hgsa.param_heads:
                 p = head(feat)
-                all_params.append(p.view(src.shape[0], src.shape[1], 3, *src.shape[2:]))
+                # Динамически определяем количество параметров (num_p = 4 в v6)
+                num_p = p.shape[1] // src.shape[1]
+                all_params.append(
+                    p.view(src.shape[0], src.shape[1], num_p, *src.shape[2:]))
 
         y = self(src)
 
@@ -156,18 +166,16 @@ class HSGAPipeline(L.LightningModule):
         loss_charb = self.charbonnier_loss(y, tgt)
         loss_ssim = 1.0 - self.ssim_metric(y, tgt)
 
-        # 2. TV Loss (контроль пространственной гладкости mu и sigma)
+        # 2. TV Loss (теперь корректно обрабатывает 4 параметра)
         loss_tv = torch.tensor(0.0, device=self.device)
         if self.current_epoch >= self.freeze_until_epoch:
             loss_tv = self.total_variation_loss(all_params)
 
-        # Итоговый баланс для v5
-        # Увеличил вес SSIM, так как конкатенация в Chi-net может давать шум
         loss = 1.0 * loss_charb + 0.7 * loss_ssim + 0.1 * loss_tv
 
         self.log('train_loss', loss, prog_bar=True)
         self.log('loss_tv', loss_tv, prog_bar=False)
-        
+
         with torch.no_grad():
             psnr_val = self.psnr_metric(y, tgt)
             self.log('train_psnr', psnr_val, prog_bar=True)
