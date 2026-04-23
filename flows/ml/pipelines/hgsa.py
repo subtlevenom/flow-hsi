@@ -5,15 +5,14 @@ import lightning as L
 from typing import List
 
 
-class HSGAPipeline_v8(L.LightningModule):
+class HSGAPipeline_v9(L.LightningModule):
 
     def __init__(self,
                  model: nn.Module,
                  optimizer: str = 'adamw',
                  lr: float = 2e-4,
                  warmup_epochs: int = 20,
-                 weight_decay: float = 1e-4,
-                 metrics_channels: List[int] = [0, 1, 2]) -> None:
+                 weight_decay: float = 1e-4) -> None:
         super().__init__()
         self.model = model
         self.lr = lr
@@ -23,7 +22,7 @@ class HSGAPipeline_v8(L.LightningModule):
         self.mae_loss = nn.L1Loss()
         self.aux_loss = nn.MSELoss()
 
-        # Метрики (предполагается, что они импортированы из вашего модуля)
+        # Метрики
         from ..metrics import PSNR, SSIM, DeltaE
         self.psnr_metric = PSNR(data_range=(0, 1))
         self.ssim_metric = SSIM(data_range=(0, 1))
@@ -32,10 +31,10 @@ class HSGAPipeline_v8(L.LightningModule):
         self.save_hyperparameters(ignore=['model'])
 
     def setup(self, stage: str) -> None:
-        """ Инициализация v8: MSAB блоки и головы параметров """
+        """ Инициализация v9 Orchestra """
         if stage == 'fit' or stage is None:
             for name, m in self.model.named_modules():
-                # 1. Стандартная инициализация сверток
+                # 1. Стандартная инициализация
                 if isinstance(m, (nn.Conv2d, nn.Linear)):
                     nn.init.kaiming_normal_(m.weight,
                                             mode="fan_out",
@@ -43,69 +42,61 @@ class HSGAPipeline_v8(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-                # 2. Инициализация MSAB (Spectral Attention)
-                # Важно: rescale в MS_MSA инициализируем единицами
+                # 2. Инициализация MSAB
                 if 'rescale' in name:
                     nn.init.constant_(m, 1.0)
 
-                # 3. Инициализация финальных проекций голов (v8 Encoder)
-                # Делаем их очень маленькими, чтобы Гауссианы на старте были "нейтральными"
-                if any(x in name for x in ['proj_mu', 'proj_sigma', 'proj_A']):
+                # 3. Финальные проекции (делаем Гауссианы "тихими" на старте)
+                if any(x in name for x in ['expert_projs', 'orch_proj']):
                     if hasattr(m, 'weight'):
                         nn.init.normal_(m.weight, mean=0.0, std=0.0001)
 
             print(
-                f'HGSA_v8 Sandwich: Setup complete. MSAB-Heads initialized. Warmup: {self.warmup_epochs} epochs.'
+                f'HGSA_v9 Orchestra: Setup complete. Experts and Orchestrator initialized. Warmup: {self.warmup_epochs} epochs.'
             )
 
     def configure_optimizers(self):
-        """ Распределение lr для v8: головы и энкодер теперь важнее """
+        """ Дифференцированный LR для дирижера и оркестра """
         params_groups = {
-            'xi': [],  # Xi-Net (аргумент)
-            'encoder': [],  # Backbone + GCE
-            'heads': [],  # MSAB-Heads (mu, sigma, A)
+            'backbone': [],  # Xi-Net + Encoder.down + GCE
+            'experts': [],  # Expert Heads (w, mu, sigma)
+            'orchestra': [],  # Orchestrator Head (gate, tau)
             'chi': [],  # Chi-Net (KAN)
             'aux': []  # usgs_to_img
         }
 
         for name, param in self.model.named_parameters():
-            if 'xi_net' in name: params_groups['xi'].append(param)
-            elif 'encoder.down' in name or 'encoder.gce' in name:
-                params_groups['encoder'].append(param)
-            elif 'head_' in name or 'proj_' in name:
-                params_groups['heads'].append(param)
+            if 'xi_net' in name:
+                params_groups['backbone'].append(param)
+            elif 'expert_heads' in name or 'expert_projs' in name:
+                params_groups['experts'].append(param)
+            elif 'orchestrator' in name or 'orch_proj' in name:
+                params_groups['orchestra'].append(param)
             elif 'chi_net' in name:
                 params_groups['chi'].append(param)
             elif 'usgs_to_img' in name:
                 params_groups['aux'].append(param)
             else:
-                params_groups['encoder'].append(param)
+                params_groups['backbone'].append(param)
 
-        optimizer = optim.AdamW(
-            [
-                {
-                    'params': params_groups['xi'],
-                    'lr': self.lr * 0.5
-                },
-                {
-                    'params': params_groups['encoder'],
-                    'lr': self.lr
-                },
-                {
-                    'params': params_groups['heads'],
-                    'lr': self.lr * 1.2,
-                    'weight_decay': 1e-2
-                },  # Головам чуть больше lr
-                {
-                    'params': params_groups['aux'],
-                    'lr': self.lr
-                },
-                {
-                    'params': params_groups['chi'],
-                    'lr': self.lr
-                }
-            ],
-            weight_decay=self.weight_decay)
+        optimizer = optim.AdamW([{
+            'params': params_groups['backbone'],
+            'lr': self.lr * 0.8
+        }, {
+            'params': params_groups['experts'],
+            'lr': self.lr * 1.2,
+            'weight_decay': 1e-2
+        }, {
+            'params': params_groups['orchestra'],
+            'lr': self.lr * 1.0
+        }, {
+            'params': params_groups['chi'],
+            'lr': self.lr
+        }, {
+            'params': params_groups['aux'],
+            'lr': self.lr
+        }],
+                                weight_decay=self.weight_decay)
 
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer, T_max=self.trainer.max_epochs, eta_min=1e-7)
@@ -119,11 +110,11 @@ class HSGAPipeline_v8(L.LightningModule):
         }
 
     def total_variation_loss(self, p_list):
-        """ Регуляризация для v8 (p_list содержит тензоры [B, C, 5, H, W]) """
+        """ Регуляризация гладкости параметров Гауссиан """
         loss = 0
         for p in p_list:
-            # p[:, :, 1:3, :, :] -> mu, sigma
-            # p[:, :, 3:, :, :] -> gate, tau
+            # p: [B, C, 5, H, W] -> (w, mu, sigma, gate, tau)
+            # Применяем TV к mu, sigma, gate, tau (индексы 1:5)
             params = p[:, :, 1:, :, :]
             diff_h = torch.abs(params[:, :, :, 1:, :] -
                                params[:, :, :, :-1, :])
@@ -133,12 +124,14 @@ class HSGAPipeline_v8(L.LightningModule):
         return loss / len(p_list) if p_list else 0
 
     def on_train_epoch_start(self):
-        """ Warmup фаза для v8 """
+        """ Warmup v9: Сначала учим экспертов и арбитра """
         if self.current_epoch < self.warmup_epochs:
             for name, param in self.model.named_parameters():
-                # На вармапе учим только "внешние" части: головы, KAN и вспомогательный выход
-                if any(x in name for x in
-                       ["encoder.head", "proj_", "usgs_to_img", "chi_net"]):
+                # Замораживаем backbone, учим только головы и KAN
+                if any(x in name for x in [
+                        "expert_heads", "orchestrator", "expert_projs",
+                        "orch_proj", "chi_net", "usgs_to_img"
+                ]):
                     param.requires_grad = True
                 else:
                     param.requires_grad = False
@@ -147,30 +140,27 @@ class HSGAPipeline_v8(L.LightningModule):
                 param.requires_grad = True
 
     def on_before_optimizer_step(self, optimizer):
-        # Градиентный клиппинг важен для MSAB
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
     def forward(self, x):
-        # В v8 модель возвращает кортеж в режиме обучения и тензор в режиме валидации
         return self.model(src=x)['res']
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
+        # В v9 модель возвращает (main_out, usgs_out, p_list)
         main_out, usgs_out, p_list = self.forward(src)
 
-        # Ограничение диапазона
         main_out = torch.clamp(main_out, 0.0, 1.0)
         usgs_out = torch.clamp(usgs_out, 0.0, 1.0)
 
-        # Лоссы
         loss_mae = self.mae_loss(main_out, tgt)
         ssim_val = self.ssim_metric(main_out, tgt)
         loss_ssim = 1.0 - torch.clamp(ssim_val, 0., 1.)
         loss_aux = self.aux_loss(usgs_out, tgt)
         loss_tv = self.total_variation_loss(p_list)
 
-        # Баланс лоссов для v8 (чуть больше веса на aux для dE)
-        loss = 1.0 * loss_mae + 0.5 * loss_ssim + 0.4 * loss_aux + 0.05 * loss_tv
+        # Веса лоссов v9: акцент на MAE и AUX для DeltaE
+        loss = 1.0 * loss_mae + 0.5 * loss_ssim + 0.5 * loss_aux + 0.05 * loss_tv
 
         self.log('train_loss', loss, prog_bar=True)
         self.log('train_aux', loss_aux, prog_bar=False)
@@ -185,8 +175,9 @@ class HSGAPipeline_v8(L.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         src, tgt = batch
-        y = self.forward(src)  # В режиме eval вернет только main_out
+        y = self.forward(src)
 
+        # В режиме eval модель возвращает только тензор main_out
         y = torch.clamp(y, 0.0, 1.0)
 
         psnr_val = self.psnr_metric(y, tgt)
