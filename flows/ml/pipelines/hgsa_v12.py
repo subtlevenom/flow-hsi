@@ -201,6 +201,8 @@ class HSGAPipeline_v12(L.LightningModule):
         self.log('val_psnr', psnr_val, prog_bar=True)
         self.log('val_ssim', ssim_val, prog_bar=True)
         self.log('val_de', de_val, prog_bar=True)
+        self.log('val_loss', de_val, prog_bar=False)
+
         return de_val
 
     def test_step(self, batch, batch_idx):
