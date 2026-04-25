@@ -371,6 +371,48 @@ class Orchestrator_v13(nn.Module):
         return gates, taus
 
 
+# --- Chi-net (Aggregator) ---
+
+
+class ChiNet_v13(nn.Module):
+
+    def __init__(self, in_channels, hidden_feat, out_channels):
+        super().__init__()
+
+        self.pre = nn.Conv2d(in_channels * 2, hidden_feat, 1)
+
+        self.gate = nn.Sequential(
+            nn.Conv2d(hidden_feat, hidden_feat, 1),
+            nn.Sigmoid(),
+        )
+
+        self.msab = MSAB(
+            dim=hidden_feat,
+            dim_head=hidden_feat // 4,
+            heads=4,
+            num_blocks=3,
+        )
+
+        self.x_norm = LayerNorm(in_channels)
+
+        # Финальный слой: принимает признаки коррекции + исходный резкий x
+        self.post = nn.Conv2d(hidden_feat + in_channels, out_channels, 1)
+
+    def forward(self, x, psi_total):
+        # 1. Сборка входного признака
+        x_norm = self.x_norm(x)
+        combined = torch.cat([x_norm, psi_total], dim=1)
+
+        # 2. Обработка дельты
+        feat = self.pre(combined)
+        feat = feat * self.gate(feat)
+        feat = self.msab(feat, feat)
+
+        # 3. Накладываем выученную коррекцию на чистый исходный x
+        out = self.post(torch.cat([x, feat], dim=1))
+        return out
+
+
 # --- Hyper-FFN Heads (Contrast Gated) ---
 
 
@@ -400,51 +442,52 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
         self.num_gaussians = num_gaussians
         HIDDEN_FEAT = 32
 
+        # 1. Модуль контекстных признаков
         self.encoder = Encoder2D_v13(in_channels, out_dim=HIDDEN_FEAT)
 
-        # Инициализация нового оркестратора
-        self.orchestrator = Orchestrator_v13(in_channels=in_channels,
-                                             hidden_feat=HIDDEN_FEAT,
-                                             num_gaussians=num_gaussians)
+        # 2. Модуль управления экспертами (на базе сырого x)
+        self.orchestrator = Orchestrator_v13(
+            in_channels=in_channels,
+            hidden_feat=HIDDEN_FEAT,
+            num_gaussians=num_gaussians,
+        )
 
+        # 3. Модуль финальной шлифовки (Chi-Net)
+        self.chi_net = ChiNet_v13(
+            in_channels=in_channels,
+            hidden_feat=HIDDEN_FEAT,
+            out_channels=out_channels,
+        )
+
+        # Подготовительная сеть для Гауссиан
         self.xi_net = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 1),
             nn.Conv2d(in_channels, 16, 3, padding=1),
             nn.SiLU(),
             nn.Conv2d(16, in_channels, 1),
+            nn.Tanh(),
         )
 
+        # Головы экспертов
         self.expert_heads = nn.ModuleList([
             HyperFFN_Head(HIDDEN_FEAT, HIDDEN_FEAT, in_channels)
             for _ in range(num_gaussians)
         ])
 
-        # Gated Chi-Net (v13)
-        self.chi_pre = nn.Conv2d(in_channels * 3, HIDDEN_FEAT, 1)
-        self.chi_gate = nn.Sequential(
-            nn.Conv2d(HIDDEN_FEAT, HIDDEN_FEAT, 1),
-            nn.Sigmoid(),
+        self.usgs_to_img = nn.Conv2d(
+            in_channels + in_channels,
+            out_channels,
+            kernel_size=1,
         )
-        self.chi_msab = MSAB(
-            dim=HIDDEN_FEAT,
-            dim_head=HIDDEN_FEAT // 4,
-            heads=4,
-            num_blocks=3,
-        )
-        self.chi_post = nn.Conv2d(HIDDEN_FEAT + in_channels, out_channels, 1)
-
-        self.x_norm = LayerNorm(in_channels)
-        self.usgs_to_img = nn.Conv2d(in_channels + in_channels,
-                                     out_channels,
-                                     kernel_size=1)
 
     def forward(self, x):
         B, C, H, W = x.shape
 
+        # Потоки признаков
         xi = self.xi_net(x)
         feat = self.encoder(x)
 
-        # Вызов оркестратора: получаем маски и центры напрямую из x
+        # Оркестрация (маски и смещения)
         gates_normed, taus_all = self.orchestrator(x)
 
         psi_total = torch.zeros_like(xi)
@@ -471,12 +514,11 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
                 p_list.append(torch.stack([w, mu, sigma, gate, tau], dim=2))
 
         # Финальная сборка (Chi-Net)
-        usgs_out = self.usgs_to_img(torch.cat([x, psi_total], dim=1))
-        combined = torch.cat([x, self.x_norm(x), psi_total], dim=1)
 
-        chi_feat = self.chi_pre(combined)
-        chi_feat = chi_feat * self.chi_gate(chi_feat)
-        chi_feat = self.chi_msab(chi_feat, chi_feat)
-        main_out = self.chi_post(torch.cat([x, chi_feat], dim=1))
+        # Вычисление промежуточного и финального выходов
+        usgs_out = self.usgs_to_img(torch.cat([x, psi_total], dim=1))
+
+        # Финальный рендеринг через Chi-Net
+        main_out = self.chi_net(x, psi_total)
 
         return (main_out, usgs_out, p_list) if self.training else main_out

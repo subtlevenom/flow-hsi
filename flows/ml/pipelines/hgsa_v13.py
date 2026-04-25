@@ -175,18 +175,18 @@ class HSGAPipeline_v13(L.LightningModule):
         loss_tv = self.total_variation_loss(p_list)
 
         # 4. Финальная перцептивная фаза (DeltaE)
-        if self.current_epoch >= self.scheduler_switch_epoch:
-            loss_de = self.de_metric(main_out, tgt).mean() * 0.05
-        else:
+        if self.current_epoch < self.scheduler_switch_epoch:
             loss_de = 0.0
-
-        # warmup
-        if self.current_epoch < self.warmup_epochs:
-            a,b = 0.1, 1.0
         else:
-            a,b = 1.0, 0.1
+            loss_de = self.de_metric(main_out, tgt).mean() * 0.05
 
-        # Комбинированная формула v12
+        # 5. Warmup
+        if self.current_epoch < self.warmup_epochs:
+            a,b = 0.05, 1.0
+        else:
+            a,b = 1.0, 0.05
+
+        # 6. Комбинированная формула v12
         loss = a * loss_color + 0.3 * loss_ssim + b * loss_aux + 0.02 * loss_tv + loss_de
 
         self.log('train_loss', loss, prog_bar=True)
