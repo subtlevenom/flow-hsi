@@ -325,14 +325,15 @@ class Encoder2D_v13(nn.Module):
 
 
 class Orchestrator_v13(nn.Module):
+
     def __init__(self, in_channels, hidden_feat, num_gaussians):
         super().__init__()
         self.num_gaussians = num_gaussians
         self.in_channels = in_channels
-        
+
         # Проекция входного изображения в скрытое пространство
         self.in_proj = nn.Conv2d(in_channels, hidden_feat, 1)
-        
+
         # Пространственно-спектральный анализ на основе MSAB
         self.msab = MSAB(
             dim=hidden_feat,
@@ -340,7 +341,7 @@ class Orchestrator_v13(nn.Module):
             heads=2,
             num_blocks=2,
         )
-        
+
         # Финальная проекция в параметры ворот (gates) и смещений (taus)
         # Выход: num_gaussians * in_channels (для gates) + num_gaussians * in_channels (для taus)
         self.proj = nn.Conv2d(
@@ -351,22 +352,22 @@ class Orchestrator_v13(nn.Module):
 
     def forward(self, x):
         B, C, H, W = x.shape
-        
+
         # Работаем напрямую с входным изображением x
         feat = self.in_proj(x)
         feat = self.msab(feat, feat)
         data = self.proj(feat)
-        
+
         # Разделяем выход на ворота и смещения
         # Gates (0 : num_gaussians * C)
         raw_gates = data[:, :self.num_gaussians * C].view(
             B, self.num_gaussians, C, H, W)
         gates = F.softmax(raw_gates, dim=1)
-        
+
         # Taus (num_gaussians * C : end)
-        taus = data[:, self.num_gaussians * C:].view(
-            B, self.num_gaussians, C, H, W)
-        
+        taus = data[:, self.num_gaussians * C:].view(B, self.num_gaussians, C,
+                                                     H, W)
+
         return gates, taus
 
 
@@ -392,7 +393,7 @@ class HyperFFN_Head(nn.Module):
 # --- HGSA v13 Smart Orchestra ---
 
 
-class HGSA_v13(nn.Module): # Ваша текущая версия
+class HGSA_v13(nn.Module):  # Ваша текущая версия
 
     def __init__(self, in_channels=3, out_channels=3, num_gaussians=7):
         super().__init__()
@@ -400,13 +401,11 @@ class HGSA_v13(nn.Module): # Ваша текущая версия
         HIDDEN_FEAT = 32
 
         self.encoder = Encoder2D_v13(in_channels, out_dim=HIDDEN_FEAT)
-        
+
         # Инициализация нового оркестратора
-        self.orchestrator = Orchestrator_v13(
-            in_channels=in_channels, 
-            hidden_feat=HIDDEN_FEAT, 
-            num_gaussians=num_gaussians
-        )
+        self.orchestrator = Orchestrator_v13(in_channels=in_channels,
+                                             hidden_feat=HIDDEN_FEAT,
+                                             num_gaussians=num_gaussians)
 
         self.xi_net = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 1),
@@ -432,10 +431,12 @@ class HGSA_v13(nn.Module): # Ваша текущая версия
             heads=4,
             num_blocks=3,
         )
-        self.chi_post = nn.Conv2d(HIDDEN_FEAT, out_channels, 1)
+        self.chi_post = nn.Conv2d(HIDDEN_FEAT + in_channels, out_channels, 1)
 
         self.x_norm = LayerNorm(in_channels)
-        self.usgs_to_img = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+        self.usgs_to_img = nn.Conv2d(in_channels + in_channels,
+                                     out_channels,
+                                     kernel_size=1)
 
     def forward(self, x):
         B, C, H, W = x.shape
@@ -454,28 +455,28 @@ class HGSA_v13(nn.Module): # Ваша текущая версия
             tau = taus_all[:, i]
 
             p_e = self.expert_heads[i](feat).view(B, C, 3, H, W)
-            
+
             # w - positive and negative to approximate residual x - psi_total
             # mu - must be close to xi, approximate only in neighborhood of xi
             # sigma - responsible for surface shape, gets more freedom
             w = p_e[:, :, 0, :, :]
             mu = torch.tanh(p_e[:, :, 1, :, :]) * 1.0
-            sigma = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 4.0 + 0.02
+            sigma = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 2.0 + 0.02
 
             diff = (xi - mu) / (sigma + 1e-6)
             psi_i = gate * w * torch.exp(-0.5 * diff**2)
             psi_total = psi_total + psi_i
-            
+
             if self.training:
                 p_list.append(torch.stack([w, mu, sigma, gate, tau], dim=2))
 
         # Финальная сборка (Chi-Net)
-        usgs_out = self.usgs_to_img(psi_total) + x
+        usgs_out = self.usgs_to_img(torch.cat([x, psi_total], dim=1))
         combined = torch.cat([x, self.x_norm(x), psi_total], dim=1)
 
         chi_feat = self.chi_pre(combined)
         chi_feat = chi_feat * self.chi_gate(chi_feat)
         chi_feat = self.chi_msab(chi_feat, chi_feat)
-        main_out = self.chi_post(chi_feat)
+        main_out = self.chi_post(torch.cat([x, chi_feat], dim=1))
 
         return (main_out, usgs_out, p_list) if self.training else main_out
