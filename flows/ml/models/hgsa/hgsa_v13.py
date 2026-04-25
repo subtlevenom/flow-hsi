@@ -379,7 +379,7 @@ class ChiNet_v13(nn.Module):
     def __init__(self, in_channels, hidden_feat, out_channels):
         super().__init__()
 
-        self.pre = nn.Conv2d(in_channels * 2, hidden_feat, 1)
+        self.pre = nn.Conv2d(in_channels * 3, hidden_feat, 1)
 
         self.gate = nn.Sequential(
             nn.Conv2d(hidden_feat, hidden_feat, 1),
@@ -400,8 +400,7 @@ class ChiNet_v13(nn.Module):
 
     def forward(self, x, psi_total):
         # 1. Сборка входного признака
-        x_norm = self.x_norm(x)
-        combined = torch.cat([x_norm, psi_total], dim=1)
+        combined = torch.cat([x, self.x_norm(x), psi_total], dim=1)
 
         # 2. Обработка дельты
         feat = self.pre(combined)

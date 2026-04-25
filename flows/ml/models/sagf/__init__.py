@@ -1,3 +1,2 @@
 from .sagf import SAGF
 from .oscillation import DeepVibrativeMatcherV2
-from .hgsa_v13 import HGSA_v13 as HGSA

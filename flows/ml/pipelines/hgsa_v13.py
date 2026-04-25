@@ -182,7 +182,7 @@ class HSGAPipeline_v13(L.LightningModule):
 
         # 5. Warmup
         if self.current_epoch < self.warmup_epochs:
-            a,b = 0.05, 1.0
+            a,b = 0.1, 1.0
         else:
             a,b = 1.0, 0.05
 
