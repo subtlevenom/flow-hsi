@@ -365,7 +365,8 @@ class Orchestrator_v13(nn.Module):
         # Gates (0 : num_gaussians * C)
         raw_gates = data[:, :self.num_gaussians * self.out_channels].view(
             B, self.num_gaussians, self.out_channels, H, W)
-        gates = F.softmax(raw_gates, dim=1)
+        gates = F.sigmoid(raw_gates)
+        # gates = F.softmax(raw_gates, dim=1)
 
         # Taus (num_gaussians * C : end)
         taus = data[:, self.num_gaussians * self.out_channels:].view(
@@ -397,14 +398,12 @@ class ChiNet_v13(nn.Module):
             num_blocks=3,
         )
 
-        self.x_norm = nn.InstanceNorm2d(in_channels)
-
         # Финальный слой: принимает признаки коррекции + исходный резкий x
         self.post = nn.Conv2d(hidden_channels + in_channels, out_channels, 1)
 
     def forward(self, x, psi_total):
         # 1. Сборка входного признака
-        combined = torch.cat([self.x_norm(x), psi_total], dim=1)
+        combined = torch.cat([x, psi_total], dim=1)
 
         # 2. Обработка дельты
         feat = self.pre(combined)
@@ -467,6 +466,7 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
 
         # Подготовительная сеть для Гауссиан
         self.xi_net = nn.Sequential(
+            nn.AvgPool2d(kernel_size=3, stride=1, padding=1),
             nn.Conv2d(in_channels, in_channels, 1),
             nn.Conv2d(in_channels, 16, 3, padding=1),
             nn.SiLU(),
@@ -479,6 +479,13 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
             HyperFFN_Head(HIDDEN_FEAT, HIDDEN_FEAT, g_channels)
             for _ in range(num_gaussians)
         ])
+        # Масштаб амплитуды (уже обсудили)
+        self.w_scales = nn.Parameter(torch.ones(num_gaussians) * 1.2)
+        # Смещение центров (помогает распределить экспертов по гистограмме)
+        # Инициализируем равномерно от 0.1 до 0.9
+        self.mu_offsets = nn.Parameter(torch.linspace(0.1, 0.9, num_gaussians))
+        # Базовая эластичность (насколько эксперт "широкий" по умолчанию)
+        self.sigma_bases = nn.Parameter(torch.ones(num_gaussians) * 0.05)        
 
         # Модуль финальной шлифовки (Chi-Net)
         self.chi_net = ChiNet_v13(
@@ -514,22 +521,31 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
 
             p_e = self.expert_heads[i](feat).view(B, -1, 3, H, W)
 
-            # w - positive and negative to approximate residual x - psi_total
-            # mu - must be close to xi, approximate only in neighborhood of xi
-            # sigma - responsible for surface shape, gets more freedom
-            w = torch.tanh(p_e[:, :, 0, :, :])
-            mu = torch.tanh(p_e[:, :, 1, :, :]) * 1.5 + 0.5
-            sigma = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 4.0 + 0.02
-
-            diff = (xi - mu) / (sigma + 1e-6)
-            psi_i = gate * w * torch.exp(-0.5 * diff**2)
+            # 1. Амплитуда: Глобальный масштаб * Локальное решение
+            w = self.w_scales[i] * torch.tanh(p_e[:, :, 0, :, :])
+            
+            # 2. Центр: Глобальное смещение + Локальная подстройка
+            # Используем clamp, чтобы mu не вылетало за [0, 1]
+            mu_local = torch.tanh(p_e[:, :, 1, :, :]) * 0.1 # Локальный сдвиг +- 0.1
+            mu = torch.clamp(self.mu_offsets[i] + mu_local, 0.0, 1.0)
+            
+            # 3. Эластичность и Sigma
+            elasticity = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 1.2
+            dist = torch.abs(xi - mu)
+            
+            # Sigma: Глобальная база + Динамическая эластичность
+            # Это дает эксперту "минимальную специализацию"
+            curr_base_sigma = torch.abs(self.sigma_bases[i])
+            sigma = curr_base_sigma + elasticity * dist 
+            
+            diff = dist / (sigma + 1e-6)
+            psi_i = gate * w * torch.exp(-0.5 * torch.pow(diff, 2))
             psi_total = psi_total + psi_i
 
             if self.training:
                 p_list.append(torch.stack([w, mu, sigma, gate, tau], dim=2))
 
         # Финальная сборка (Chi-Net)
-
         # Вычисление промежуточного и финального выходов
         usgs_out = x + self.usgs_to_img(psi_total)
 
