@@ -471,7 +471,7 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
             nn.Conv2d(in_channels, 16, 3, padding=1),
             nn.SiLU(),
             nn.Conv2d(16, g_channels, 1),
-            nn.Tanh(),
+            nn.Sigmoid(),
         )
 
         # Головы экспертов
@@ -490,7 +490,7 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
 
         # Aux-loss module
         self.usgs_to_img = nn.Conv2d(
-            g_channels + in_channels,
+            g_channels,
             out_channels,
             kernel_size=1,
         )
@@ -517,8 +517,8 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
             # w - positive and negative to approximate residual x - psi_total
             # mu - must be close to xi, approximate only in neighborhood of xi
             # sigma - responsible for surface shape, gets more freedom
-            w = torch.tanh(p_e[:, :, 0, :, :]) * 2.
-            mu = self.xi_net[-1](p_e[:, :, 1, :, :])
+            w = torch.tanh(p_e[:, :, 0, :, :])
+            mu = torch.tanh(p_e[:, :, 1, :, :]) * 1.5 + 0.5
             sigma = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 4.0 + 0.02
 
             diff = (xi - mu) / (sigma + 1e-6)
@@ -531,7 +531,7 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
         # Финальная сборка (Chi-Net)
 
         # Вычисление промежуточного и финального выходов
-        usgs_out = self.usgs_to_img(torch.cat([x, psi_total], dim=1))
+        usgs_out = x + self.usgs_to_img(psi_total)
 
         # Финальный рендеринг через Chi-Net
         main_out = self.chi_net(x, psi_total)

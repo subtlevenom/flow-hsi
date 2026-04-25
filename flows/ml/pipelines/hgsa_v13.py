@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
@@ -9,12 +10,15 @@ from ..metrics import PSNR, SSIM, DeltaE
 
 
 class LogCoshLoss(nn.Module):
-
     def __init__(self):
         super().__init__()
 
     def forward(self, y_pred, y_true):
-        return torch.mean(torch.log(torch.cosh(y_pred - y_true + 1e-12)))
+        x = y_pred - y_true
+        # Используем формулу: log(cosh(x)) = |x| + log(1 + exp(-2|x|)) - log(2)
+        # Это предотвращает inf при больших x
+        loss = torch.abs(x) + F.softplus(-2. * torch.abs(x)) - math.log(2.0)
+        return torch.mean(loss)
 
 
 class HSGAPipeline_v13(L.LightningModule):
@@ -59,7 +63,10 @@ class HSGAPipeline_v13(L.LightningModule):
                 if any(x in name for x in
                        ['expert_heads', 'orchestrator_proj', 'chi_post']):
                     if isinstance(m, nn.Conv2d):
-                        nn.init.normal_(m.weight, mean=0.0, std=0.0001)
+                        # nn.init.normal_(m.weight, mean=0.0, std=0.01)
+                        nn.init.kaiming_normal_(m.weight,
+                                                mode="fan_out",
+                                                nonlinearity="relu")
 
                 # Инициализация Channel-Mix в Xi-Net как Identity
                 if 'xi_net.0' in name and isinstance(m, nn.Conv2d):
@@ -85,7 +92,7 @@ class HSGAPipeline_v13(L.LightningModule):
                 params_groups['experts'].append(param)
             elif 'orchestrator' in name:
                 params_groups['orchestra'].append(param)
-            elif 'chi_' in name:
+            elif 'chi_net' in name:
                 params_groups['chi'].append(param)
             elif 'usgs_to_img' in name:
                 params_groups['aux'].append(param)
@@ -160,14 +167,13 @@ class HSGAPipeline_v13(L.LightningModule):
         src, tgt = batch
         main_out, usgs_out, p_list = self(src)
 
-        main_out = torch.clamp(main_out, 0.0, 1.0)
-        usgs_out = torch.clamp(usgs_out, 0.0, 1.0)
+        main_out_c = torch.clamp(main_out, 0.0, 1.0)
 
         # 1. Основной лосс (Log-Cosh для стабильности на Волге)
         loss_color = self.logcosh_loss(main_out, tgt)
 
         # 2. Структурный лосс
-        ssim_val = self.ssim_metric(main_out, tgt)
+        ssim_val = self.ssim_metric(main_out_c, tgt)
         loss_ssim = 1.0 - torch.clamp(ssim_val, 0., 1.)
 
         # 3. Вспомогательные лоссы
@@ -178,7 +184,7 @@ class HSGAPipeline_v13(L.LightningModule):
         if self.current_epoch < self.scheduler_switch_epoch:
             loss_de = 0.0
         else:
-            loss_de = self.de_metric(main_out, tgt).mean() * 0.05
+            loss_de = self.de_metric(main_out_c, tgt).mean() * 0.05
 
         # 5. Warmup
         if self.current_epoch < self.warmup_epochs:
@@ -193,7 +199,7 @@ class HSGAPipeline_v13(L.LightningModule):
         self.log('train_de_boost', loss_de, prog_bar=False)
 
         with torch.no_grad():
-            psnr_val = self.psnr_metric(main_out, tgt)
+            psnr_val = self.psnr_metric(main_out_c, tgt)
             self.log('train_psnr', psnr_val, prog_bar=True)
             self.log('train_ssim', ssim_val, prog_bar=True)
 
