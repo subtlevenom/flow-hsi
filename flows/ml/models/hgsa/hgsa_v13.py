@@ -485,7 +485,7 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
         # Инициализируем равномерно от 0.1 до 0.9
         self.mu_offsets = nn.Parameter(torch.linspace(0.1, 0.9, num_gaussians))
         # Базовая эластичность (насколько эксперт "широкий" по умолчанию)
-        self.sigma_bases = nn.Parameter(torch.ones(num_gaussians) * 0.05)        
+        self.sigma_bases = nn.Parameter(torch.ones(num_gaussians) * 0.05)
 
         # Модуль финальной шлифовки (Chi-Net)
         self.chi_net = ChiNet_v13(
@@ -523,21 +523,22 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
 
             # 1. Амплитуда: Глобальный масштаб * Локальное решение
             w = self.w_scales[i] * torch.tanh(p_e[:, :, 0, :, :])
-            
+
             # 2. Центр: Глобальное смещение + Локальная подстройка
             # Используем clamp, чтобы mu не вылетало за [0, 1]
-            mu_local = torch.tanh(p_e[:, :, 1, :, :]) * 0.1 # Локальный сдвиг +- 0.1
+            mu_local = torch.tanh(p_e[:, :,
+                                      1, :, :]) * 0.1  # Локальный сдвиг +- 0.1
             mu = torch.clamp(self.mu_offsets[i] + mu_local, 0.0, 1.0)
-            
+
             # 3. Эластичность и Sigma
             elasticity = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 1.2
             dist = torch.abs(xi - mu)
-            
+
             # Sigma: Глобальная база + Динамическая эластичность
             # Это дает эксперту "минимальную специализацию"
             curr_base_sigma = torch.abs(self.sigma_bases[i])
-            sigma = curr_base_sigma + elasticity * dist 
-            
+            sigma = curr_base_sigma + elasticity * dist
+
             diff = dist / (sigma + 1e-6)
             psi_i = gate * w * torch.exp(-0.5 * torch.pow(diff, 2))
             psi_total = psi_total + psi_i
