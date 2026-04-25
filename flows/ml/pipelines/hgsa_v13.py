@@ -5,11 +5,11 @@ import torch.nn.functional as F
 import lightning as L
 from typing import List
 
-# Предполагается наличие этих метрик в вашем проекте
 from ..metrics import PSNR, SSIM, DeltaE
 
 
 class LogCoshLoss(nn.Module):
+
     def __init__(self):
         super().__init__()
 
@@ -52,6 +52,9 @@ class HSGAPipeline_v13(L.LightningModule):
         if stage == 'fit' or stage is None:
             for name, m in self.model.named_modules():
                 if isinstance(m, (nn.Conv2d, nn.Linear)):
+                    if any(x in name
+                           for x in ['w_scales', 'mu_offsets', 'sigma_bases']):
+                        continue  # Пропускаем
                     # Инициализация для Advanced_GFFN и Spectral блоков
                     nn.init.kaiming_normal_(m.weight,
                                             mode="fan_out",
@@ -61,7 +64,7 @@ class HSGAPipeline_v13(L.LightningModule):
 
                 # Инициализация Hyper-FFN и проекций (делаем их "тихими" для старта)
                 if any(x in name for x in
-                       ['expert_heads', 'orchestrator_proj', 'chi_post']):
+                       ['expert_heads', 'orchestrator.proj', 'chi_post']):
                     if isinstance(m, nn.Conv2d):
                         # nn.init.normal_(m.weight, mean=0.0, std=0.01)
                         nn.init.kaiming_normal_(m.weight,
@@ -69,7 +72,7 @@ class HSGAPipeline_v13(L.LightningModule):
                                                 nonlinearity="relu")
 
                 # Инициализация Channel-Mix в Xi-Net как Identity
-                if 'xi_net.0' in name and isinstance(m, nn.Conv2d):
+                if 'xi_net.1' in name and isinstance(m, nn.Conv2d):
                     nn.init.eye_(m.weight.view(m.weight.size(0), -1))
 
             print(
@@ -78,15 +81,20 @@ class HSGAPipeline_v13(L.LightningModule):
 
     def configure_optimizers(self):
         params_groups = {
-            'backbone': [],  # Encoder2D_v12 + Xi-Net
-            'experts': [],  # HyperFFN Heads
-            'orchestra': [],  # Orchestrator MSAB
-            'chi': [],  # Gated Chi-Net
-            'aux': []  # usgs_to_img
+            'backbone': [],
+            'experts': [],
+            'orchestra': [],
+            'chi': [],
+            'aux': [],  # usgs_to_img
+            'global_params':
+            [],  # Новая группа для w_scales, mu_offsets, sigma_bases
         }
 
         for name, param in self.model.named_parameters():
-            if 'xi_net' in name or 'encoder' in name:
+            if any(x in name
+                   for x in ['w_scales', 'mu_offsets', 'sigma_bases']):
+                params_groups['global_params'].append(param)
+            elif 'xi_net' in name or 'encoder' in name:
                 params_groups['backbone'].append(param)
             elif 'expert_heads' in name:
                 params_groups['experts'].append(param)
@@ -121,18 +129,28 @@ class HSGAPipeline_v13(L.LightningModule):
                 {
                     'params': params_groups['aux'],
                     'lr': self.lr
-                }
+                },
+                {
+                    'params': params_groups['global_params'],
+                    'lr': self.lr * 0.5,
+                    'weight_decay': 0.0
+                },
             ],
             weight_decay=self.weight_decay)
 
+        # Сначала количество эпох до переключения
         self.scheduler_switch_epoch = int(self.trainer.max_epochs * 0.7)
+        # Сначала считаем, сколько всего шагов в одной эпохе
+        steps_per_epoch = self.trainer.estimated_stepping_batches // self.trainer.max_epochs
+        # Считаем шаги только для первой фазы (OneCycle)
+        first_phase_steps = self.scheduler_switch_epoch * steps_per_epoch
 
         # OneCycle для основной фазы
         self.scheduler_1 = optim.lr_scheduler.OneCycleLR(
             optimizer,
             max_lr=self.lr,
             epochs=self.scheduler_switch_epoch,
-            total_steps=self.trainer.estimated_stepping_batches,
+            total_steps=first_phase_steps,
             pct_start=0.2,
             div_factor=10,
             final_div_factor=50)
