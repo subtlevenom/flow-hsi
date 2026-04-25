@@ -455,6 +455,9 @@ class HGSA_v13(nn.Module): # Ваша текущая версия
 
             p_e = self.expert_heads[i](feat).view(B, C, 3, H, W)
             
+            # w - positive and negative to approximate residual x - psi_total
+            # mu - must be close to xi, approximate only in neighborhood of xi
+            # sigma - responsible for surface shape, gets more freedom
             w = p_e[:, :, 0, :, :]
             mu = torch.tanh(p_e[:, :, 1, :, :]) * 1.0
             sigma = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 4.0 + 0.02
