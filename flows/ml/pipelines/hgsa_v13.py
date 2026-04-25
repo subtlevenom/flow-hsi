@@ -17,7 +17,7 @@ class LogCoshLoss(nn.Module):
         return torch.mean(torch.log(torch.cosh(y_pred - y_true + 1e-12)))
 
 
-class HSGAPipeline_v12(L.LightningModule):
+class HSGAPipeline_v13(L.LightningModule):
 
     def __init__(self,
                  model: nn.Module,
