@@ -152,19 +152,6 @@ class HSGAPipeline_v13(L.LightningModule):
             if self.trainer.is_last_batch:
                 self.scheduler_2.step()
     
-    def on_train_epoch_start(self):
-        """ Фазовый прогрев: Сначала эксперты и MSAB-интеграторы, потом Backbone """
-        if self.current_epoch < self.warmup_epochs:
-            for name, param in self.model.named_parameters():
-                if any(x in name for x in
-                    ["expert_heads", "orchestrator", "chi_", "usgs_to_img"]):
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-        else:
-            for param in self.model.parameters():
-                param.requires_grad = True
-
     def on_before_optimizer_step(self, optimizer):
         # MSAB может давать всплески градиента, клиппинг обязателен
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)

@@ -456,8 +456,8 @@ class HGSA_v13(nn.Module): # Ваша текущая версия
             p_e = self.expert_heads[i](feat).view(B, C, 3, H, W)
             
             w = p_e[:, :, 0, :, :]
-            mu = torch.tanh(p_e[:, :, 1, :, :]) * 4.0
-            sigma = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 10.0 + 0.01
+            mu = torch.tanh(p_e[:, :, 1, :, :]) * 1.0
+            sigma = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 4.0 + 0.02
 
             diff = (xi - mu) / (sigma + 1e-6)
             psi_i = gate * w * torch.exp(-0.5 * diff**2)
