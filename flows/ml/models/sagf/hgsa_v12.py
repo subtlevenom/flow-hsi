@@ -358,7 +358,7 @@ class HGSA_v12(nn.Module):
             nn.Conv2d(in_channels, 16, 3, padding=1),
             nn.SiLU(),
             nn.Conv2d(16, in_channels, 1),
-            LayerNorm(in_channels))
+        )
 
         self.expert_heads = nn.ModuleList([
             HyperFFN_Head(HIDDEN_FEAT, HIDDEN_FEAT, in_channels)
@@ -396,7 +396,9 @@ class HGSA_v12(nn.Module):
 
     def forward(self, x):
         B, C, H, W = x.shape
+
         xi = self.xi_net(x)
+
         feat = self.encoder(x)
 
         # Orchestrator Logic
@@ -407,7 +409,7 @@ class HGSA_v12(nn.Module):
             B, self.num_gaussians, C, H, W)
         gates_normed = F.softmax(raw_gates, dim=1)
         taus_all = torch.sigmoid(orch_data[:, self.num_gaussians * C:]).view(
-            B, self.num_gaussians, C, H, W) * 2.0 + 0.2
+            B, self.num_gaussians, C, H, W) * 1.0
 
         psi_total = torch.zeros_like(xi)
         p_list = []
