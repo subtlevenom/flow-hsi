@@ -284,9 +284,10 @@ class SpectralTransformerBlock(nn.Module):
 
 class Encoder2D_v13(nn.Module):
 
-    def __init__(self, in_dim, out_dim):
+    def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.estimator = RGB_IlluminationEstimator(16, in_dim + 1, in_dim)
+        self.estimator = RGB_IlluminationEstimator(16, in_channels + 1,
+                                                   in_channels)
         self.down1 = nn.PixelUnshuffle(2)
         self.trans1 = SpectralTransformerBlock(12, 3,
                                                True)  # 3*4=12 после unshuffle
@@ -305,9 +306,9 @@ class Encoder2D_v13(nn.Module):
 
         # Вход в conv_out: in_dim(3) + 12 + 48 = 63
         self.conv_out = nn.Sequential(
-            LayerNorm(in_dim + 12 + 48),
-            Advanced_GFFN(in_dim + 12 + 48,
-                          out_dim)  # Здесь должно быть 63 -> 32
+            LayerNorm(in_channels + 12 + 48),
+            Advanced_GFFN(in_channels + 12 + 48,
+                          out_channels)  # Здесь должно быть 63 -> 32
         )
 
     def forward(self, x):
@@ -326,18 +327,20 @@ class Encoder2D_v13(nn.Module):
 
 class Orchestrator_v13(nn.Module):
 
-    def __init__(self, in_channels, hidden_feat, num_gaussians):
+    def __init__(self, in_channels, hidden_channels, out_channels,
+                 num_gaussians):
         super().__init__()
         self.num_gaussians = num_gaussians
         self.in_channels = in_channels
+        self.out_channels = out_channels
 
         # Проекция входного изображения в скрытое пространство
-        self.in_proj = nn.Conv2d(in_channels, hidden_feat, 1)
+        self.in_proj = nn.Conv2d(in_channels, hidden_channels, 1)
 
         # Пространственно-спектральный анализ на основе MSAB
         self.msab = MSAB(
-            dim=hidden_feat,
-            dim_head=hidden_feat // 2,
+            dim=hidden_channels,
+            dim_head=hidden_channels // 2,
             heads=2,
             num_blocks=2,
         )
@@ -345,9 +348,9 @@ class Orchestrator_v13(nn.Module):
         # Финальная проекция в параметры ворот (gates) и смещений (taus)
         # Выход: num_gaussians * in_channels (для gates) + num_gaussians * in_channels (для taus)
         self.proj = nn.Conv2d(
-            hidden_feat,
-            2 * num_gaussians * in_channels,
-            1,
+            in_channels=hidden_channels,
+            out_channels=2 * num_gaussians * out_channels,
+            kernel_size=1,
         )
 
     def forward(self, x):
@@ -360,13 +363,13 @@ class Orchestrator_v13(nn.Module):
 
         # Разделяем выход на ворота и смещения
         # Gates (0 : num_gaussians * C)
-        raw_gates = data[:, :self.num_gaussians * C].view(
-            B, self.num_gaussians, C, H, W)
+        raw_gates = data[:, :self.num_gaussians * self.out_channels].view(
+            B, self.num_gaussians, self.out_channels, H, W)
         gates = F.softmax(raw_gates, dim=1)
 
         # Taus (num_gaussians * C : end)
-        taus = data[:, self.num_gaussians * C:].view(B, self.num_gaussians, C,
-                                                     H, W)
+        taus = data[:, self.num_gaussians * self.out_channels:].view(
+            B, self.num_gaussians, self.out_channels, H, W)
 
         return gates, taus
 
@@ -376,31 +379,32 @@ class Orchestrator_v13(nn.Module):
 
 class ChiNet_v13(nn.Module):
 
-    def __init__(self, in_channels, hidden_feat, out_channels):
+    def __init__(self, in_channels, feat_channels, hidden_channels,
+                 out_channels):
         super().__init__()
 
-        self.pre = nn.Conv2d(in_channels * 3, hidden_feat, 1)
+        self.pre = nn.Conv2d(feat_channels + in_channels, hidden_channels, 1)
 
         self.gate = nn.Sequential(
-            nn.Conv2d(hidden_feat, hidden_feat, 1),
+            nn.Conv2d(hidden_channels, hidden_channels, 1),
             nn.Sigmoid(),
         )
 
         self.msab = MSAB(
-            dim=hidden_feat,
-            dim_head=hidden_feat // 4,
+            dim=hidden_channels,
+            dim_head=hidden_channels // 4,
             heads=4,
             num_blocks=3,
         )
 
-        self.x_norm = LayerNorm(in_channels)
+        self.x_norm = nn.InstanceNorm2d(in_channels)
 
         # Финальный слой: принимает признаки коррекции + исходный резкий x
-        self.post = nn.Conv2d(hidden_feat + in_channels, out_channels, 1)
+        self.post = nn.Conv2d(hidden_channels + in_channels, out_channels, 1)
 
     def forward(self, x, psi_total):
         # 1. Сборка входного признака
-        combined = torch.cat([x, self.x_norm(x), psi_total], dim=1)
+        combined = torch.cat([self.x_norm(x), psi_total], dim=1)
 
         # 2. Обработка дельты
         feat = self.pre(combined)
@@ -417,13 +421,13 @@ class ChiNet_v13(nn.Module):
 
 class HyperFFN_Head(nn.Module):
 
-    def __init__(self, in_feat, hidden_feat, out_channels):
+    def __init__(self, in_channels, hidden_channels, out_channels):
         super().__init__()
         self.main_path = nn.Sequential(
-            nn.Conv2d(in_feat, hidden_feat, 1), nn.SiLU(),
-            nn.Conv2d(hidden_feat, 3 * out_channels, 1))
-        self.contrast_gate = nn.Sequential(nn.Conv2d(in_feat, 1, 3, padding=1),
-                                           nn.Sigmoid())
+            nn.Conv2d(in_channels, hidden_channels, 1), nn.SiLU(),
+            nn.Conv2d(hidden_channels, 3 * out_channels, 1))
+        self.contrast_gate = nn.Sequential(
+            nn.Conv2d(in_channels, 1, 3, padding=1), nn.Sigmoid())
 
     def forward(self, feat):
         params = self.main_path(feat)
@@ -436,26 +440,29 @@ class HyperFFN_Head(nn.Module):
 
 class HGSA_v13(nn.Module):  # Ваша текущая версия
 
-    def __init__(self, in_channels=3, out_channels=3, num_gaussians=7):
+    def __init__(self,
+                 in_channels=3,
+                 out_channels=3,
+                 num_gaussians=7,
+                 g_channels=5):
         super().__init__()
         self.num_gaussians = num_gaussians
+        self.g_channels = g_channels
+
         HIDDEN_FEAT = 32
 
         # 1. Модуль контекстных признаков
-        self.encoder = Encoder2D_v13(in_channels, out_dim=HIDDEN_FEAT)
+        self.encoder = Encoder2D_v13(
+            in_channels=in_channels,
+            out_channels=HIDDEN_FEAT,
+        )
 
         # 2. Модуль управления экспертами (на базе сырого x)
         self.orchestrator = Orchestrator_v13(
             in_channels=in_channels,
-            hidden_feat=HIDDEN_FEAT,
+            hidden_channels=HIDDEN_FEAT,
+            out_channels=g_channels,
             num_gaussians=num_gaussians,
-        )
-
-        # 3. Модуль финальной шлифовки (Chi-Net)
-        self.chi_net = ChiNet_v13(
-            in_channels=in_channels,
-            hidden_feat=HIDDEN_FEAT,
-            out_channels=out_channels,
         )
 
         # Подготовительная сеть для Гауссиан
@@ -463,18 +470,27 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
             nn.Conv2d(in_channels, in_channels, 1),
             nn.Conv2d(in_channels, 16, 3, padding=1),
             nn.SiLU(),
-            nn.Conv2d(16, in_channels, 1),
+            nn.Conv2d(16, g_channels, 1),
             nn.Tanh(),
         )
 
         # Головы экспертов
         self.expert_heads = nn.ModuleList([
-            HyperFFN_Head(HIDDEN_FEAT, HIDDEN_FEAT, in_channels)
+            HyperFFN_Head(HIDDEN_FEAT, HIDDEN_FEAT, g_channels)
             for _ in range(num_gaussians)
         ])
 
+        # Модуль финальной шлифовки (Chi-Net)
+        self.chi_net = ChiNet_v13(
+            in_channels=in_channels,
+            feat_channels=g_channels,
+            hidden_channels=HIDDEN_FEAT,
+            out_channels=out_channels,
+        )
+
+        # Aux-loss module
         self.usgs_to_img = nn.Conv2d(
-            in_channels + in_channels,
+            g_channels + in_channels,
             out_channels,
             kernel_size=1,
         )
@@ -496,13 +512,13 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
             gate = gates_normed[:, i]
             tau = taus_all[:, i]
 
-            p_e = self.expert_heads[i](feat).view(B, C, 3, H, W)
+            p_e = self.expert_heads[i](feat).view(B, -1, 3, H, W)
 
             # w - positive and negative to approximate residual x - psi_total
             # mu - must be close to xi, approximate only in neighborhood of xi
             # sigma - responsible for surface shape, gets more freedom
-            w = p_e[:, :, 0, :, :]
-            mu = torch.tanh(p_e[:, :, 1, :, :]) * 1.0
+            w = torch.tanh(p_e[:, :, 0, :, :]) * 2.
+            mu = self.xi_net[-1](p_e[:, :, 1, :, :])
             sigma = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 4.0 + 0.02
 
             diff = (xi - mu) / (sigma + 1e-6)

@@ -151,10 +151,10 @@ class HSGAPipeline_v13(L.LightningModule):
         else:
             if self.trainer.is_last_batch:
                 self.scheduler_2.step()
-    
-    # def on_before_optimizer_step(self, optimizer):
+
+    def on_before_optimizer_step(self, optimizer):
         # MSAB может давать всплески градиента, клиппинг обязателен
-        # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
@@ -182,9 +182,9 @@ class HSGAPipeline_v13(L.LightningModule):
 
         # 5. Warmup
         if self.current_epoch < self.warmup_epochs:
-            a,b = 1.0, 0.1
+            a, b = 1.0, 0.1
         else:
-            a,b = 1.0, 0.1
+            a, b = 1.0, 0.1
 
         # 6. Комбинированная формула v12
         loss = a * loss_color + 0.3 * loss_ssim + b * loss_aux + 0.02 * loss_tv + loss_de
