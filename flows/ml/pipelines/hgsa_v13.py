@@ -20,6 +20,21 @@ class LogCoshLoss(nn.Module):
         loss = torch.abs(x) + F.softplus(-2. * torch.abs(x)) - math.log(2.0)
         return torch.mean(loss)
 
+class GradLoss(nn.Module):
+
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, pred, target):
+        # torch.gradient возвращает (grad_y, grad_x) для 4D тензора по дим 2 и 3
+        grad_y_pred, grad_x_pred = torch.gradient(pred, dim=(2, 3))
+        grad_y_tgt, grad_x_tgt = torch.gradient(target, dim=(2, 3))
+        
+        loss_y = F.l1_loss(grad_y_pred, grad_y_tgt)
+        loss_x = F.l1_loss(grad_x_pred, grad_x_tgt)
+        
+        return loss_y + loss_x
+
 
 class HSGAPipeline_v13(L.LightningModule):
 
@@ -39,6 +54,7 @@ class HSGAPipeline_v13(L.LightningModule):
         self.mae_loss = nn.L1Loss()
         self.mse_loss = nn.MSELoss()
         self.logcosh_loss = LogCoshLoss()
+        self.grad_loss = GradLoss()
 
         # Метрики
         self.psnr_metric = PSNR(data_range=(0, 1))
@@ -189,6 +205,7 @@ class HSGAPipeline_v13(L.LightningModule):
 
         # 1. Основной лосс (Log-Cosh для стабильности на Волге)
         loss_color = self.logcosh_loss(main_out, tgt)
+        loss_grad = self.grad_loss(main_out, tgt)
 
         # 2. Структурный лосс
         ssim_val = self.ssim_metric(main_out_c, tgt)
@@ -211,7 +228,7 @@ class HSGAPipeline_v13(L.LightningModule):
             a, b = 1.0, 0.1
 
         # 6. Комбинированная формула v12
-        loss = a * loss_color + 0.3 * loss_ssim + b * loss_aux + 0.02 * loss_tv + loss_de
+        loss = a * loss_grad + a * loss_color + 0.3 * loss_ssim + b * loss_aux + 0.02 * loss_tv + loss_de
 
         self.log('train_loss', loss, prog_bar=True)
         self.log('train_de_boost', loss_de, prog_bar=False)

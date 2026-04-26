@@ -528,7 +528,7 @@ class HGSA_v13(nn.Module):  # Ваша текущая версия
             # Используем clamp, чтобы mu не вылетало за [0, 1]
             mu_local = torch.tanh(p_e[:, :,
                                       1, :, :]) * 0.1  # Локальный сдвиг +- 0.1
-            mu = torch.clamp(self.mu_offsets[i] + mu_local, 0.0, 1.0)
+            mu = torch.clamp(self.mu_offsets[i] + mu_local, -1.0, 2.0)
 
             # 3. Эластичность и Sigma
             elasticity = torch.sigmoid(p_e[:, :, 2, :, :] + tau) * 1.2
