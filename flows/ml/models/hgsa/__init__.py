@@ -1,1 +1,1 @@
-from .hgsa_v14 import HGSA_v14 as HGSA
+from .hgsa_v15 import HGSA_v15 as HGSA
