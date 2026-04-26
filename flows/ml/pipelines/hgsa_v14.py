@@ -204,9 +204,10 @@ class HSGAPipeline_v14(L.LightningModule):
                 w_aux * loss_aux + 0.05 * loss_tv + loss_de)
 
         self.log('train_loss', loss, prog_bar=True)
-        self.log('train_psnr',
-                 self.psnr_metric(main_out_c, tgt),
-                 prog_bar=True)
+        with torch.no_grad():
+            psnr_val = self.psnr_metric(main_out_c, tgt)
+            self.log('train_psnr', psnr_val, prog_bar=True)
+            self.log('train_ssim', ssim_val, prog_bar=True)
 
         return loss
 
@@ -216,10 +217,13 @@ class HSGAPipeline_v14(L.LightningModule):
         y = torch.clamp(y, 0.0, 1.0)
 
         psnr_val = self.psnr_metric(y, tgt)
+        ssim_val = self.ssim_metric(y, tgt)
         de_val = self.de_metric(y, tgt).mean()
 
         self.log('val_psnr', psnr_val, prog_bar=True)
+        self.log('val_ssim', ssim_val, prog_bar=True)
         self.log('val_de', de_val, prog_bar=True)
+        self.log('val_loss', de_val, prog_bar=False)
 
         return de_val
 
