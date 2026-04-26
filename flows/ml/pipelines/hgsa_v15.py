@@ -112,7 +112,7 @@ class HSGAPipeline_v15(L.LightningModule):
                 {
                     'params': params_groups['experts'],
                     'lr': self.lr * 1.2,
-                    'weight_decay': 5e-3
+                    'weight_decay': 8e-3
                 },
                 {
                     'params': params_groups['orchestra'],
