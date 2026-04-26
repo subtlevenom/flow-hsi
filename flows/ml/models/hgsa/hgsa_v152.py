@@ -67,6 +67,8 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.temperature_a = nn.Parameter(torch.ones(num_heads, 1, 1))
         self.temperature_v = nn.Parameter(torch.ones(num_heads, 1, 1))
+
+        # Сжатие ключей/запросов для ускорения (как в MCA cmKAN)
         self.q_proj = nn.Conv2d(dim,
                                 dim,
                                 3,
@@ -78,21 +80,27 @@ class Attention(nn.Module):
         self.a_proj = nn.Sequential(
             nn.Conv2d(dim, dim, 3, padding=1, stride=2, groups=dim, bias=bias),
             nn.Conv2d(dim, dim // 2, kernel_size=1))
+
         self.v_proj = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
         self.project_out = nn.Conv2d(dim, dim, kernel_size=1, bias=bias)
 
     def forward(self, x, illu_feat):
         b, c, h, w = x.shape
         q, k, a = self.q_proj(x), self.k_proj(x), self.a_proj(x)
+
+        # Модуляция V картой освещенности (Key feature cmKAN)
         v = self.v_proj(x) * illu_feat
+
         q, k, a, v = [
             rearrange(t,
                       'b (head c) h w -> b head c (h w)',
                       head=self.num_heads) for t in (q, k, a, v)
         ]
         q, k, a = [F.normalize(t, dim=-1) for t in (q, k, a)]
+
         attn_a = (q @ a.transpose(-2, -1)) * self.temperature_a
         attn_k = (a @ k.transpose(-2, -1)) * self.temperature_v
+
         out = rearrange(attn_a.softmax(dim=-1) @ (attn_k.softmax(dim=-1) @ v),
                         'b head c (h w) -> b (head c) h w',
                         head=self.num_heads,
