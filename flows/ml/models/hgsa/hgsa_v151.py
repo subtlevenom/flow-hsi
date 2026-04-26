@@ -262,10 +262,12 @@ class RGB_IlluminationEstimator(nn.Module):
     def __init__(self, n_fea_middle, n_fea_in=4, n_fea_out=3):
         super().__init__()
         self.conv1 = nn.Conv2d(n_fea_in, n_fea_middle, kernel_size=1)
+        # Dilation=2 для захвата глобального контекста (см. cmKAN CFM)
         self.depth_conv = nn.Conv2d(n_fea_middle,
                                     n_fea_middle,
                                     kernel_size=5,
-                                    padding=2,
+                                    padding=4,
+                                    dilation=2,
                                     groups=n_fea_middle)
         self.conv2 = nn.Conv2d(n_fea_middle, n_fea_out, kernel_size=1)
 
@@ -297,18 +299,22 @@ class Encoder2D(nn.Module):
         super().__init__()
         self.estimator = RGB_IlluminationEstimator(16, in_channels + 1,
                                                    in_channels)
-        self.down1 = nn.PixelUnshuffle(2)
+
+        self.down1 = DWTForward(in_channels)
         self.trans1 = SpectralTransformerBlock(12, 3, True)
         self.illu_down1 = nn.Sequential(nn.AvgPool2d(2), nn.Conv2d(16, 12, 1))
-        self.down2 = nn.PixelUnshuffle(2)
+
+        self.down2 = DWTForward(12)  # Вход 12 каналов после DWT1
         self.trans2 = SpectralTransformerBlock(48, 3, True)
         self.illu_down2 = nn.Sequential(nn.AvgPool2d(4), nn.Conv2d(16, 48, 1))
+
         self.up1 = nn.Upsample(scale_factor=2,
                                mode='bilinear',
                                align_corners=False)
         self.up2 = nn.Upsample(scale_factor=4,
                                mode='bilinear',
                                align_corners=False)
+
         self.conv_out = nn.Sequential(
             LayerNorm(in_channels + 12 + 48),
             Advanced_GFFN(in_channels + 12 + 48, out_channels))
