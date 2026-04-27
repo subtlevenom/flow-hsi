@@ -389,42 +389,17 @@ class HyperExpertHead(nn.Module):
         return self.shortcut(combined) + self.main_branch(h) * self.gamma
 
 
-class ChiNet(nn.Module):
-
-    def __init__(
-        self,
-        in_channels,
-        feat_channels,
-        encoder_channels,
-        hidden_channels,
-        out_channels,
-    ):
-        super().__init__()
-        self.pre = nn.Conv2d(in_channels + feat_channels + encoder_channels,
-                             hidden_channels, 1)
-        self.msab = MSAB(dim=hidden_channels,
-                         dim_head=hidden_channels // 4,
-                         heads=4,
-                         num_blocks=3)
-        self.post = nn.Conv2d(hidden_channels + in_channels, out_channels, 1)
-
-    def forward(self, x, psi_total, encoder_feat):
-        combined = torch.cat([x, psi_total, encoder_feat], dim=1)
-        feat = self.msab(self.pre(combined), self.pre(combined))
-        return self.post(torch.cat([x, feat], dim=1))
-
-
 # --- Dynamic Query-based Basis ---
 
 
 class BasisAttention(nn.Module):
 
-    def __init__(self, feat_dim, Q):
+    def __init__(self, feat_dim, M, Q):
         super().__init__()
         self.Q = Q
         # Обучаемый словарь базисных состояний (набор "цветовых концептов")
         # M = количество концептов (например, 16)
-        self.num_concepts = 16
+        self.num_concepts = 2 * M * Q
         self.basis_v = nn.Parameter(torch.randn(self.num_concepts, Q))
 
         self.q_proj = nn.Conv2d(feat_dim, self.num_concepts, 1)
@@ -449,7 +424,56 @@ class BasisAttention(nn.Module):
         return res.view(B, self.Q, H, W)
 
 
-# --- HGSA v14 Smart Orchestra ---
+# --- Chi net ---
+
+
+class LightChiNet(nn.Module):
+
+    def __init__(self, in_channels, feat_channels, out_channels):
+        super().__init__()
+        mid_dim = 32
+        self.in_conv = nn.Conv2d(in_channels + feat_channels, mid_dim, 1)
+
+        # Channel Attention (SE-like)
+        self.ca = nn.Sequential(nn.AdaptiveAvgPool2d(1),
+                                nn.Conv2d(mid_dim, mid_dim // 2, 1), nn.GELU(),
+                                nn.Conv2d(mid_dim // 2, mid_dim, 1),
+                                nn.Sigmoid())
+
+        # Локальный пространственный контекст
+        self.dw = nn.Conv2d(mid_dim, mid_dim, 3, padding=1, groups=mid_dim)
+        self.out_conv = nn.Conv2d(mid_dim, out_channels, 1)
+
+    def forward(self, x, psi_total):
+        feat = self.in_conv(torch.cat([x, psi_total], dim=1))
+        # Модулируем каналы проекций
+        feat = feat * self.ca(feat)
+        # Локальное уточнение
+        feat = self.dw(feat)
+        return self.out_conv(feat)
+
+
+class FusionNet(nn.Module):
+
+    def __init__(self, in_channels):
+        super().__init__()
+        # Вход: 3 канала оригинала + 3 канала предсказания экспертов = 6
+        self.mixer = nn.Sequential(
+            nn.Conv2d(in_channels * 2, 16, 3, padding=1),
+            nn.GELU(),
+            # Глубокая свертка с расширением (Dilation) для захвата контекста без весов внимания
+            nn.Conv2d(16, 16, 3, padding=2, dilation=2, groups=16),
+            nn.Conv2d(16, 16, 1),
+            nn.GELU(),
+            nn.Conv2d(16, in_channels, 3, padding=1))
+
+    def forward(self, x, usgs_out):
+        # x - входной лоу-лайт, usgs_out - результат экспертов
+        res = self.mixer(torch.cat([x, usgs_out], dim=1))
+        return usgs_out + res  # Residual Refinement
+
+
+# --- HGSA v15 Smart Orchestra ---
 
 
 class HGSABlock(nn.Module):
@@ -460,7 +484,7 @@ class HGSABlock(nn.Module):
         self.Q = Q
         self.feat_dim = feat_dim
 
-        self.xi_net = BasisAttention(feat_dim, Q)
+        self.xi_net = BasisAttention(feat_dim, M, Q)
 
         self.orchestrator = Orchestrator(
             in_channels=in_channels,
@@ -479,15 +503,14 @@ class HGSABlock(nn.Module):
             ) for _ in range(M)
         ])
 
-        self.mu_offsets = nn.Parameter(torch.linspace(0.01, 0.99, M))
-        self.w_init = nn.Parameter(torch.randn(M) * 0.1)
+        self.mu_min = nn.Parameter(torch.zeros(1, Q, 1, 1))
+        self.mu_max = nn.Parameter(torch.ones(1, Q, 1, 1))
+        self.w_init = nn.Parameter(0.1 * torch.randn(1, Q, 1, 1))
         self.sigma_init = nn.Parameter(torch.ones(M) * 0.05)
 
-        self.chi_net = ChiNet(
+        self.chi_net = LightChiNet(
             in_channels=in_channels,
             feat_channels=Q,
-            encoder_channels=feat_dim,
-            hidden_channels=feat_dim,
             out_channels=out_channels,
         )
 
@@ -506,15 +529,17 @@ class HGSABlock(nn.Module):
             p_e = self.expert_heads[i](xi, feat).view(B, -1, 3, H, W)
 
             # --- UNBOUND APPROXIMATION ---
-            w = self.w_init[i] + p_e[:, :, 0]
-            mu = self.mu_offsets[i] + p_e[:, :, 1]
+            w = self.w_init + p_e[:, :, 0]
+            # Стабильный расчет MU в границах [mu_min, mu_max]
+            mu_activation = torch.sigmoid(p_e[:, :, 1])
+            mu = self.mu_min + (self.mu_max - self.mu_min) * mu_activation
             sigma = F.softplus(self.sigma_init[i] + p_e[:, :, 2] + tau) + 1e-6
 
             psi_i = gate * w * torch.exp(-0.5 * torch.pow(
                 (xi - mu) / sigma, 2))
             psi_total = psi_total + psi_i
 
-        usgs_out = self.chi_net(x, psi_total, feat)
+        usgs_out = self.chi_net(x, psi_total)
 
         if self.training:
             return usgs_out, psi_total
@@ -544,6 +569,9 @@ class HGSA_v15(nn.Module):
                       feat_dim=HIDDEN_FEAT) for _ in range(out_channels)
         ])
 
+        # Channel fusion
+        self.fusion = FusionNet(out_channels)
+
         # Вспомогательная ветка для стабилизации (aux loss)
         self.aux_proj = nn.Conv2d(Q * out_channels, out_channels, 1)
 
@@ -563,7 +591,7 @@ class HGSA_v15(nn.Module):
             ch_usgs_list.append(ch_usgs)
 
         # Склеиваем результат в RGB
-        usgs_out = torch.cat(ch_usgs_list, dim=1)
+        usgs_out = self.fusion(x, torch.cat(ch_usgs_list, dim=1))
 
         if self.training:
             # Для aux loss суммируем вклады всех полей
