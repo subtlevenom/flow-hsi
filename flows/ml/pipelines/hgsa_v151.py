@@ -225,7 +225,7 @@ class HSGAPipeline_v15(L.LightningModule):
 
         # Динамические веса
         w_grad = 2.0 if self.current_epoch < self.warmup_epochs else 1.0
-        w_aux = 2.0 if self.current_epoch < self.warmup_epochs else 0.5
+        w_aux = 1.0 if self.current_epoch < self.warmup_epochs else 0.1
 
         loss = (
             w_grad * loss_grad + 1.0 * loss_color + 0.5 * loss_ssim +
