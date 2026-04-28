@@ -4,6 +4,7 @@ from torch import nn, optim
 import torch.nn.functional as F
 import lightning as L
 from typing import List
+from flows.tools.utils import models
 
 from ..metrics import PSNR, SSIM, DeltaE
 
@@ -75,6 +76,9 @@ class HSGAPipeline_v15(L.LightningModule):
                     # Инициализируем равномерно, чтобы на старте базис был адекватным
                     nn.init.uniform_(m, 0.0, 1.0)
 
+            MODEL_PATH = '.experiments/ggpd.hgsa_v15.huawei/logs/checkpoints/_last.ckpt'
+            models.load_model(self.model, 'model', MODEL_PATH)
+
             print(
                 f'HGSA_v15: Hybrid Parametric-Attention USGS initialization complete.'
             )
@@ -140,14 +144,19 @@ class HSGAPipeline_v15(L.LightningModule):
         self.scheduler_switch_epoch = int(self.trainer.max_epochs * 0.8)
         steps_per_epoch = self.trainer.estimated_stepping_batches // self.trainer.max_epochs
 
-        self.scheduler_1 = optim.lr_scheduler.OneCycleLR(
+        # 2. Replace OneCycleLR with CosineAnnealingWarmRestarts
+        # We want 3 cycles within the scheduler_1 window.
+        # Total steps for scheduler_1 = self.scheduler_switch_epoch * steps_per_epoch
+        # T_0 = (Total steps) / 3
+        total_steps_s1 = self.scheduler_switch_epoch * steps_per_epoch
+        t_0_steps = total_steps_s1 // 3
+
+        self.scheduler_1 = optim.lr_scheduler.CosineAnnealingWarmRestarts(
             optimizer,
-            max_lr=self.lr,
-            epochs=self.scheduler_switch_epoch,
-            total_steps=self.scheduler_switch_epoch * steps_per_epoch,
-            pct_start=0.15,
-            div_factor=10,
-            final_div_factor=100)
+            T_0=t_0_steps,
+            T_mult=1,
+            eta_min=self.lr * 0.01 # Floor at 1% of max LR
+        )
 
         self.scheduler_2 = optim.lr_scheduler.ExponentialLR(optimizer,
                                                             gamma=0.97)

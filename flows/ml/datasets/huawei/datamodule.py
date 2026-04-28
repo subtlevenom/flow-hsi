@@ -97,12 +97,12 @@ class DataModule(L.LightningDataModule):
         # self.image_p_transform = None
         self.train_image_p_transform = PairTransform(
             crop_size=CROP,
-            p=0.1,
+            p=0.5,
             seed=seed,
         )
         self.train_image_noise_transform = NoiseTransform(
-           sigma=0.01,
-           p=0.1,
+           sigma=0.05,
+           p=0.5,
            seed=seed,
         )
         # self.val_image_p_transform = None
