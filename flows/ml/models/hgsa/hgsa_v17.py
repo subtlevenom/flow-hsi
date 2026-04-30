@@ -371,7 +371,7 @@ class HGSABlock(nn.Module):
 
         # Learnable Grid for all 3 channels
         grid = torch.linspace(0, 1, Q).view(1, 1, Q, 1, 1)  # [1, 1, Q, 1, 1]
-        self.mu_grid = nn.Parameter(grid.expand(1, out_channels, -1, -1, -1))
+        self.mu_grid = nn.Parameter(grid.repeat(1, out_channels, 1, 1, 1))
 
         self.w_init = nn.Parameter(0.1 * torch.randn(1, out_channels, Q, 1, 1))
         self.sigma_init = nn.Parameter(torch.ones(M, out_channels) * 0.1)

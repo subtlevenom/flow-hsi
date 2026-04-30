@@ -189,10 +189,10 @@ class HSGAPipeline_v16(L.LightningModule):
 
         w_grad = 1.0 if self.current_epoch < self.warmup_epochs else 0.7
 
-        total_loss = loss_mae + 0.15 * loss_ssim + 0.05 * loss_aux
-        #total_loss = (loss_mae + loss_color + w_grad * loss_grad +
-        #              0.2 * loss_ssim + self.w_aux * loss_aux +
-        #              self.w_tv * loss_tv)
+        # total_loss = loss_mae + 0.15 * loss_ssim + 0.05 * loss_aux
+        total_loss = (loss_mae + loss_color + w_grad * loss_grad +
+                      0.2 * loss_ssim + self.w_aux * loss_aux +
+                      self.w_tv * loss_tv)
 
         self.log('train_loss', total_loss, prog_bar=True)
         self.log('train_color', loss_color, prog_bar=False)
@@ -222,6 +222,23 @@ class HSGAPipeline_v16(L.LightningModule):
         self.log('val_ssim', ssim_val, prog_bar=True)
         self.log('val_de', de_val, prog_bar=True)
         self.log('val_loss', de_val, prog_bar=True)
+
+        return psnr_val
+
+    def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor],
+                  batch_idx: int) -> torch.Tensor:
+        src, tgt = batch
+        y = self(src)  # In eval, model returns only main_res
+        y = torch.clamp(y, 0.0, 1.0)
+
+        psnr_val = self.psnr_metric(y, tgt)
+        ssim_val = self.ssim_metric(y, tgt)
+        de_val = self.de_metric(y, tgt).mean()
+
+        self.log('test_psnr', psnr_val, prog_bar=True)
+        self.log('test_ssim', ssim_val, prog_bar=True)
+        self.log('test_de', de_val, prog_bar=True)
+        self.log('test_loss', de_val, prog_bar=True)
 
         return psnr_val
 
