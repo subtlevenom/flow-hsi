@@ -349,92 +349,113 @@ class BasisAttention(nn.Module):
 
 class HGSABlock(nn.Module):
 
-    def __init__(self, in_channels=3, out_channels=1, Q=7, M=5, feat_dim=48):
+    def __init__(self, in_channels=3, out_channels=3, Q=7, M=5, feat_dim=48):
         super().__init__()
         self.cond_dim = 8
-        self.M, self.Q = M, Q
+        self.M, self.Q, self.out_channels = M, Q, out_channels
 
-        self.xi_net = BasisAttention(in_channels, feat_dim, M, Q)
+        # Basis Attention now generates nodes for all 3 channels
+        # Output dim: out_channels * Q (e.g., 3 * 7 = 21 basis planes)
+        self.xi_net = BasisAttention(in_channels, feat_dim, M,
+                                     out_channels * Q)
+
         self.orchestrator = SpectralOrchestrator(in_dim=in_channels,
                                                  cond_dim=M * self.cond_dim)
 
+        # Each expert head now predicts 3 sets of parameters (R, G, B)
+        # 3 (w, mu, sigma) * out_channels (3) * Q (7) = 63 channels per expert
         self.expert_heads = nn.ModuleList([
-            HyperExpertHead(feat_dim, feat_dim, Q, self.cond_dim)
-            for _ in range(M)
+            HyperExpertHead(feat_dim, feat_dim, out_channels * Q,
+                            self.cond_dim) for _ in range(M)
         ])
 
-        # FIXED ANCHORING: Learnable Base Grid for Mu
-        # Initialized as a linear ramp [0, 1]
-        grid = torch.linspace(0, 1, Q).view(1, Q, 1, 1)
-        self.mu_grid = nn.Parameter(grid)
+        # Learnable Grid for all 3 channels
+        grid = torch.linspace(0, 1, Q).view(1, 1, Q, 1, 1)  # [1, 1, Q, 1, 1]
+        self.mu_grid = nn.Parameter(grid.expand(1, out_channels, -1, -1, -1))
 
-        self.w_init = nn.Parameter(0.1 * torch.randn(1, Q, 1, 1))
-        self.sigma_init = nn.Parameter(torch.ones(M) * 0.05)
-        self.chi_net = DeepGatedChi(Q, out_channels)
+        self.w_init = nn.Parameter(0.1 * torch.randn(1, out_channels, Q, 1, 1))
+        self.sigma_init = nn.Parameter(torch.ones(M, out_channels) * 0.1)
 
-        self.spectral_calibrator = nn.Sequential(nn.AdaptiveAvgPool2d(1),
-                                                 nn.Conv2d(Q, Q // 2,
-                                                           1), GELU(),
-                                                 nn.Conv2d(Q // 2, Q, 1),
-                                                 nn.Sigmoid())
+        # The Chi-Net now handles 3 channels
+        self.chi_net = DeepGatedChi(out_channels * Q, out_channels)
+
+        # Cross-Channel Calibration: Allows R to influence G and B
+        self.spectral_calibrator = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(out_channels * Q, max(1, (out_channels * Q) // 4), 1),
+            GELU(),
+            nn.Conv2d(max(1, (out_channels * Q) // 4), out_channels * Q, 1),
+            nn.Sigmoid())
 
     def forward(self, x, feat, illu_fea, illu_map):
         B, _, H, W = x.shape
-        xi = self.xi_net(x, feat)
-        psi_total = torch.zeros_like(xi)
+
+        # 1. Generate Basis [B, 3*Q, H, W] -> View as [B, 3, Q, H, W]
+        xi_basis = self.xi_net(x, feat).view(B, self.out_channels, self.Q, H,
+                                             W)
+        # x is [B, 3, H, W]. We expand it to match the Q dimension.
+        xi = x.unsqueeze(2) + torch.tanh(xi_basis) / self.Q
+
         cond_all = self.orchestrator(x)
         sigma_boost = torch.clamp(
-            1.0 / (illu_map.mean(dim=1, keepdim=True) + 1e-4), 1.0, 3.0)
+            1.0 / (illu_map.mean(dim=1, keepdim=True) + 1e-4), 1.0,
+            3.0).unsqueeze(2)
+
+        psi_total = torch.zeros_like(xi)  # [B, 3, Q, H, W]
 
         for i in range(self.M):
             cond = cond_all[:, self.cond_dim * i:self.cond_dim * (i + 1)]
-            p_e = self.expert_heads[i](feat, illu_fea,
-                                       cond).view(B, self.Q, 3, H, W)
+            # p_e shape: [B, 3 * out_channels * Q, H, W]
+            p_e = self.expert_heads[i](feat, illu_fea, cond)
+            p_e = p_e.view(B, self.out_channels, self.Q, 3, H, W)
 
-            w = self.w_init + p_e[:, :, 0]
+            w = self.w_init + p_e[:, :, :, 0]
+            mu = self.mu_grid + torch.tanh(p_e[:, :, :, 1]) / self.Q
 
-            # FIXED MU: Anchor to the grid, add hyper-offset
-            # This preserves the (xi - mu) dependency
-            mu = self.mu_grid + torch.tanh(p_e[:, :, 1]) * 0.1
+            # Sigma is per-channel, per-expert
+            s_base = self.sigma_init[i].view(1, self.out_channels, 1, 1, 1)
+            sigma = (F.softplus(s_base + p_e[:, :, :, 2]) + 1e-6) * sigma_boost
 
-            sigma = (torch.exp(self.sigma_init[i] + p_e[:, :, 2]) +
-                     1e-6) * sigma_boost
-
+            # Gaussian Superposition in 3D Color Space
             psi_total = psi_total + w * torch.exp(-0.5 * torch.pow(
                 (xi - mu) / sigma, 2))
 
-        psi_total = psi_total * self.spectral_calibrator(psi_total)
-        out, _ = self.chi_net(psi_total)
-        return out, psi_total
+        # 2. Cross-Channel Interaction
+        # Flatten [B, 3, Q, H, W] -> [B, 3*Q, H, W]
+        psi_flat = psi_total.view(B, self.out_channels * self.Q, H, W)
+        psi_flat = psi_flat * self.spectral_calibrator(psi_flat)
+
+        # 3. Final 3D Mapping
+        out, _ = self.chi_net(psi_flat)
+        return out, psi_flat
 
 
-class HGSA_v16(nn.Module):
+class HGSA_v17(nn.Module):
 
     def __init__(self, in_channels=3, out_channels=3, Q=7, M=5):
         super().__init__()
         HIDDEN_FEAT = 48
         self.encoder = Encoder2D(in_channels, HIDDEN_FEAT)
-        self.channel_experts = nn.ModuleList([
-            HGSABlock(in_channels, 1, Q, M, HIDDEN_FEAT)
-            for _ in range(out_channels)
-        ])
+
+        # Single block for all channels
+        self.vector_expert = HGSABlock(in_channels, out_channels, Q, M,
+                                       HIDDEN_FEAT)
+
         self.chi_fusion = LaplacianGatedFusion(in_channels, out_channels)
         self.aux_proj = nn.Conv2d(Q * out_channels, out_channels, 1)
 
     def forward(self, x):
         feat, illu_fea, illu_map = self.encoder(x)
-        ch_usgs_list, ch_sagf_list = [], []
 
-        for expert in self.channel_experts:
-            ch_usgs, ch_sagf = expert(x, feat, illu_fea, illu_map)
-            ch_usgs_list.append(ch_usgs)
-            ch_sagf_list.append(ch_sagf)
+        # Processes RGB together
+        usgs_out, sagf_out_raw = self.vector_expert(x, feat, illu_fea,
+                                                    illu_map)
 
-        usgs_out = torch.cat(ch_usgs_list, dim=1)
-        usgs_out = self.chi_fusion(x, usgs_out, illu_map)
+        # Final detailed fusion
+        final_out = self.chi_fusion(x, usgs_out, illu_map)
 
         if self.training:
-            sagf_out = self.aux_proj(torch.cat(ch_sagf_list, dim=1))
-            return usgs_out, x + sagf_out
+            sagf_out = self.aux_proj(sagf_out_raw)
+            return final_out, x + sagf_out
 
-        return usgs_out
+        return final_out

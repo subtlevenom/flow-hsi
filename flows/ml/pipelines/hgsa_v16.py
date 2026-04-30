@@ -4,6 +4,8 @@ from torch import nn, optim
 import torch.nn.functional as F
 import lightning as L
 from typing import Dict, Tuple
+from flows.core import Logger
+from flows.tools.utils import models
 from ..metrics import PSNR, SSIM, DeltaE
 
 
@@ -83,9 +85,12 @@ class HSGAPipeline_v16(L.LightningModule):
 
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
-            print(
-                f'HGSA_v17: Pipeline initialized with Orchestrator-aware weights.'
-            )
+
+        # MODEL_PATH = '.experiments/ggpd.hgsa_v16.huawei/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model, 'model', MODEL_PATH)
+
+        Logger.info(
+            'HGSA_v17: Pipeline initialized with Orchestrator-aware weights.')
 
     def configure_optimizers(self):
         params_groups = {
@@ -134,8 +139,17 @@ class HSGAPipeline_v16(L.LightningModule):
         total_steps_s1 = self.scheduler_switch_epoch * steps_per_epoch
         t_0_steps = max(1, total_steps_s1 // 3)
 
-        self.scheduler_1 = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=t_0_steps, T_mult=1, eta_min=self.lr * 0.01)
+        # self.scheduler_1 = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        # optimizer, T_0=t_0_steps, T_mult=1, eta_min=self.lr * 0.01)
+
+        self.scheduler_1 = optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=self.lr,
+            epochs=self.scheduler_switch_epoch,
+            total_steps=self.scheduler_switch_epoch * steps_per_epoch,
+            pct_start=0.15,
+            div_factor=10,
+            final_div_factor=100)
         self.scheduler_2 = optim.lr_scheduler.ExponentialLR(optimizer,
                                                             gamma=0.97)
 
@@ -175,9 +189,10 @@ class HSGAPipeline_v16(L.LightningModule):
 
         w_grad = 1.0 if self.current_epoch < self.warmup_epochs else 0.7
 
-        total_loss = (loss_mae + loss_color + w_grad * loss_grad +
-                      0.2 * loss_ssim + self.w_aux * loss_aux +
-                      self.w_tv * loss_tv)
+        total_loss = loss_mae + 0.15 * loss_ssim + 0.05 * loss_aux
+        #total_loss = (loss_mae + loss_color + w_grad * loss_grad +
+        #              0.2 * loss_ssim + self.w_aux * loss_aux +
+        #              self.w_tv * loss_tv)
 
         self.log('train_loss', total_loss, prog_bar=True)
         self.log('train_color', loss_color, prog_bar=False)
