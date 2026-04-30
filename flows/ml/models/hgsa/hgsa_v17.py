@@ -35,7 +35,6 @@ class DWTForward(nn.Module):
         self.in_channels = in_channels
 
     def forward(self, x):
-        # Space to Channel: (B, C, H, W) -> (B, 4C, H/2, W/2)
         x01, x23 = x[:, :, 0::2, :] / 2, x[:, :, 1::2, :] / 2
         x_ll = x01[:, :, :, 0::2] + x23[:, :, :,
                                         0::2] + x01[:, :, :,
@@ -89,25 +88,38 @@ class Advanced_GFFN(nn.Module):
 
 
 class LaplacianGatedFusion(nn.Module):
-    """
-    v17 Improvement: Bridge the dE gap by selectively fusing 
-    original high-frequency textures back into the denoised output.
-    """
 
     def __init__(self, in_channels, out_channels):
         super().__init__()
         self.gate_net = nn.Sequential(
             nn.Conv2d(in_channels + out_channels, 16, 3, padding=1),
-            nn.LeakyReLU(0.2, inplace=True), nn.Conv2d(16, out_channels, 1),
-            nn.Sigmoid())
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(16, out_channels, 1),
+            # Note: We remove Sigmoid here to let the re-normalization handle the range
+        )
+        self.norm = LayerNorm(out_channels)
         self.refine = Advanced_GFFN(in_channels + out_channels, out_channels)
+        # Learnable temperature for re-normalization scaling
+        self.temp = nn.Parameter(torch.ones(1) * 0.5)
 
     def forward(self, x_orig, usgs_out, illu_map):
-        # Decide where the 'popcorn' texture needs to be preserved
-        gate = self.gate_net(torch.cat([x_orig, usgs_out], dim=1))
-
-        # Modulate by illumination: Trust original more in bright/textured areas
-        effective_gate = gate * (1.0 - illu_map * 0.4)
+        # Raw logit generation
+        logits = self.gate_net(torch.cat([x_orig, usgs_out], dim=1))
+        # Normalize logits to keep them in a range comparable to illu_bias
+        # This ensures the illumination influence isn't "drowned out"
+        logits = self.norm(logits)
+        # Re-normalization logic:
+        # We want: Higher Illumination -> Shift weight towards x_orig (Texture)
+        # We want: Lower Illumination -> Shift weight towards usgs_out (Denoising)
+        # We treat 'illu_map' as a bias in the logit space.
+        # Since illu_map is [0.13, 7.4], we log-scale it to bring it to a linear range
+        illu_bias = torch.log(illu_map + 1e-6) * self.temp
+        # Re-normalize into [0, 1] range using Sigmoid.
+        # Subtracting illu_bias means as brightness increases, effective_gate decreases.
+        effective_gate = torch.sigmoid(logits - illu_bias)
+        # Stable Blending
+        # effective_gate -> 1.0 means full usgs_out
+        # effective_gate -> 0.0 means full x_orig
         blended = x_orig * (1.0 - effective_gate) + usgs_out * effective_gate
 
         return self.refine(torch.cat([blended, x_orig], dim=1))
@@ -143,7 +155,6 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.temperature_a = nn.Parameter(torch.ones(num_heads, 1, 1))
         self.temperature_v = nn.Parameter(torch.ones(num_heads, 1, 1))
-
         self.q_proj = nn.Conv2d(dim,
                                 dim,
                                 3,
@@ -155,7 +166,6 @@ class Attention(nn.Module):
         self.a_proj = nn.Sequential(
             nn.Conv2d(dim, dim, 3, padding=1, stride=2, groups=dim, bias=bias),
             nn.Conv2d(dim, dim // 2, 1))
-
         self.v_proj = nn.Conv2d(dim, dim, 1, bias=bias)
         self.project_out = nn.Conv2d(dim, dim, 1, bias=bias)
 
@@ -163,7 +173,6 @@ class Attention(nn.Module):
         b, c, h, w = x.shape
         q, k, a = self.q_proj(x), self.k_proj(x), self.a_proj(x)
         v = self.v_proj(x) * illu_feat
-
         q, k, a = [
             rearrange(t,
                       'b (head c) h w -> b head c (h w)',
@@ -172,12 +181,9 @@ class Attention(nn.Module):
         v = rearrange(v,
                       'b (head c) h w -> b head c (h w)',
                       head=self.num_heads)
-
         q, k, a = [F.normalize(t, dim=-1) for t in (q, k, a)]
-
         attn_a = (q @ a.transpose(-2, -1)) * self.temperature_a
         attn_k = (a @ k.transpose(-2, -1)) * self.temperature_v
-
         out = rearrange(attn_a.softmax(dim=-1) @ (attn_k.softmax(dim=-1) @ v),
                         'b head c (h w) -> b (head c) h w',
                         head=self.num_heads,
@@ -227,7 +233,7 @@ class Encoder2D(nn.Module):
         return self.conv_out(out), illu_fea, illu_map
 
 
-# --- HGSABlock v17 Core ---
+# --- HGSABlock v17: 1D Manifold Update ---
 
 
 class SpectralOrchestrator(nn.Module):
@@ -249,12 +255,12 @@ class HyperExpertHead(nn.Module):
     def __init__(self, feat_dim, hidden_dim, out_channels, cond_dim):
         super().__init__()
         self.input_proj = nn.Conv2d(feat_dim + 16 + cond_dim, hidden_dim, 1)
+        # Prediction: 1 (mu) + 1 (sigma) + Q (weights) = Q + 2
         self.main_branch = nn.Sequential(
             nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1, groups=hidden_dim),
-            nn.SiLU(), nn.Conv2d(hidden_dim, 3 * out_channels, 1))
-        self.shortcut = nn.Conv2d(feat_dim + 16 + cond_dim, 3 * out_channels,
-                                  1)
-        self.gamma = nn.Parameter(torch.ones(1, 3 * out_channels, 1, 1) * 0.1)
+            nn.SiLU(), nn.Conv2d(hidden_dim, out_channels, 1))
+        self.shortcut = nn.Conv2d(feat_dim + 16 + cond_dim, out_channels, 1)
+        self.gamma = nn.Parameter(torch.ones(1, out_channels, 1, 1) * 0.1)
 
     def forward(self, feat, illu_fea, v):
         v = v.expand(-1, -1, feat.size(2), feat.size(3))
@@ -267,7 +273,7 @@ class BasisAttention(nn.Module):
 
     def __init__(self, x_dim, feat_dim, M, Q):
         super().__init__()
-        self.num_concepts = 2 * M * Q
+        self.num_concepts = 2 * M * Q  # Updated for Q-dim
         self.basis_v = nn.Parameter(torch.randn(self.num_concepts, Q) * 0.02)
         self.q_proj = nn.Conv2d(x_dim, self.num_concepts, 1)
         self.gate = nn.Sequential(nn.AdaptiveAvgPool2d(1),
@@ -281,7 +287,7 @@ class BasisAttention(nn.Module):
         q_flat = q.view(B, self.num_concepts, -1)
         attn = F.softmax(q_flat / self.tau, dim=1)
         v = self.basis_v.transpose(0, 1).unsqueeze(0).expand(B, -1, -1)
-        return torch.bmm(v, attn).view(B, -1, H, W)
+        return torch.bmm(v, attn).view(B, -1, H, W)  # Returns [B, Q, H, W]
 
 
 class DeepGatedChi(nn.Module):
@@ -306,22 +312,22 @@ class HGSABlock(nn.Module):
         super().__init__()
         self.cond_dim = 8
         self.M, self.Q, self.out_channels = M, Q, out_channels
-        self.xi_net = BasisAttention(in_channels, feat_dim, M,
-                                     out_channels * Q)
+        # xi_net now produces Q-dimensional coordinates
+        self.xi_net = BasisAttention(in_channels, feat_dim, M, Q)
         self.orchestrator = SpectralOrchestrator(in_dim=in_channels,
                                                  cond_dim=M * self.cond_dim)
+
+        # Head predicts: Q (weights) + 1 (mu) + 1 (sigma) per channel
         self.expert_heads = nn.ModuleList([
-            HyperExpertHead(feat_dim, feat_dim, out_channels * Q,
+            HyperExpertHead(feat_dim, feat_dim, out_channels * (Q + 2),
                             self.cond_dim) for _ in range(M)
         ])
 
-        grid = torch.linspace(0, 1, Q).view(1, 1, Q, 1, 1)
-        self.mu_grid = nn.Parameter(grid.repeat(1, out_channels, 1, 1, 1))
+        self.mu_init = nn.Parameter(torch.rand(1, out_channels, 1, 1, 1) - 0.5)
         self.w_init = nn.Parameter(0.1 * torch.randn(1, out_channels, Q, 1, 1))
         self.sigma_init = nn.Parameter(torch.ones(M, out_channels) * 0.1)
         self.chi_net = DeepGatedChi(out_channels * Q, out_channels)
 
-        # v17: Cross-Channel Spectral Calibration
         self.spectral_calibrator = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
             nn.Conv2d(out_channels * Q, max(1, (out_channels * Q) // 4), 1),
@@ -330,37 +336,46 @@ class HGSABlock(nn.Module):
             nn.Sigmoid())
 
     def forward(self, x, feat, illu_fea, illu_map):
-        B, _, H, W = x.shape
-        xi_basis = self.xi_net(x, feat).view(B, self.out_channels, self.Q, H,
-                                             W)
-        xi = x.unsqueeze(2) + torch.tanh(xi_basis) / self.Q
+        B, C, H, W = x.shape
+        # xi is now [B, 3, Q, H, W]
+        xi_basis = self.xi_net(x, feat).view(B, 1, self.Q, H,
+                                             W).expand(-1, self.out_channels,
+                                                       -1, -1, -1)
+        xi = x.unsqueeze(2) + torch.tanh(
+            xi_basis) - 0.5  # Sample at Q different offsets
 
         cond_all = self.orchestrator(x)
         sigma_boost = torch.clamp(
             1.0 / (illu_map.mean(dim=1, keepdim=True) + 1e-4), 1.0,
             2.5).unsqueeze(2)
-        psi_total = torch.zeros_like(xi)
+
+        psi_total = torch.zeros(B,
+                                self.out_channels,
+                                self.Q,
+                                H,
+                                W,
+                                device=x.device)
 
         for i in range(self.M):
             cond = cond_all[:, self.cond_dim * i:self.cond_dim * (i + 1)]
             p_e = self.expert_heads[i](feat, illu_fea,
-                                       cond).view(B, self.out_channels, self.Q,
-                                                  3, H, W)
-            w = self.w_init + p_e[:, :, :, 0]
-            mu = self.mu_grid + torch.tanh(p_e[:, :, :, 1]) / self.Q
+                                       cond).view(B, self.out_channels,
+                                                  self.Q + 2, H, W)
+
+            w = self.w_init + p_e[:, :, :self.Q]
+            mu = self.mu_init + torch.tanh(p_e[:, :, self.Q:self.Q + 1])
             s_base = self.sigma_init[i].view(1, self.out_channels, 1, 1, 1)
-            sigma = (F.softplus(s_base + p_e[:, :, :, 2]) + 1e-6) * sigma_boost
-            psi_total = psi_total + w * torch.exp(-0.5 * torch.pow(
-                (xi - mu) / sigma, 2))
+            sigma = (F.softplus(s_base + p_e[:, :, self.Q + 1:self.Q + 2]) +
+                     1e-6) * sigma_boost
+
+            # Gaussian sampled at Q spatial xi locations
+            gaussian_kernel = torch.exp(-0.5 * torch.pow((xi - mu) / sigma, 2))
+            psi_total = psi_total + w * gaussian_kernel
 
         psi_flat = psi_total.view(B, self.out_channels * self.Q, H, W)
-        psi_flat = psi_flat * self.spectral_calibrator(
-            psi_flat)  # v17 calibration
+        psi_flat = psi_flat * self.spectral_calibrator(psi_flat)
         out, _ = self.chi_net(psi_flat)
         return out, psi_flat
-
-
-# --- Final HGSA-v17 Wrapper ---
 
 
 class HGSA_v17(nn.Module):
@@ -378,11 +393,8 @@ class HGSA_v17(nn.Module):
         feat, illu_fea, illu_map = self.encoder(x)
         usgs_out, sagf_out_raw = self.vector_expert(x, feat, illu_fea,
                                                     illu_map)
-
         final_out = self.chi_fusion(x, usgs_out, illu_map)
-
         if self.training:
             sagf_out = self.aux_proj(sagf_out_raw)
             return final_out, x + sagf_out
-
         return final_out

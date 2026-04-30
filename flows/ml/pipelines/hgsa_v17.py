@@ -37,7 +37,7 @@ class GradLoss(nn.Module):
 
 
 # --- Pipeline HGSA v17 ---
-class HSGAPipeline_v16(L.LightningModule):
+class HSGAPipeline_v17(L.LightningModule):
 
     def __init__(self,
                  model: nn.Module,
