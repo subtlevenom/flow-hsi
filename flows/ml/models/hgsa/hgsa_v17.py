@@ -296,7 +296,8 @@ class LightMSAB(nn.Module):
 
 class HyperExpertHead(nn.Module):
 
-    def __init__(self, feat_dim, hidden_dim, out_channels, dim_params, cond_dim):
+    def __init__(self, feat_dim, hidden_dim, out_channels, dim_params,
+                 cond_dim):
         super().__init__()
         # out_channels = 3, dim_params = 3 * Q
         all_channels = out_channels * dim_params
@@ -305,7 +306,7 @@ class HyperExpertHead(nn.Module):
         self.spectral_reasoning = LightMSAB(feat_dim + 16 + cond_dim)
         # Parameter Projection
         self.input_proj = nn.Conv2d(feat_dim + 16 + cond_dim, hidden_dim, 1)
-        # Use groups=out_channels (3) to give each channel its own dedicated 
+        # Use groups=out_channels (3) to give each channel its own dedicated
         # parameter weights while still living in the same head.
         self.main_branch = nn.Sequential(
             nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1, groups=hidden_dim),
