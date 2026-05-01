@@ -58,7 +58,7 @@ def train_default(config: DictConfig) -> None:
             GenerateCallback(every_n_epochs=1),
             StochasticWeightAveraging(
                 swa_lrs=5 * config.pipeline.params.lr,
-                swa_epoch_start=0.75 #config.epochs - 100,
+                swa_epoch_start=int(0.8 * config.epochs),
             )
         ],
     )

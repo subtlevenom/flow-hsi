@@ -192,12 +192,13 @@ class HSGAPipeline_v17(L.LightningModule):
         loss_tv = self.total_variation_loss(main_out)
 
         w_grad = 1.0 if self.current_epoch < self.warmup_epochs else 0.7
+        a = 0.1 if self.current_epoch < self.warmup_epochs else 1.0
 
-        # total_loss = loss_mae + 0.15 * loss_ssim + 0.05 * loss_aux
-        total_loss = (
-            loss_mae + self.w_color * loss_color +  # Targeted dE optimization
-            w_grad * loss_grad + 0.2 * loss_ssim + self.w_aux * loss_aux +
-            self.w_tv * loss_tv)
+        total_loss = a * loss_mae + 0.15 * loss_ssim + (1 - a) * loss_aux
+        # total_loss = (
+            # loss_mae + self.w_color * loss_color +  # Targeted dE optimization
+            # w_grad * loss_grad + 0.2 * loss_ssim + self.w_aux * loss_aux +
+            # self.w_tv * loss_tv)
 
         self.log('train_loss', total_loss, prog_bar=True)
         self.log('train_color', loss_color, prog_bar=False)

@@ -259,23 +259,73 @@ class SpectralOrchestrator(nn.Module):
         return self.global_net(x)
 
 
+class LightMSAB(nn.Module):
+
+    def __init__(self, dim, num_heads=2):
+        super().__init__()
+        self.num_heads = num_heads
+        self.temperature = nn.Parameter(torch.ones(num_heads, 1, 1))
+        self.qkv = nn.Conv2d(dim, dim * 3, 1)
+        self.qkv_dw = nn.Conv2d(dim * 3, dim * 3, 3, padding=1, groups=dim * 3)
+        self.project_out = nn.Conv2d(dim, dim, 1)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        qkv = self.qkv_dw(self.qkv(x))
+        q, k, v = qkv.chunk(3, dim=1)
+
+        q, k, v = map(
+            lambda t: rearrange(
+                t, 'b (head c) h w -> b head c (h w)', head=self.num_heads),
+            (q, k, v))
+
+        q = F.normalize(q, dim=-1)
+        k = F.normalize(k, dim=-1)
+
+        attn = (q @ k.transpose(-2, -1)) * self.temperature
+        attn = attn.softmax(dim=-1)
+
+        out = (attn @ v)
+        out = rearrange(out,
+                        'b head c (h w) -> b (head c) h w',
+                        head=self.num_heads,
+                        h=h,
+                        w=w)
+        return self.project_out(out)
+
+
 class HyperExpertHead(nn.Module):
 
-    def __init__(self, feat_dim, hidden_dim, out_channels, cond_dim):
+    def __init__(self, feat_dim, hidden_dim, out_channels, dim_params, cond_dim):
         super().__init__()
+        # out_channels = 3, dim_params = 3 * Q
+        all_channels = out_channels * dim_params
+        # Spectral Reasoning Layer (MST++ Style)
+        # This allows the expert to "see" the RYYB relationships globally
+        self.spectral_reasoning = LightMSAB(feat_dim + 16 + cond_dim)
+        # Parameter Projection
         self.input_proj = nn.Conv2d(feat_dim + 16 + cond_dim, hidden_dim, 1)
-        # Prediction: 3 * Q per channel (Weights, Mu, Sigma)
+        # Use groups=out_channels (3) to give each channel its own dedicated 
+        # parameter weights while still living in the same head.
         self.main_branch = nn.Sequential(
             nn.Conv2d(hidden_dim, hidden_dim, 3, padding=1, groups=hidden_dim),
-            nn.SiLU(), nn.Conv2d(hidden_dim, out_channels, 1))
-        self.shortcut = nn.Conv2d(feat_dim + 16 + cond_dim, out_channels, 1)
-        self.gamma = nn.Parameter(torch.ones(1, out_channels, 1, 1) * 0.1)
+            nn.SiLU(),
+            nn.Conv2d(hidden_dim, all_channels, 1, groups=out_channels),
+        )
+        self.shortcut = nn.Conv2d(feat_dim + 16 + cond_dim, all_channels, 1)
+        self.gamma = nn.Parameter(torch.ones(1, all_channels, 1, 1) * 0.1)
 
     def forward(self, feat, illu_fea, v):
         v = v.expand(-1, -1, feat.size(2), feat.size(3))
         combined = torch.cat([feat, illu_fea, v], dim=1)
-        return self.shortcut(combined) + self.main_branch(
-            self.input_proj(combined)) * self.gamma
+
+        # Apply Spectral Attention
+        # We use a residual connection here to keep the gradient path short
+        combined = combined + self.spectral_reasoning(combined)
+
+        # Project to manifold parameters (w, mu, sigma)
+        x = self.input_proj(combined)
+        return self.shortcut(combined) + self.main_branch(x) * self.gamma
 
 
 class BasisAttention(nn.Module):
@@ -352,7 +402,7 @@ class HGSABlock(nn.Module):
 
         # Head predicts 3 * Q parameters per channel
         self.expert_heads = nn.ModuleList([
-            HyperExpertHead(feat_dim, feat_dim, out_channels * (3 * Q),
+            HyperExpertHead(feat_dim, feat_dim, out_channels, (3 * Q),
                             self.cond_dim) for _ in range(M)
         ])
 
@@ -376,7 +426,7 @@ class HGSABlock(nn.Module):
         xi_basis = self.xi_net(x, feat).view(B, 1, self.Q, H,
                                              W).expand(-1, self.out_channels,
                                                        -1, -1, -1)
-        xi = x.unsqueeze(2) + (torch.tanh(xi_basis) * 0.5)
+        xi = x.unsqueeze(2) + torch.tanh(xi_basis)
 
         cond_all = self.orchestrator(x)
         sigma_boost = torch.clamp(
@@ -397,11 +447,10 @@ class HGSABlock(nn.Module):
                                                   self.Q, H, W)
 
             w = self.w_init + p_e[:, :, 0]
-            mu = torch.sigmoid(self.mu_init + p_e[:, :, 1])
+            mu = torch.tanh(self.mu_init + p_e[:, :, 1]) * 3 + 1.0
             s_base = self.sigma_init[i].view(1, self.out_channels, self.Q, 1,
                                              1)
-            sigma = (torch.sigmoid(s_base + p_e[:, :, 2]) * 0.5 +
-                     0.01) * sigma_boost
+            sigma = (F.softplus(s_base + p_e[:, :, 2]) + 0.01) * sigma_boost
 
             gaussian_kernel = torch.exp(-0.5 * torch.pow((xi - mu) / sigma, 2))
             psi_total = psi_total + w * gaussian_kernel
