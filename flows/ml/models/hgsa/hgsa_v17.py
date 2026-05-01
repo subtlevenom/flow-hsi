@@ -91,43 +91,41 @@ class LaplacianGatedFusion(nn.Module):
 
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        # 1. Texture Extraction (High-Pass)
         self.laplacian_kernel = nn.Conv2d(in_channels,
                                           in_channels,
                                           3,
                                           padding=1,
                                           groups=in_channels)
 
-        # 2. Spectral Gate (Decides where to trust the manifold vs the original)
+        # Изменяем вход с (in+out) на (in+out+in), т.к. добавляем illu_map (3 канала)
         self.gate_net = nn.Sequential(
-            nn.Conv2d(in_channels + out_channels, 16, 3, padding=1),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Conv2d(16, out_channels, 1),
-            nn.Sigmoid(
-            )  # We bring back Sigmoid for clear probabilistic weighting
-        )
-
-        # 3. Final Sprecher Superposition
+            nn.Conv2d(in_channels + out_channels + in_channels,
+                      32,
+                      3,
+                      padding=1), nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(32, out_channels, 1))
         self.refine = Advanced_GFFN(in_channels + out_channels, out_channels)
-        self.temp = nn.Parameter(torch.ones(1) * 0.5)
+        self.temp = nn.Parameter(torch.ones(1, out_channels, 1, 1) * 0.5)
 
     def forward(self, x_orig, usgs_out, illu_map):
-        # Extract Laplacian (detail) from original
-        # x_detail represents the high-frequency structural info
         x_detail = x_orig - self.laplacian_kernel(x_orig)
 
         # Calculate the illumination-aware gate
         # We cat the manifold output with the original to find discrepancies
-        gate_input = torch.cat([x_orig, usgs_out], dim=1)
-        logits = self.gate_net(gate_input)
+        #gate_input = torch.cat([x_orig, usgs_out], dim=1)
+        #logits = self.gate_net(gate_input)
+        
+        # Конкатенируем оригинал, выход экспертов и карту освещенности
+        gate_input = torch.cat([x_orig, usgs_out, illu_map], dim=1)
+        raw_logits = self.gate_net(gate_input)
 
         # Illumination-based bias (as you had it, very effective for RYYB)
-        illu_bias = torch.pow(illu_map + 1e-6, 0.5) * self.temp
-        effective_gate = torch.sigmoid(logits - illu_bias)
+        #illu_bias = torch.pow(illu_map + 1e-6, 0.5) * self.temp
+        #effective_gate = torch.sigmoid(logits - illu_bias)
 
-        # THE EXTERNAL SUMMATION:
-        # We don't just blend; we inject the original details into the corrected manifold
-        # This prevents the 'watercolor' effect often seen in KAT-based denoising.
+        # Используем мягкое смещение через Sigmoid (Option A из нашего анализа)
+        effective_gate = torch.sigmoid(raw_logits)
+
         blended = usgs_out * effective_gate + (x_orig + x_detail) * (
             1.0 - effective_gate)
 
@@ -409,6 +407,7 @@ class HGSABlock(nn.Module):
 
         # Centripetal Initialization
         self.mu_init = nn.Parameter(torch.ones(1, out_channels, Q, 1, 1) * 0.5)
+        self.mu_scale = nn.Parameter(torch.ones(1, out_channels, Q, 1, 1) * 4.5)
         self.w_init = nn.Parameter(0.1 * torch.randn(1, out_channels, Q, 1, 1))
         self.sigma_init = nn.Parameter(torch.ones(M, out_channels, Q) * 0.2)
 
@@ -447,8 +446,9 @@ class HGSABlock(nn.Module):
                                        cond).view(B, self.out_channels, 3,
                                                   self.Q, H, W)
 
-            w = self.w_init + p_e[:, :, 0]
-            mu = torch.tanh(self.mu_init + p_e[:, :, 1]) * 3 + 1.0
+            w = self.w_init + p_e[:, :, 0] # [-1,2]
+            mu_scale = F.softplus(self.mu_scale)
+            mu = torch.tanh(self.mu_init + p_e[:, :, 1]) * mu_scale  + 0.5
             s_base = self.sigma_init[i].view(1, self.out_channels, self.Q, 1,
                                              1)
             sigma = (F.softplus(s_base + p_e[:, :, 2]) + 0.01) * sigma_boost
