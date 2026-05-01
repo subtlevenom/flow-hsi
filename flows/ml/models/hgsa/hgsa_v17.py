@@ -122,8 +122,8 @@ class LaplacianGatedFusion(nn.Module):
         logits = self.gate_net(gate_input)
 
         # Illumination-based bias (as you had it, very effective for RYYB)
-        illu_bias = torch.log(illu_map + 1e-6) * self.temp
-        effective_gate = torch.clamp(logits - illu_bias, 0.0, 1.0)
+        illu_bias = torch.pow(illu_map + 1e-6, 0.5) * self.temp
+        effective_gate = torch.sigmoid(logits - illu_bias)
 
         # THE EXTERNAL SUMMATION:
         # We don't just blend; we inject the original details into the corrected manifold
