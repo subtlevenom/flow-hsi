@@ -27,7 +27,6 @@ def main(config: DictConfig) -> None:
 
 
 def train_default(config: DictConfig) -> None:
-
     dm = DataSelector.select(config.data)
     model = ModelSelector.select(config.model)
     pipeline = PipelineSelector.select(model, config.pipeline)
@@ -38,37 +37,38 @@ def train_default(config: DictConfig) -> None:
         version='',
     )
 
+    # cmKAN-Killer Training Configuration
     trainer = L.Trainer(
         logger=logger,
         default_root_dir=os.path.join(config.save_dir, config.experiment),
         max_epochs=config.epochs,
-        precision="16-mixed",
+        # Use bf16 for better numerical stability in Gaussian kernels
+        precision="bf16-mixed" if torch.cuda.is_bf16_supported() else 32,
         devices=1,
-        gradient_clip_val=1.0,
+        # Tighter clipping for Quadratic Transport stability
+        gradient_clip_val=0.5,
         callbacks=[
             ModelCheckpoint(
-                filename="{epoch}-{val_loss:.2f}",
-                monitor='val_loss',
-                save_top_k=2,
+                filename="{epoch}-{val_de:.2f}",
+                monitor='val_de',  # Monitor Delta-E directly
+                save_top_k=3,
                 save_last=True,
+                mode='min',
             ),
             RichModelSummary(),
             RichProgressBar(),
-            LearningRateMonitor(logging_interval='epoch'),
-            GenerateCallback(every_n_epochs=1),
+            LearningRateMonitor(logging_interval='step'),
+            GenerateCallback(every_n_epochs=5),  # Reduce frequency to save IO
             StochasticWeightAveraging(
-                swa_lrs=5 * config.pipeline.params.lr,
-                swa_epoch_start=int(0.8 * config.epochs),
+                # SWA LR should be low to smooth the transport manifold
+                swa_lrs=config.pipeline.params.lr * 0.1,
+                swa_epoch_start=int(0.75 * config.epochs),
             )
         ],
     )
 
     ckpt_path = os.path.join(config.save_dir, config.experiment,
                              'logs/checkpoints/last.ckpt')
-
-    # 2. Загружаем только веса (weights only) из старого чекпоинта
-    # checkpoint = torch.load(ckpt_path)
-    # pipeline.load_state_dict(checkpoint['state_dict'], strict=False)
 
     trainer.fit(
         model=pipeline,

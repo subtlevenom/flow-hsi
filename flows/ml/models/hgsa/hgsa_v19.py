@@ -1,4 +1,3 @@
-
 import math
 import torch
 import torch.nn as nn
@@ -9,18 +8,6 @@ from einops import rearrange
 
 class GELU(nn.Module):
     def forward(self, x): return F.gelu(x)
-
-class LayerNorm(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.body = nn.LayerNorm(dim)
-    def forward(self, x):
-        if x.dim() == 4:
-            b, c, h, w = x.shape
-            x = rearrange(x, 'b c h w -> b (h w) c')
-            x = self.body(x)
-            return rearrange(x, 'b (h w) c -> b c h w', h=h, w=w)
-        return self.body(x)
 
 class FiLM(nn.Module):
     """Feature-wise Linear Modulation for global conditioning."""
@@ -38,7 +25,6 @@ class FiLM(nn.Module):
 # ─── 2. CONDITIONING & ENCODING ──────────────────────────────────────
 
 class DegradationAwareConditioner(nn.Module):
-    """Extracts Global Information Vector (GIV) via multi-scale stats."""
     def __init__(self, in_c, giv_dim):
         super().__init__()
         stat_dim = in_c * 2 * (1 + 16 + 64)
@@ -62,7 +48,6 @@ class DegradationAwareConditioner(nn.Module):
         return self.mlp(torch.cat([s1, s4, s8], dim=1))
 
 class FullResEncoder(nn.Module):
-    """Multi-scale dilated encoder with FiLM injection."""
     def __init__(self, in_c, feat_dim, giv_dim):
         super().__init__()
         self.stem = nn.Sequential(
@@ -73,13 +58,9 @@ class FullResEncoder(nn.Module):
         self.d2 = nn.Conv2d(feat_dim, feat_dim, 3, padding=2, dilation=2, groups=feat_dim)
         self.d4 = nn.Conv2d(feat_dim, feat_dim, 3, padding=4, dilation=4, groups=feat_dim)
         
-        self.fuse = nn.Sequential(
-            nn.Conv2d(feat_dim * 3, feat_dim, 1),
-            nn.GroupNorm(4, feat_dim)
-        )
+        self.fuse = nn.Sequential(nn.Conv2d(feat_dim * 3, feat_dim, 1), nn.GroupNorm(4, feat_dim))
         self.film = FiLM(giv_dim, feat_dim)
         
-        # Illumination Estimator
         self.illu_conv = nn.Sequential(
             nn.Conv2d(in_c + 1, 16, 1),
             nn.Conv2d(16, 16, 3, padding=1, groups=16),
@@ -93,34 +74,49 @@ class FullResEncoder(nn.Module):
         feat = self.fuse(torch.cat([self.d1(f), self.d2(f), self.d4(f)], dim=1))
         return self.film(feat, giv), illu_map
 
-# ─── 3. GEOT-USGS CORE ───────────────────────────────────────────────
+# ─── 3. GEOT-USGS CORE (UPGRADED) ────────────────────────────────────
 
 class TransportGainHead(nn.Module):
-    """Predicts 3x3 Gain Matrix (kappa), Mean (mu), and Weight (w)."""
+    """
+    Predicts Quadratic Transport Parameters.
+    Params per Q: 9 (K1) + 9 (K2) + 3 (mu) + 1 (w) = 22
+    """
     def __init__(self, feat_dim, out_c, Q, giv_dim):
         super().__init__()
         self.Q = Q
-        self.params_per_q = (out_c * out_c) + out_c + 1 
+        self.params_per_q = 22 
         self.film = FiLM(giv_dim, feat_dim)
+        
+        # Dual-path: Local Conv + Global Gating
         self.net = nn.Sequential(
             nn.Conv2d(feat_dim, feat_dim, 3, padding=1, groups=feat_dim),
             nn.Conv2d(feat_dim, self.params_per_q * Q, 1)
         )
+        self.global_gate = nn.Sequential(
+            nn.Linear(giv_dim, self.params_per_q * Q),
+            nn.Sigmoid()
+        )
 
     def forward(self, feat, giv):
-        p = self.net(self.film(feat, giv))
+        local_p = self.net(self.film(feat, giv))
+        global_p = self.global_gate(giv).view(giv.size(0), -1, 1, 1)
+        # Modulate local predictions with global context (MCA-like)
+        p = local_p * global_p
         return p.view(p.shape[0], self.Q, self.params_per_q, p.shape[2], p.shape[3])
 
 class GEOT_USGS_Block(nn.Module):
-    """Synthesis of USGS and Gaussian Entropic Optimal Transport."""
-    def __init__(self, in_c=3, out_c=3, Q=8, M=4, feat_dim=64, giv_dim=64):
+    """
+    Quadratic Gaussian Entropic Optimal Transport.
+    T(x) = mu + K1(x-mu) + K2(x-mu)^2
+    """
+    def __init__(self, in_c=3, out_c=3, Q=16, M=4, feat_dim=64, giv_dim=64):
         super().__init__()
         self.Q, self.M, self.out_c = Q, M, out_c
         self.experts = nn.ModuleList([TransportGainHead(feat_dim, out_c, Q, giv_dim) for _ in range(M)])
         
-        mu_grid = torch.linspace(0.1, 0.9, Q).view(1, Q, 1, 1, 1)
+        mu_grid = torch.linspace(0.05, 0.95, Q).view(1, Q, 1, 1, 1)
         self.mu_anchor = nn.Parameter(mu_grid.expand(1, Q, out_c, 1, 1).clone())
-        self.sigma_base = nn.Parameter(torch.ones(1, Q, 1, 1, 1) * 0.2)
+        self.sigma_base = nn.Parameter(torch.ones(1, Q, 1, 1, 1) * 0.15)
 
     def forward(self, x_img, feat, giv, illu_map):
         B, C, H, W = x_img.shape
@@ -132,23 +128,32 @@ class GEOT_USGS_Block(nn.Module):
 
         for m in range(self.M):
             p = self.experts[m](feat, giv)
-            kappa_raw = p[:, :, 0:9].view(B, self.Q, 3, 3, H, W)
-            mu_off    = p[:, :, 9:12]
-            logit_w   = p[:, :, 12:13]
+            
+            k1_raw  = p[:, :, 0:9].view(B, self.Q, 3, 3, H, W)
+            k2_raw  = p[:, :, 9:18].view(B, self.Q, 3, 3, H, W)
+            mu_off  = p[:, :, 18:21]
+            logit_w = p[:, :, 21:22]
             
             mu = torch.sigmoid(self.mu_anchor + mu_off)
             eye = torch.eye(3, device=x_img.device).view(1, 1, 3, 3, 1, 1)
-            kappa = eye + 0.1 * torch.tanh(kappa_raw)
+            
+            # Quadratic Transport Matrices
+            k1 = eye + 0.15 * torch.tanh(k1_raw)
+            k2 = 0.05 * torch.tanh(k2_raw)
             
             sigma = F.softplus(self.sigma_base) * tau
             dist_sq = torch.sum((x_flat - mu)**2, dim=2, keepdim=True)
             kernel = torch.exp(-0.5 * dist_sq / (sigma**2))
             
-            # T(x) = mu + kappa(x - mu)
-            diff = (x_flat - mu).permute(0, 1, 3, 4, 2).unsqueeze(-1)
-            k_mat = kappa.permute(0, 1, 4, 5, 2, 3)
-            trans = torch.matmul(k_mat, diff).squeeze(-1).permute(0, 1, 4, 2, 3)
-            t_map = mu + trans
+            # T(x) = mu + k1(diff) + k2(diff^2)
+            diff = (x_flat - mu).permute(0, 1, 3, 4, 2).unsqueeze(-1) # [B, Q, H, W, 3, 1]
+            diff_sq = diff**2
+            
+            k1_mat = k1.permute(0, 1, 4, 5, 2, 3) # [B, Q, H, W, 3, 3]
+            k2_mat = k2.permute(0, 1, 4, 5, 2, 3)
+            
+            trans = torch.matmul(k1_mat, diff) + torch.matmul(k2_mat, diff_sq)
+            t_map = mu + trans.squeeze(-1).permute(0, 1, 4, 2, 3)
             
             w = torch.softmax(logit_w, dim=1) * kernel
             num = num + torch.sum(w * t_map, dim=1)
@@ -190,12 +195,12 @@ class LaplacianGatedFusion(nn.Module):
 
 class HGSA_GEOT_v19(nn.Module):
     """
-    USGS & GEOT: Gaussian Transport Synthesis for Color Matching.
+    Upgraded USGS & Quadratic GEOT for SOTA RYYB Matching.
+    Target: < 4.51 Delta-E
     """
-    def __init__(self, in_channels=3, out_channels=3, Q=8, M=4):
+    def __init__(self, in_channels=3, out_channels=3, Q=16, M=4):
         super().__init__()
-        GIV_DIM = 64
-        FEAT_DIM = 64
+        GIV_DIM, FEAT_DIM = 64, 64
         
         self.conditioner = DegradationAwareConditioner(in_channels, GIV_DIM)
         self.encoder = FullResEncoder(in_channels, FEAT_DIM, GIV_DIM)
@@ -206,10 +211,10 @@ class HGSA_GEOT_v19(nn.Module):
         giv = self.conditioner(src)
         feat, illu_map = self.encoder(src, giv)
         
-        # Step 1: Perform Optimal Transport in color space
+        # Step 1: Quadratic Optimal Transport
         transported_x = self.geot_transport(src, feat, giv, illu_map)
         
-        # Step 2: Refine texture and edges via Laplacian fusion
+        # Step 2: Edge-preserving Fusion
         final_out = self.fusion(src, transported_x, illu_map)
         
         if self.training:
