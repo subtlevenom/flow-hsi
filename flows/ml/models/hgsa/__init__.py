@@ -1,1 +1,1 @@
-from .hgsa_v19 import HGSA_GEOT_v19 as HGSA
+from .hgsa_v20 import HGSA_GEOT_v20 as HGSA
