@@ -1,10 +1,12 @@
 import os
+import math
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
 import lightning as L
 
 from ..metrics import PSNR, SSIM, DeltaE
+from ..transforms.hist import RGBuvHistBlock
 # Функции потерь переиспользуются из v22 (это nn.Module, а не LightningModule,
 # поэтому их импорт безопасен для селектора пайплайнов, который ищет
 # единственный подкласс LightningModule в модуле).
@@ -16,6 +18,32 @@ from .hgsa_v22 import (
     MongeKantorovichLoss,
     DeltaE2000Loss,
 )
+
+
+class ColorHistogramLoss(nn.Module):
+    """Дифференцируемое соответствие RGB-uv цветовых гистограмм (HistoGAN).
+
+    Гистограмма — глобальный цветовой дескриптор, инвариантный к точному
+    попиксельному совмещению, поэтому лосс устойчив к остаточному
+    рассинхрону пар в Volga2K. Расстояние — Hellinger между нормированными
+    гистограммами. Метод 'inverse-quadratic' дифференцируем и устойчив.
+    """
+
+    def __init__(self, h: int = 64, insz: int = 150):
+        super().__init__()
+        self.hist_block = RGBuvHistBlock(h=h, insz=insz, method='inverse-quadratic')
+
+    def _hist(self, img: torch.Tensor) -> torch.Tensor:
+        # RGBuvHistBlock обрабатывает по одному изображению [C, H, W].
+        hs = [self.hist_block(img[i]) for i in range(img.shape[0])]
+        h = torch.cat(hs, dim=0)  # [B, 3, h, h]
+        return h / (h.sum(dim=(1, 2, 3), keepdim=True) + 1e-6)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        hp = self._hist(pred.clamp(0, 1).float())
+        ht = self._hist(target.clamp(0, 1).float())
+        diff = ((hp.sqrt() - ht.sqrt()) ** 2).sum(dim=(1, 2, 3))
+        return (1.0 / math.sqrt(2.0)) * torch.sqrt(diff.clamp(min=0.0) + 1e-8).mean()
 
 # ─────────────────────────────────────────────────────────────────────
 # PIPELINE v23 (Capacity + Multi-Scale Encoder + Transfer Learning)
@@ -44,6 +72,7 @@ class GEOTPipeline_v23(L.LightningModule):
                  lr: float = 1e-3,
                  warmup_epochs: int = 50,
                  weight_decay: float = 1e-4,
+                 ramp_epochs: int = 10,
                  pretrained_ckpt: str = None,
                  finetune: bool = False,
                  freeze_epochs: int = 0,
@@ -53,6 +82,8 @@ class GEOTPipeline_v23(L.LightningModule):
         self.lr = lr
         self.weight_decay = weight_decay
         self.warmup_epochs = warmup_epochs
+        # Число эпох плавного ввода цветовых лоссов после warm-up.
+        self.ramp_epochs = ramp_epochs
 
         # Перенос обучения (#13)
         self.pretrained_ckpt = pretrained_ckpt
@@ -68,21 +99,17 @@ class GEOTPipeline_v23(L.LightningModule):
 
         # Losses
         self.mae_loss = nn.L1Loss()
-        self.lab_loss = CIELabLoss(chroma_weight=1.5)
-        self.freq_loss = FrequencyLoss(loss_weight=0.5)
-        self.grad_loss = GradLoss()
-        self.mk_loss = MongeKantorovichLoss()
-        self.de_loss = DeltaE2000Loss()
+        self.lab_loss = CIELabLoss(chroma_weight=1.5)     # перцептивный CIELab (§4 статьи)
+        self.hist_loss = ColorHistogramLoss()             # гистограммное соответствие цвета
         self.ssim_loss = SSIM(data_range=1.0)
 
-        # Weights (v23, наследует настройку v22)
-        self.w_lab = 3.0
-        self.w_freq = 1.2
-        self.w_mk = 0.08
-        self.w_ssim = 0.25
-        self.w_de = 0.5
-        self.w_aux = 0.6
-        self.w_grad = 0.5
+        # Weights (v23, целевая задача — цветовое соответствие, метрика dE).
+        # Базовая цель — mae + w_ssim*(1-ssim), устойчивая весь тренинг.
+        # Цветовые лоссы (lab, hist) вводятся плавно после warm-up.
+        self.w_ssim = 0.15   # базовый структурный член
+        self.w_lab = 0.5     # перцептивный CIELab (рек. 1)
+        self.w_hist = 0.25   # гистограммное соответствие (рек. 2)
+        self.w_ent = 0.01    # явная энтропийная регуляризация плана (рек. 5)
 
         self.save_hyperparameters(ignore=['model'])
 
@@ -197,30 +224,51 @@ class GEOTPipeline_v23(L.LightningModule):
         }
 
     def forward(self, x):
-        res = self.model(x)['res']
-        if self.training: return res  # (final_out, transported_x)
+        out = self.model(x)
+        if self.training:
+            # (final_out, transported_x), регуляризатор энтропии плана
+            return out['res'], out.get('plan_ent_reg')
+        res = out['res']
         return torch.clamp(res[0] if isinstance(res, tuple) else res, 0, 1)
 
-    def _compute_loss(self, src, main_out, aux_out, tgt, is_warmup):
-        # Простая и численно устойчивая цель: MAE + (1 - SSIM).
-        #
-        # Раньше после warm-up включались перцептивные/цветовые лоссы, среди
-        # которых DeltaE2000Loss (CIEDE2000): его слагаемое тона использует
-        # atan2(b, a) по хроме a*/b*. На нейтральных (около-серых) пикселях
-        # a*,b* -> 0, и градиент atan2 -> Inf. Это и есть источник
-        # бесконечных градиентов и NaN во всех метриках после warm-up.
-        # Убираем нестабильные лоссы полностью.
+    def _compute_loss(self, src, main_out, aux_out, tgt, is_warmup, ent_reg=None):
+        # Базовая устойчивая цель: MAE + w_ssim*(1 - SSIM).
         loss_mae = self.mae_loss(main_out, tgt)
         m_c = torch.clamp(main_out, 0, 1)
         loss_ssim = 1.0 - self.ssim_loss(m_c, tgt)
 
-        total = loss_mae + 0.15 * loss_ssim
-        return total, {'mae': loss_mae, 'ssim': loss_ssim}
+        total = loss_mae + self.w_ssim * loss_ssim
+        details = {'mae': loss_mae, 'ssim': loss_ssim}
+
+        # Рек. 5: явная энтропийная регуляризация плана переноса (L_ent).
+        # Активна весь тренинг — стабилизирует маршрутизацию экспертов.
+        if ent_reg is not None:
+            total = total + self.w_ent * ent_reg
+            details['ent'] = ent_reg
+
+        # Рек. 1, 2: цветовые лоссы вводятся плавно после warm-up, чтобы
+        # избежать скачка градиента на границе warm-up.
+        if is_warmup:
+            ramp = 0.0
+        else:
+            prog = (self.current_epoch - self.warmup_epochs) / max(1, self.ramp_epochs)
+            ramp = float(min(max(prog, 0.0), 1.0))
+
+        if ramp > 0.0:
+            loss_lab = self.lab_loss(m_c, tgt)     # устойчивый L1 в CIELab (без atan2)
+            loss_hist = self.hist_loss(m_c, tgt)
+            total = total + ramp * (self.w_lab * loss_lab + self.w_hist * loss_hist)
+            details['lab'] = loss_lab
+            details['hist'] = loss_hist
+
+        return total, details
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
-        main_out, aux_out = self(src)
-        loss, details = self._compute_loss(src, main_out, aux_out, tgt, self.current_epoch < self.warmup_epochs)
+        (main_out, aux_out), ent_reg = self(src)
+        loss, details = self._compute_loss(
+            src, main_out, aux_out, tgt,
+            self.current_epoch < self.warmup_epochs, ent_reg)
         self.log('train_loss', loss, prog_bar=True)
         for k, v in details.items(): self.log(f'train/{k}', v)
         return loss

@@ -221,7 +221,9 @@ class EOT_USGS_Volga_Block(nn.Module):
         trans = torch.matmul(A_mat, diff) + torch.matmul(B_mat, diff**2)
         T_q = C_loc + trans.squeeze(-1).permute(0, 1, 4, 2, 3)
 
-        return torch.sum(pi_q * T_q, dim=1)
+        # Возвращаем также план переноса pi_q (B, Q, 1, H, W) для явной
+        # энтропийной регуляризации на стороне пайплайна.
+        return torch.sum(pi_q * T_q, dim=1), pi_q
 
 # ─── 4. ФИНАЛЬНАЯ СБОРКА И УТОЧНЕНИЕ ─────────────────────────────────
 
@@ -281,11 +283,20 @@ class HGSA_USGS_EOT_v23(nn.Module):
         feat, illu_map = self.encoder(src, giv)
 
         # 2. Транспортный синтез (Hyper-KAN + EOT)
-        transported_x = self.eot_usgs(src, feat, illu_map)
+        transported_x, pi_q = self.eot_usgs(src, feat, illu_map)
 
         # 3. Финальное уточнение
         final_out = self.fusion(src, transported_x, illu_map)
 
         if self.training:
-            return {'res': (final_out, transported_x)}
+            # Энтропийная регуляризация плана переноса (L_ent, §4/§5.4 статьи).
+            # ent = средняя энтропия π_q по модам Q; возвращаем дефицит до
+            # максимума log(Q) — величина >= 0, минимальная при равномерном
+            # (максимально энтропийном) плане. Минимизация поощряет диффузный
+            # план и препятствует раннему коллапсу мод.
+            Q = pi_q.size(1)
+            p = pi_q.clamp_min(1e-8)
+            ent = -(p * p.log()).sum(dim=1).mean()
+            plan_ent_reg = math.log(Q) - ent
+            return {'res': (final_out, transported_x), 'plan_ent_reg': plan_ent_reg}
         return {'res': final_out}
