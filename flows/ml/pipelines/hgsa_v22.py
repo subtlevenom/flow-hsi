@@ -27,13 +27,25 @@ class GradLoss(nn.Module):
         return F.l1_loss(gx_p, gx_t) + F.l1_loss(gy_p, gy_t)
 
 class CIELabLoss(nn.Module):
-    """Прямая оптимизация Delta-E в пространстве CIELAB."""
+    """Прямая оптимизация Delta-E в пространстве CIELAB.
+
+    Каналы a*/b* (цветность) взвешены сильнее L* (яркость), т.к. Delta-E
+    в первую очередь определяется цветовой ошибкой (chroma_weight).
+    """
     _XYZ_REF = torch.tensor([0.95047, 1.00000, 1.08883])
     _RGB2XYZ = torch.tensor([
         [0.4124564, 0.3575761, 0.1804375],
         [0.2126729, 0.7151522, 0.0721750],
         [0.0193339, 0.1191920, 0.9503041],
     ])
+
+    def __init__(self, chroma_weight: float = 1.5):
+        super().__init__()
+        # [L*, a*, b*] — усиливаем вклад цветовых каналов a* и b*.
+        self.register_buffer(
+            '_ch_weights',
+            torch.tensor([1.0, chroma_weight, chroma_weight]).view(1, 3, 1, 1)
+        )
 
     def _rgb_to_xyz(self, rgb: torch.Tensor) -> torch.Tensor:
         rgb_lin = torch.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055)**2.4)
@@ -56,7 +68,9 @@ class CIELabLoss(nn.Module):
         t_32 = target.clamp(0, 1).to(torch.float32)
         pred_lab = self._xyz_to_lab(self._rgb_to_xyz(p_32))
         target_lab = self._xyz_to_lab(self._rgb_to_xyz(t_32))
-        return F.l1_loss(pred_lab, target_lab).to(pred.dtype)
+        w = self._ch_weights.to(pred_lab.dtype)
+        loss = (w * (pred_lab - target_lab).abs()).mean()
+        return loss.to(pred.dtype)
 
 class FrequencyLoss(nn.Module):
     def __init__(self, loss_weight: float = 0.4):
@@ -74,6 +88,107 @@ class MongeKantorovichLoss(nn.Module):
     def forward(self, src: torch.Tensor, transported: torch.Tensor) -> torch.Tensor:
         return F.mse_loss(src, transported)
 
+class DeltaE2000Loss(nn.Module):
+    """Дифференцируемая функция потерь Delta-E CIEDE2000.
+
+    Напрямую оптимизирует тестовую метрику dE (CIE 2000). Все операции
+    sqrt/hypot защищены малым eps для устойчивости градиента (особенно
+    при идеальном совпадении, где аргумент финального sqrt стремится к 0).
+    """
+    # sRGB (D65) -> linear -> XYZ (совпадает с CIELabLoss / метрикой rgb_to_lab)
+    _XYZ_REF = torch.tensor([0.95047, 1.00000, 1.08883])
+    _RGB2XYZ = torch.tensor([
+        [0.4124564, 0.3575761, 0.1804375],
+        [0.2126729, 0.7151522, 0.0721750],
+        [0.0193339, 0.1191920, 0.9503041],
+    ])
+
+    def __init__(self, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def _rgb_to_lab(self, rgb: torch.Tensor) -> torch.Tensor:
+        rgb_lin = torch.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+        m = self._RGB2XYZ.to(rgb.device, rgb.dtype)
+        xyz = torch.einsum('oi, bihw -> bohw', m, rgb_lin)
+        ref = self._XYZ_REF.to(rgb.device, rgb.dtype).view(1, 3, 1, 1)
+        xyz_n = xyz / ref
+        thr = 0.008856
+        f = torch.where(xyz_n > thr, xyz_n.clamp(min=thr) ** (1.0 / 3.0), 7.787 * xyz_n + 4.0 / 29.0)
+        fx, fy, fz = f[:, 0], f[:, 1], f[:, 2]
+        L = 116.0 * fy - 16.0
+        a = 500.0 * (fx - fy)
+        b = 200.0 * (fy - fz)
+        return torch.stack([L, a, b], dim=1)
+
+    def _ciede2000(self, lab1: torch.Tensor, lab2: torch.Tensor) -> torch.Tensor:
+        eps = self.eps
+        deg = 180.0 / math.pi
+        L1, a1, b1 = lab1[:, 0], lab1[:, 1], lab1[:, 2]
+        L2, a2, b2 = lab2[:, 0], lab2[:, 1], lab2[:, 2]
+
+        C1 = torch.sqrt(a1 ** 2 + b1 ** 2 + eps)
+        C2 = torch.sqrt(a2 ** 2 + b2 ** 2 + eps)
+        C_bar = (C1 + C2) / 2.0
+        C_bar7 = C_bar ** 7
+        G = 0.5 * (1.0 - torch.sqrt(C_bar7 / (C_bar7 + 25.0 ** 7) + eps))
+
+        a1p = (1.0 + G) * a1
+        a2p = (1.0 + G) * a2
+        C1p = torch.sqrt(a1p ** 2 + b1 ** 2 + eps)
+        C2p = torch.sqrt(a2p ** 2 + b2 ** 2 + eps)
+
+        h1p = (torch.atan2(b1, a1p) * deg) % 360.0
+        h2p = (torch.atan2(b2, a2p) * deg) % 360.0
+
+        dLp = L2 - L1
+        dCp = C2p - C1p
+
+        dhp = h2p - h1p
+        dhp = torch.where(dhp > 180.0, dhp - 360.0, dhp)
+        dhp = torch.where(dhp < -180.0, dhp + 360.0, dhp)
+        dHp = 2.0 * torch.sqrt(C1p * C2p + eps) * torch.sin(torch.deg2rad(dhp / 2.0))
+
+        Lp_bar = (L1 + L2) / 2.0
+        Cp_bar = (C1p + C2p) / 2.0
+
+        hsum = h1p + h2p
+        hdiff = torch.abs(h1p - h2p)
+        hp_bar = torch.where(
+            hdiff > 180.0,
+            torch.where(hsum < 360.0, (hsum + 360.0) / 2.0, (hsum - 360.0) / 2.0),
+            hsum / 2.0,
+        )
+
+        T = (1.0
+             - 0.17 * torch.cos(torch.deg2rad(hp_bar - 30.0))
+             + 0.24 * torch.cos(torch.deg2rad(2.0 * hp_bar))
+             + 0.32 * torch.cos(torch.deg2rad(3.0 * hp_bar + 6.0))
+             - 0.20 * torch.cos(torch.deg2rad(4.0 * hp_bar - 63.0)))
+
+        d_theta = 30.0 * torch.exp(-(((hp_bar - 275.0) / 25.0) ** 2))
+        Cp_bar7 = Cp_bar ** 7
+        R_C = 2.0 * torch.sqrt(Cp_bar7 / (Cp_bar7 + 25.0 ** 7) + eps)
+        Lp_bar_2 = (Lp_bar - 50.0) ** 2
+        S_L = 1.0 + (0.015 * Lp_bar_2) / torch.sqrt(20.0 + Lp_bar_2 + eps)
+        S_C = 1.0 + 0.045 * Cp_bar
+        S_H = 1.0 + 0.015 * Cp_bar * T
+        R_T = -torch.sin(torch.deg2rad(2.0 * d_theta)) * R_C
+
+        term_L = dLp / S_L
+        term_C = dCp / S_C
+        term_H = dHp / S_H
+        d_sq = term_L ** 2 + term_C ** 2 + term_H ** 2 + R_T * term_C * term_H
+        return torch.sqrt(d_sq.clamp(min=0.0) + eps)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        p_32 = pred.clamp(0, 1).to(torch.float32)
+        t_32 = target.clamp(0, 1).to(torch.float32)
+        lab_p = self._rgb_to_lab(p_32)
+        lab_t = self._rgb_to_lab(t_32)
+        de = self._ciede2000(lab_p, lab_t).mean()
+        return de.to(pred.dtype)
+
 # ─────────────────────────────────────────────────────────────────────
 # PIPELINE v22 (Optimized for Volga2K & Hyper-KAN)
 # ─────────────────────────────────────────────────────────────────────
@@ -82,7 +197,7 @@ class GEOTPipeline_v22(L.LightningModule):
     def __init__(self,
                  model: nn.Module,
                  lr: float = 1e-3,
-                 warmup_epochs: int = 10,
+                 warmup_epochs: int = 50,
                  weight_decay: float = 1e-4) -> None:
         super().__init__()
         self._model = model
@@ -97,16 +212,19 @@ class GEOTPipeline_v22(L.LightningModule):
         
         # Losses
         self.mae_loss = nn.L1Loss()
-        self.lab_loss = CIELabLoss()
+        self.lab_loss = CIELabLoss(chroma_weight=1.5)
         self.freq_loss = FrequencyLoss(loss_weight=0.5) # Увеличен вес для Volga2K
         self.grad_loss = GradLoss()
         self.mk_loss = MongeKantorovichLoss()
+        self.de_loss = DeltaE2000Loss()           # Дифференцируемый CIEDE2000
+        self.ssim_loss = SSIM(data_range=1.0)      # SSIM как функция потерь (1 - ssim)
 
         # Weights (v22 Volga Optimized)
         self.w_lab = 3.0   # Критично для восстановления цветов в Volga2K
         self.w_freq = 1.2
         self.w_mk = 0.08   # Усиленная регуляризация для стабильности KAN
         self.w_ssim = 0.25
+        self.w_de = 0.5    # Прямая оптимизация тестовой метрики dE (CIEDE2000)
         self.w_aux = 0.6   # Повышенное внимание к транспортному выходу
         self.w_grad = 0.5
 
@@ -125,12 +243,16 @@ class GEOTPipeline_v22(L.LightningModule):
                     nn.init.xavier_uniform_(m.weight, gain=0.01)
                 else:
                     nn.init.kaiming_normal_(m.weight, mode='fan_out')
-            elif isinstance(m, nn.Parameter) and 'combine' in name:
-                # Инициализация весов смешивания KAN
-                nn.init.constant_(m, 0.5)
             elif isinstance(m, nn.Linear):
-                nn.init.zeros_(m.weight)
-                if m.bias is not None: nn.init.zeros_(m.bias)
+                # FiLM.proj намеренно стартует с тождественной модуляции (нули).
+                # Остальные Linear (MLP кондиционера) инициализируем xavier,
+                # иначе giv == 0 и градиент к кондиционеру не течёт (мёртвая ветвь).
+                if 'film' in name:
+                    nn.init.zeros_(m.weight)
+                    if m.bias is not None: nn.init.zeros_(m.bias)
+                else:
+                    nn.init.xavier_uniform_(m.weight, gain=0.1)
+                    if m.bias is not None: nn.init.zeros_(m.bias)
 
     def configure_optimizers(self):
         groups = {'cond': [], 'enc': [], 'eot': [], 'fuse': []}
@@ -180,11 +302,15 @@ class GEOTPipeline_v22(L.LightningModule):
         loss_freq = self.freq_loss(m_c, tgt)
         loss_grad = self.grad_loss(m_c, tgt)
         loss_mk = self.mk_loss(src, a_c)
+        loss_de = self.de_loss(m_c, tgt)
+        loss_ssim = 1.0 - self.ssim_loss(m_c, tgt)
 
-        total = (loss_mae + self.w_lab * loss_lab + self.w_freq * loss_freq + 
-                 self.w_grad * loss_grad + self.w_aux * loss_aux + self.w_mk * loss_mk)
+        total = (loss_mae + self.w_lab * loss_lab + self.w_freq * loss_freq +
+                 self.w_grad * loss_grad + self.w_aux * loss_aux + self.w_mk * loss_mk +
+                 self.w_de * loss_de + self.w_ssim * loss_ssim)
 
-        return total, {'mae': loss_mae, 'lab': loss_lab, 'mk': loss_mk}
+        return total, {'mae': loss_mae, 'lab': loss_lab, 'mk': loss_mk,
+                       'de': loss_de, 'ssim': loss_ssim}
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch

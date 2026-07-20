@@ -154,8 +154,8 @@ class EOT_USGS_Volga_Block(nn.Module):
         mu_ref = torch.sigmoid(p[:, :, 21:24])
         
         eye = torch.eye(3, device=x_img.device).view(1, 1, 3, 3, 1, 1)
-        A = eye + 0.1 * torch.tanh(A_raw)
-        B = 0.02 * torch.tanh(B_raw)
+        A = eye + 0.3 * torch.tanh(A_raw)
+        B = 0.05 * torch.tanh(B_raw)
         
         diff = (x_img.unsqueeze(1) - mu_ref).permute(0, 1, 3, 4, 2).unsqueeze(-1)
         A_mat = A.permute(0, 1, 4, 5, 2, 3)
