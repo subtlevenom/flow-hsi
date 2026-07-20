@@ -1,1 +1,1 @@
-from .hgsa_v20 import HGSA_GEOT_v20 as HGSA
+from .hgsa_v22 import HGSA_USGS_EOT_v22 as HGSA
