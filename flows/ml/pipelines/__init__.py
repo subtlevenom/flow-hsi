@@ -1,6 +1,6 @@
 import sys, inspect
 import lightning as L
-from . import default, ggpd, cmkan, usgs, hgsa_v22 as hgsa
+from . import default, ggpd, cmkan, usgs, hgsa_v23 as hgsa
 
 
 def create_pipeline(name, model, params) -> L.LightningModule:
