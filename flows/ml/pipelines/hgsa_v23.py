@@ -60,8 +60,6 @@ class GEOTPipeline_v23(L.LightningModule):
         self.freeze_epochs = freeze_epochs
         self.finetune_lr_scale = finetune_lr_scale
         self._frozen = False
-        # Счётчик пропущённых шагов из-за не-конечных градиентов (NaN/Inf).
-        self._nonfinite_grad_skips = 0
 
         # Metrics
         self.psnr_metric = PSNR(data_range=1.0)
@@ -175,10 +173,7 @@ class GEOTPipeline_v23(L.LightningModule):
             else: groups['fuse'].append(param)
 
         s = self.finetune_lr_scale if self.finetune else 1.0
-        # LR-упрочнение: транспортное (KAN/EOT) ядро — самая неустойчивая ветвь,
-        # поэтому его пиковый LR понижен с 1.8 до 1.0 (был главным источником
-        # расходимости при разгоне OneCycle сразу после warm-up).
-        lrs = [self.lr * 0.5 * s, self.lr * 0.8 * s, self.lr * 1.0 * s, self.lr * 1.0 * s]
+        lrs = [self.lr * 0.5 * s, self.lr * 0.8 * s, self.lr * 1.8 * s, self.lr * 1.0 * s]
 
         optimizer = optim.AdamW([
             {'params': groups['cond'], 'lr': lrs[0]},
@@ -192,9 +187,7 @@ class GEOTPipeline_v23(L.LightningModule):
             optimizer,
             max_lr=lrs,
             total_steps=steps,
-            # Более плавный разгон LR (0.1 -> 0.3) снижает риск скачка градиента
-            # на выходе из warm-up.
-            pct_start=0.3,
+            pct_start=0.1,
             div_factor=10,
             final_div_factor=100
         )
@@ -202,47 +195,6 @@ class GEOTPipeline_v23(L.LightningModule):
             'optimizer': optimizer,
             'lr_scheduler': {'scheduler': scheduler, 'interval': 'step'}
         }
-
-    def optimizer_step(self, epoch, batch_idx, optimizer, optimizer_closure):
-        # Пропуск шага при не-конечных градиентах (NaN/Inf).
-        #
-        # Норм-клиппинг (gradient_clip_val) не спасает от NaN/Inf: единственный
-        # не-конечный элемент делает всю норму не-конечной, и клиппинг
-        # распространяет NaN на все веса. Здесь мы сначала считаем градиенты
-        # (closure), затем применяем настроенный в Trainer клиппинг, и делаем
-        # шаг только если все градиенты конечны — иначе шаг пропускается и
-        # градиенты обнуляются, что не даёт одному плохому батчу отравить веса.
-        optimizer_closure()
-
-        finite = True
-        for group in optimizer.param_groups:
-            for p in group['params']:
-                g = p.grad
-                if g is not None and not torch.isfinite(g).all():
-                    finite = False
-                    break
-            if not finite:
-                break
-
-        if finite:
-            clip_val = getattr(self.trainer, 'gradient_clip_val', None)
-            if clip_val:
-                self.clip_gradients(
-                    optimizer,
-                    gradient_clip_val=clip_val,
-                    gradient_clip_algorithm='norm',
-                )
-            optimizer.step()
-        else:
-            self._nonfinite_grad_skips += 1
-            # self.log небезопасен в optimizer_step в части версий Lightning,
-            # поэтому выводим предупреждение через rank-zero print.
-            self.print(
-                f'[v23] skipped optimizer step (non-finite grad), '
-                f'total skips={self._nonfinite_grad_skips}'
-            )
-
-        optimizer.zero_grad()
 
     def forward(self, x):
         res = self.model(x)['res']

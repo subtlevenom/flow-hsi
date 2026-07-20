@@ -163,24 +163,14 @@ class SAGFLayer_KAN(nn.Module):
     def forward(self, x, feat):
         B, C, H, W = x.shape
         p = self.hyper(feat).view(B, self.Q, self.M, 5, H, W)
-        # Ядро Гиббса численно чувствительно (exp/деление на sigma**2). В bf16
-        # мантисса слишком мала для eps ~1e-4, поэтому считаем ядро в fp32 с
-        # отключённым autocast — это главный источник Inf-градиентов в v23.
-        with torch.autocast(device_type=x.device.type, enabled=False):
-            p = p.float()
-            x32 = x.float()
-            a = torch.softmax(p[:, :, :, 0:1], dim=2)
-            mu = torch.sigmoid(p[:, :, :, 1:4])
-            # Повышенный порог sigma (1e-4 -> 1e-2): в bf16 1/sigma**2 при
-            # sigma~1e-4 даёт ~1e8 и разносит градиент.
-            sigma = F.softplus(p[:, :, :, 4:5]) + 1e-2
+        a = torch.softmax(p[:, :, :, 0:1], dim=2)
+        mu = torch.sigmoid(p[:, :, :, 1:4])
+        sigma = F.softplus(p[:, :, :, 4:5]) + 1e-4
 
-            x_exp = x32.unsqueeze(1).unsqueeze(2)
-            dist_sq = torch.sum((x_exp - mu)**2, dim=3, keepdim=True)
-            # Ограничиваем аргумент экспоненты, чтобы избежать overflow/underflow.
-            exponent = torch.clamp(-0.5 * dist_sq / (sigma**2), min=-30.0, max=0.0)
-            kernels = a * torch.exp(exponent)
-            return torch.sum(kernels, dim=2)
+        x_exp = x.unsqueeze(1).unsqueeze(2)
+        dist_sq = torch.sum((x_exp - mu)**2, dim=3, keepdim=True)
+        kernels = a * torch.exp(-0.5 * dist_sq / (sigma**2))
+        return torch.sum(kernels, dim=2)
 
 class TransportHead_KAN(nn.Module):
     """Генератор локальных транспортных операторов Tq."""
@@ -211,15 +201,8 @@ class EOT_USGS_Volga_Block(nn.Module):
     def forward(self, x_img, feat, illu_map):
         B, C, H, W = x_img.shape
         K = self.gibbs_layer(x_img, feat)
-        # Нормализация плана переноса чувствительна к делению: psi=Softplus не
-        # ограничен сверху, а eps=1e-8 ниже разрешения bf16 при underflow суммы.
-        # Считаем нормализацию в fp32 с более крупным eps.
-        with torch.autocast(device_type=x_img.device.type, enabled=False):
-            K32 = K.float()
-            psi = self.phi_net(torch.cat([feat, illu_map], dim=1)).float().unsqueeze(2)
-            Kpsi = K32 * psi
-            pi_q = Kpsi / (torch.sum(Kpsi, dim=1, keepdim=True) + 1e-6)
-            pi_q = pi_q.to(feat.dtype)
+        psi = self.phi_net(torch.cat([feat, illu_map], dim=1)).unsqueeze(2)
+        pi_q = (K * psi) / (torch.sum(K * psi, dim=1, keepdim=True) + 1e-8)
 
         p = self.transport_head(feat)
         A_raw = p[:, :, 0:9].view(B, self.Q, 3, 3, H, W)
