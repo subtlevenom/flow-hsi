@@ -11,11 +11,16 @@ class GGPIRMSABDecoder(nn.Module):
         self,
         in_channels: int = 3,
         out_channels: int = 31,
+        capacity: int = 1,
     ):
         super(GGPIRMSABDecoder, self).__init__()
 
+        if capacity < 1:
+            raise ValueError(f'capacity must be >= 1, got {capacity}')
+
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.capacity = capacity
 
         # MST++ SAB
 
@@ -30,7 +35,7 @@ class GGPIRMSABDecoder(nn.Module):
             self.decoder_layers.append(
                 MSAB(
                     dim=dim_in,
-                    num_blocks=i+1,
+                    num_blocks=(i + 1) * capacity,
                     dim_head=dim_head,
                     heads=i,
                 ))
