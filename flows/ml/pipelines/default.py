@@ -1,7 +1,7 @@
 import os
 import random
 import statistics
-from typing import List, Optional
+from typing import List
 from einops import rearrange
 import torch
 from torch import nn
@@ -25,8 +25,7 @@ class DefaultPipeline(L.LightningModule):
                  optimizer: str = 'adam',
                  lr: float = 1e-3,
                  weight_decay: float = 0,
-                 metrics_channels: List[int] = [0, 1, 2],
-                 transfer: Optional[List] = None) -> None:
+                 metrics_channels: List[int] = [0, 1, 2]) -> None:
         super(DefaultPipeline, self).__init__()
 
         self.model = model
@@ -42,10 +41,6 @@ class DefaultPipeline(L.LightningModule):
         self.ssim_metric = SSIM(data_range=(0, 1))
         self.psnr_metric = PSNR(data_range=(0, 1))
         self.metrics_channels = metrics_channels
-        # Optional pretrain/fine-tune transfer-learning specification. Each
-        # entry loads pretrained weights into a sub-module and optionally
-        # freezes it. See ``_apply_transfer_learning`` for the accepted fields.
-        self.transfer = transfer
 
         self.save_hyperparameters(ignore=['model'])
 
@@ -80,48 +75,6 @@ class DefaultPipeline(L.LightningModule):
         # models.require_grad(self.model.layers.encoder.gpd_x, requires_grad=False)
 
         Logger.info('Initialized model weights with isp pipeline.')
-
-        if stage == 'fit' or stage is None:
-            self._apply_transfer_learning()
-
-    def _apply_transfer_learning(self) -> None:
-        '''
-        Load pretrained weights into selected sub-modules and optionally freeze
-        them for fine-tuning. Controlled by the ``transfer`` config which is a
-        list of entries with the fields:
-
-            - module:  dotted path of the sub-module to load into, relative to
-                       this pipeline (e.g. ``model.layers.encoder``). Use ``''``
-                       to target the whole pipeline.
-            - path:    path to the checkpoint file to load weights from.
-            - key:     prefix of the weights inside the checkpoint state dict.
-                       Defaults to ``module``.
-            - freeze:  when true, freezes the loaded sub-module. Default false.
-            - strict:  passed to ``load_state_dict``. Default true.
-        '''
-        if not self.transfer:
-            return
-
-        for entry in self.transfer:
-            module_path = entry.get('module', '')
-            path = entry.get('path', None)
-            if path is None:
-                raise ValueError(
-                    f'transfer entry is missing required "path": {entry}')
-            key = entry.get('key', module_path)
-            freeze = bool(entry.get('freeze', False))
-            strict = bool(entry.get('strict', True))
-
-            submodule = self.get_submodule(module_path) if module_path else self
-
-            models.load_model(submodule, key, path, strict=strict)
-            Logger.info(
-                f'Loaded pretrained weights for "{module_path or "<root>"}" '
-                f'from "{path}" (key="{key}", strict={strict}).')
-
-            if freeze:
-                models.require_grad(submodule, requires_grad=False)
-                Logger.info(f'Froze sub-module "{module_path or "<root>"}".')
 
     def configure_optimizers(self):
         if self.optimizer_type == 'adam':
