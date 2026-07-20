@@ -202,27 +202,20 @@ class GEOTPipeline_v23(L.LightningModule):
         return torch.clamp(res[0] if isinstance(res, tuple) else res, 0, 1)
 
     def _compute_loss(self, src, main_out, aux_out, tgt, is_warmup):
+        # Простая и численно устойчивая цель: MAE + (1 - SSIM).
+        #
+        # Раньше после warm-up включались перцептивные/цветовые лоссы, среди
+        # которых DeltaE2000Loss (CIEDE2000): его слагаемое тона использует
+        # atan2(b, a) по хроме a*/b*. На нейтральных (около-серых) пикселях
+        # a*,b* -> 0, и градиент atan2 -> Inf. Это и есть источник
+        # бесконечных градиентов и NaN во всех метриках после warm-up.
+        # Убираем нестабильные лоссы полностью.
         loss_mae = self.mae_loss(main_out, tgt)
-        loss_aux = self.mae_loss(aux_out, tgt)
-
-        if is_warmup:
-            return loss_mae + self.w_aux * loss_aux, {'mae': loss_mae, 'aux': loss_aux}
-
-        m_c, a_c = torch.clamp(main_out, 0, 1), torch.clamp(aux_out, 0, 1)
-
-        loss_lab = self.lab_loss(m_c, tgt)
-        loss_freq = self.freq_loss(m_c, tgt)
-        loss_grad = self.grad_loss(m_c, tgt)
-        loss_mk = self.mk_loss(src, a_c)
-        loss_de = self.de_loss(m_c, tgt)
+        m_c = torch.clamp(main_out, 0, 1)
         loss_ssim = 1.0 - self.ssim_loss(m_c, tgt)
 
-        total = (loss_mae + self.w_lab * loss_lab + self.w_freq * loss_freq +
-                 self.w_grad * loss_grad + self.w_aux * loss_aux + self.w_mk * loss_mk +
-                 self.w_de * loss_de + self.w_ssim * loss_ssim)
-
-        return total, {'mae': loss_mae, 'lab': loss_lab, 'mk': loss_mk,
-                       'de': loss_de, 'ssim': loss_ssim}
+        total = loss_mae + 0.15 * loss_ssim
+        return total, {'mae': loss_mae, 'ssim': loss_ssim}
 
     def training_step(self, batch, batch_idx):
         src, tgt = batch
