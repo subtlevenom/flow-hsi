@@ -27,6 +27,7 @@ params:
       params:
         in_channels: 31
         out_channels: 3
+        capacity: 2
 
     ggpir:
       model: ggpir.GGPIRLayer
@@ -40,3 +41,4 @@ params:
       params:
         in_channels: 3
         out_channels: 31
+        capacity: 2

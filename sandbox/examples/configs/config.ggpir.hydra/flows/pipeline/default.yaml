@@ -3,3 +3,11 @@ params:
   optimizer: 'adam'
   lr: 1e-4
   weight_decay: 0
+  # Pretrain/fine-tune transfer learning (optional). Each entry loads
+  # pretrained weights into a sub-module and can freeze it for fine-tuning.
+  # transfer:
+  #   - module: model.layers.encoder
+  #     path: .experiments/ggpd.huawei/logs/checkpoints/_last.ckpt
+  #     key: model.layers.encoder
+  #     freeze: true
+  #     strict: true
