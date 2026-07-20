@@ -34,9 +34,11 @@ class ColorHistogramLoss(nn.Module):
         self.hist_block = RGBuvHistBlock(h=h, insz=insz, method='inverse-quadratic')
 
     def _hist(self, img: torch.Tensor) -> torch.Tensor:
-        # RGBuvHistBlock обрабатывает по одному изображению [C, H, W].
+        # RGBuvHistBlock обрабатывает по одному изображению [C, H, W] и
+        # возвращает [3, h, h] (внутри делает squeeze(0)). Поэтому собираем
+        # батч через stack, а не cat, иначе получится [B*3, h, h].
         hs = [self.hist_block(img[i]) for i in range(img.shape[0])]
-        h = torch.cat(hs, dim=0)  # [B, 3, h, h]
+        h = torch.stack(hs, dim=0)  # [B, 3, h, h]
         return h / (h.sum(dim=(1, 2, 3), keepdim=True) + 1e-6)
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
