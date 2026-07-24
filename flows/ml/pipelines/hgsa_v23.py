@@ -5,6 +5,7 @@ from torch import nn, optim
 import torch.nn.functional as F
 import lightning as L
 
+from flows.tools.utils import models
 from ..metrics import PSNR, SSIM, DeltaE
 from ..transforms.hist import RGBuvHistBlock
 # Функции потерь переиспользуются из v22 (это nn.Module, а не LightningModule,
@@ -167,6 +168,9 @@ class GEOTPipeline_v23(L.LightningModule):
 
         if self.finetune and self.freeze_epochs > 0:
             self._set_transport_frozen(True)
+
+        # MODEL_PATH = '.experiments/ggpd.hgsa_eot_v23.huawei/logs/checkpoints/epoch=1128-val_de=5.41.ckpt'
+        # models.load_model(self._model, '_model', MODEL_PATH)
 
     def _init_from_scratch(self) -> None:
         for name, m in self.model.named_modules():
