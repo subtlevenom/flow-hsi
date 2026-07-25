@@ -126,12 +126,13 @@ class FrequencyLoss(nn.Module):
 
     def forward(self, pred: torch.Tensor,
                 target: torch.Tensor) -> torch.Tensor:
-        pred_fft = torch.fft.rfft2(pred, norm='ortho')
-        target_fft = torch.fft.rfft2(target, norm='ortho')
+        # FFT ops don't support half/bfloat16 → compute in float32
+        pred_fft = torch.fft.rfft2(pred.float(), norm='ortho')
+        target_fft = torch.fft.rfft2(target.float(), norm='ortho')
         # L1 on real and imaginary parts separately
         loss = (F.l1_loss(pred_fft.real, target_fft.real) +
                 F.l1_loss(pred_fft.imag, target_fft.imag))
-        return self.loss_weight * loss
+        return (self.loss_weight * loss).to(pred.dtype)
 
 
 # ─────────────────────────────────────────────────────────────────────
