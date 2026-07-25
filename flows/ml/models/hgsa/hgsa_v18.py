@@ -357,6 +357,30 @@ class HGSABlock_v18(nn.Module):
         return out, psi_flat
 
 
+# ── IDEA #2: GIV-conditioned global color matrix ─────────────────────
+# The USGS core is strictly per-channel (xi = x.unsqueeze(2)), so chroma
+# cross-talk (target R depends on source R, G, B) otherwise has to be
+# reconstructed entirely by chi_net/fusion. This module provides an
+# explicit, GIV-conditioned linear color transform (3x3 CCM + bias),
+# parameterized as a residual around identity so it starts as a no-op.
+
+class GlobalColorMatrix(nn.Module):
+    def __init__(self, giv_dim, c=3):
+        super().__init__()
+        self.c = c
+        self.proj = nn.Linear(giv_dim, c * c + c)
+        nn.init.zeros_(self.proj.weight)
+        nn.init.zeros_(self.proj.bias)   # identity CCM, zero bias at init
+
+    def forward(self, x, giv):
+        B = x.size(0)
+        p = self.proj(giv)
+        M = p[:, :self.c * self.c].view(B, self.c, self.c)
+        b = p[:, self.c * self.c:].view(B, self.c, 1, 1)
+        M = torch.eye(self.c, device=x.device, dtype=x.dtype).unsqueeze(0) + M
+        return torch.einsum('boc,bchw->bohw', M, x) + b
+
+
 # ── Top-level HGSA_v18 ───────────────────────────────────────────────
 
 class HGSA_v18(nn.Module):
@@ -368,6 +392,10 @@ class HGSA_v18(nn.Module):
 
         # HAIR-style global scene conditioner
         self.conditioner = DegradationAwareConditioner(in_channels, GIV_DIM)
+
+        # GIV-conditioned global color matrix — explicit cross-channel
+        # (WB/CCM) coupling that the per-channel USGS core cannot model
+        self.ccm = GlobalColorMatrix(GIV_DIM, in_channels)
 
         # Full-resolution encoder, no DWT bottleneck
         self.encoder = FullResEncoder(in_channels, FEAT_DIM, GIV_DIM)
@@ -386,16 +414,21 @@ class HGSA_v18(nn.Module):
         # 1. Global scene descriptor (HAIR DAC concept)
         giv = self.conditioner(x)
 
-        # 2. Full-resolution spatial features + illumination
+        # 1b. Explicit linear cross-channel color correction (WB/CCM prior).
+        #     Handles the linear color component; the USGS manifold then
+        #     refines the non-linear residual on top of the corrected base.
+        x_wb = self.ccm(x, giv)
+
+        # 2. Full-resolution spatial features + illumination (from raw input)
         feat, illu_fea, illu_map = self.encoder(x, giv)
 
         # 3. USGS manifold: spatially-adaptive Gaussian superposition
         usgs_out, psi_raw = self.usgs(
-            x, feat, illu_fea, illu_map, giv)
+            x_wb, feat, illu_fea, illu_map, giv)
 
-        # 4. Laplacian-gated texture fusion
-        out = self.fusion(x, usgs_out, illu_map)
+        # 4. Laplacian-gated texture fusion (against color-corrected base)
+        out = self.fusion(x_wb, usgs_out, illu_map)
 
         if self.training:
-            return out, x + self.aux_proj(psi_raw)
+            return out, x_wb + self.aux_proj(psi_raw)
         return out

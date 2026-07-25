@@ -96,7 +96,12 @@ class CIELabLoss(nn.Module):
                 target: torch.Tensor) -> torch.Tensor:
         pred_lab = self._xyz_to_lab(self._rgb_to_xyz(pred.clamp(0, 1)))
         target_lab = self._xyz_to_lab(self._rgb_to_xyz(target.clamp(0, 1)))
-        return F.l1_loss(pred_lab, target_lab)
+        # Weight chroma (a, b) above luminance (L). dE2000 — the reported
+        # metric — penalizes chroma error more than a uniform (dE76-style)
+        # Lab-L1 does, so this aligns the loss with the evaluation metric.
+        w = torch.tensor([1.0, 2.0, 2.0], device=pred_lab.device,
+                         dtype=pred_lab.dtype).view(1, 3, 1, 1)
+        return ((pred_lab - target_lab).abs() * w).mean()
 
 
 class FrequencyLoss(nn.Module):
@@ -213,9 +218,9 @@ class HSGAPipeline_v18(L.LightningModule):
                     nn.init.constant_(m.bias, 0)
 
             elif isinstance(m, nn.Linear):
-                # FiLM projections: zero-init → identity at start
+                # FiLM projections + CCM: zero-init → identity at start
                 # (GIV has no effect at epoch 0, grows gradually)
-                if 'film' in name or 'conditioner' in name:
+                if 'film' in name or 'conditioner' in name or 'ccm' in name:
                     nn.init.zeros_(m.weight)
                     nn.init.zeros_(m.bias)
                 else:
@@ -251,7 +256,7 @@ class HSGAPipeline_v18(L.LightningModule):
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
-            if 'conditioner' in name:
+            if 'conditioner' in name or 'ccm' in name:
                 groups['conditioner'].append(param)
             elif 'encoder' in name:
                 groups['encoder'].append(param)
