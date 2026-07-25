@@ -228,8 +228,8 @@ class HSGAPipeline_v18(L.LightningModule):
                     if m.bias is not None:
                         nn.init.zeros_(m.bias)
 
-        MODEL_PATH = '.experiments/ggpd.hgsa_v18.huawei/logs/checkpoints/_last.ckpt'
-        models.load_model(self.model, 'model', MODEL_PATH)
+        # MODEL_PATH = '.experiments/ggpd.hgsa_v18.huawei/logs/checkpoints/_last.ckpt'
+        # models.load_model(self.model, 'model', MODEL_PATH)
 
         Logger.info('HGSA_v18: Pipeline initialized.')
 

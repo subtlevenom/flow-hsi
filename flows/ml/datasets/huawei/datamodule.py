@@ -113,7 +113,7 @@ class DataModule(L.LightningDataModule):
         )
         # self.test_image_p_transform = None
         self.test_image_p_transform = PairTransform(
-            crop_size=CROP,
+            crop_size=-1,
             p=0.0,
             seed=seed,
         )
@@ -128,6 +128,7 @@ class DataModule(L.LightningDataModule):
         ])
         self.image_test_transform = Compose([
             ToImage(),
+            CenterCrop(1024),
             ToDtype(dtype=torch.float32, scale=True),
         ])
         self.image_predict_transform = Compose([
