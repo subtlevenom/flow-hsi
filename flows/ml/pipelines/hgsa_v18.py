@@ -6,6 +6,7 @@ import lightning as L
 from typing import Dict, Tuple
 from flows.core import Logger
 from flows.tools.utils import models
+from flows.tools.utils.colors import rgb_to_lab
 from ..metrics import PSNR, SSIM, DeltaE
 
 # ─────────────────────────────────────────────────────────────────────
@@ -134,6 +135,82 @@ class FrequencyLoss(nn.Module):
                 F.l1_loss(pred_fft.imag, target_fft.imag))
         return (self.loss_weight * loss).to(pred.dtype)
 
+class DeltaE2000Loss(nn.Module):
+    """
+    Differentiable CIEDE2000 loss.
+
+    Optimizes the exact metric that is reported/checkpointed (DeltaE),
+    unlike CIELabLoss which is only a dE76-style Lab-L1 proxy. The
+    formula mirrors flows/ml/metrics/delta_e_2000.py, but every
+    sqrt()/atan2() that can hit a 0/0 singularity — identical or
+    neutral-gray pixels, both common on Volga2K — is epsilon-guarded so
+    gradients stay finite. Computed in float32 for stability under bf16.
+    """
+
+    def __init__(self, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, pred: torch.Tensor,
+                target: torch.Tensor) -> torch.Tensor:
+        eps = self.eps
+        lab1 = rgb_to_lab(pred.clamp(0, 1).float())
+        lab2 = rgb_to_lab(target.clamp(0, 1).float())
+        L1, a1, b1 = lab1[:, 0], lab1[:, 1], lab1[:, 2]
+        L2, a2, b2 = lab2[:, 0], lab2[:, 1], lab2[:, 2]
+
+        # chroma (guarded norms — hypot has NaN grad at the origin)
+        C1 = torch.sqrt(a1 * a1 + b1 * b1 + eps)
+        C2 = torch.sqrt(a2 * a2 + b2 * b2 + eps)
+        C_bar = (C1 + C2) / 2
+        C_bar7 = C_bar ** 7
+        G = 0.5 * (1 - torch.sqrt(C_bar7 / (C_bar7 + 25.0 ** 7) + eps))
+
+        a1p = (1 + G) * a1
+        a2p = (1 + G) * a2
+        C1p = torch.sqrt(a1p * a1p + b1 * b1 + eps)
+        C2p = torch.sqrt(a2p * a2p + b2 * b2 + eps)
+
+        # hue angles in degrees (nudge x by eps so atan2 is never 0/0)
+        h1p = torch.rad2deg(torch.atan2(b1, a1p + eps)) % 360
+        h2p = torch.rad2deg(torch.atan2(b2, a2p + eps)) % 360
+
+        dLp = L2 - L1
+        dCp = C2p - C1p
+
+        dhp = h2p - h1p
+        dhp = torch.where(dhp > 180, dhp - 360, dhp)
+        dhp = torch.where(dhp < -180, dhp + 360, dhp)
+        dHp = 2 * torch.sqrt(C1p * C2p + eps) * torch.sin(
+            torch.deg2rad(dhp / 2))
+
+        Lbarp = (L1 + L2) / 2
+        Cbarp = (C1p + C2p) / 2
+
+        hsum = h1p + h2p
+        habs = torch.abs(h1p - h2p)
+        hbar = torch.where(
+            habs <= 180, hsum / 2,
+            torch.where(hsum < 360, (hsum + 360) / 2, (hsum - 360) / 2))
+
+        T = (1
+             - 0.17 * torch.cos(torch.deg2rad(hbar - 30))
+             + 0.24 * torch.cos(torch.deg2rad(2 * hbar))
+             + 0.32 * torch.cos(torch.deg2rad(3 * hbar + 6))
+             - 0.20 * torch.cos(torch.deg2rad(4 * hbar - 63)))
+
+        dtheta = 30 * torch.exp(-(((hbar - 275) / 25) ** 2))
+        Cbarp7 = Cbarp ** 7
+        RC = 2 * torch.sqrt(Cbarp7 / (Cbarp7 + 25.0 ** 7) + eps)
+        Lm = (Lbarp - 50) ** 2
+        SL = 1 + (0.015 * Lm) / torch.sqrt(20 + Lm)
+        SC = 1 + 0.045 * Cbarp
+        SH = 1 + 0.015 * Cbarp * T
+        RT = -torch.sin(torch.deg2rad(2 * dtheta)) * RC
+
+        dE2 = ((dLp / SL) ** 2 + (dCp / SC) ** 2 + (dHp / SH) ** 2
+               + RT * (dCp / SC) * (dHp / SH))
+        return torch.sqrt(dE2.clamp(min=0.0) + eps).mean()
 
 # ─────────────────────────────────────────────────────────────────────
 # Pipeline v18
@@ -176,7 +253,8 @@ class HSGAPipeline_v18(L.LightningModule):
         self.mae_loss = nn.L1Loss()
         self.logcosh_loss = LogCoshLoss()
         self.grad_loss = GradLoss()
-        self.lab_loss = CIELabLoss()  # NEW: direct dE proxy
+        self.lab_loss = CIELabLoss()  # dE76 proxy (dense smooth guide)
+        self.de_loss = DeltaE2000Loss()  # NEW: differentiable exact metric
         self.freq_loss = FrequencyLoss()  # NEW: texture fidelity
 
         # ── Metrics ──────────────────────────────────────────────────
@@ -186,12 +264,19 @@ class HSGAPipeline_v18(L.LightningModule):
 
         # ── Loss weights ─────────────────────────────────────────────
         # Tuned for RYYB→RGB: color fidelity > texture > smoothness
-        self.w_lab = 1.0  # Lab loss weight (primary dE driver)
-        self.w_freq = 0.1  # Frequency loss weight
+        self.w_de = 1.0    # Differentiable CIEDE2000 — matches the exact
+                           # eval metric; primary dE driver.
+        self.w_lab = 0.5   # Lab-L1 (dE76 proxy): dense smooth guide, now
+                           # secondary to the true dE2000 term above.
+        self.w_freq = 0.3  # Frequency loss — raised from 0.1: at 0.1 the
+                           # term (~2e-3) was numerically inert. Tunable.
         self.w_grad = 0.5  # Gradient loss weight
         self.w_ssim = 0.2  # SSIM loss weight
         self.w_aux = 0.15  # Auxiliary head supervision weight
-        self.w_tv = 0.02  # TV regularization (reduced from v17)
+        self.w_tv = 0.0    # TV dropped: contribution was ~0 and the run
+                           # shows no overfitting, so the regularizer is
+                           # unnecessary. Restore a small value if color
+                           # speckle appears.
 
         self.save_hyperparameters(ignore=['model'])
 
@@ -204,6 +289,12 @@ class HSGAPipeline_v18(L.LightningModule):
         for name, m in self.model.named_modules():
 
             if isinstance(m, nn.Conv2d):
+                # residual-around-identity color matrices start as a no-op
+                if 'local_ccm' in name:
+                    nn.init.zeros_(m.weight)
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
+                    continue
                 # Low-gain init for hypernetwork components
                 # (prevents parameter explosion at training start)
                 hyper_nets = [
@@ -307,13 +398,22 @@ class HSGAPipeline_v18(L.LightningModule):
             weight_decay=self.weight_decay,
         )
 
-        steps_per_epoch = (self.trainer.estimated_stepping_batches //
-                           self.trainer.max_epochs)
-        self.scheduler_switch_epoch = int(self.trainer.max_epochs * 0.8)
-        total_steps_s1 = self.scheduler_switch_epoch * steps_per_epoch
+        # LR schedule: a single OneCycle across the ENTIRE run, stepped
+        # every optimizer step. Warms up to the per-group peak at 15% of
+        # the run, then cosine-anneals down to peak/1000.
+        #
+        # This replaces the previous two-phase (OneCycle→ExponentialLR)
+        # design, which had two problems:
+        #   1. configure_optimizers returned only {'optimizer': ...} with
+        #      no 'lr_scheduler' key, so Lightning never stepped anything
+        #      and the LR stayed frozen for the whole run.
+        #   2. ExponentialLR was constructed AFTER OneCycleLR had already
+        #      mutated the group LRs, so it captured the wrong base_lrs.
+        # A full-run OneCycle is robust and provides the annealing tail
+        # that lets the model settle past the observed plateau.
+        total_steps = self.trainer.estimated_stepping_batches
 
-        # Phase 1: OneCycleLR (aggressive exploration)
-        self.scheduler_1 = optim.lr_scheduler.OneCycleLR(
+        scheduler = optim.lr_scheduler.OneCycleLR(
             optimizer,
             # max_lr must match all param groups
             max_lr=[
@@ -323,24 +423,20 @@ class HSGAPipeline_v18(L.LightningModule):
                 self.lr * 0.3,
                 self.lr * 1.0,
             ],
-            total_steps=total_steps_s1,
+            total_steps=total_steps,
             pct_start=0.15,
             div_factor=10,
             final_div_factor=100,
         )
 
-        # Phase 2: ExponentialLR (fine convergence)
-        self.scheduler_2 = optim.lr_scheduler.ExponentialLR(optimizer,
-                                                            gamma=0.97)
-
-        return {'optimizer': optimizer}
-
-    def lr_scheduler_step(self, scheduler, *args, **kwargs):
-        if self.current_epoch < self.scheduler_switch_epoch:
-            self.scheduler_1.step()
-        else:
-            if self.trainer.is_last_batch:
-                self.scheduler_2.step()
+        return {
+            'optimizer': optimizer,
+            'lr_scheduler': {
+                'scheduler': scheduler,
+                'interval': 'step',
+                'frequency': 1,
+            },
+        }
 
     # ── Losses ───────────────────────────────────────────────────────
 
@@ -387,16 +483,19 @@ class HSGAPipeline_v18(L.LightningModule):
         else:
             # Phase 2: full composite loss
             loss_lab = self.lab_loss(main_c, tgt)
+            loss_de = self.de_loss(main_c, tgt)
             loss_freq = self.freq_loss(main_c, tgt)
             loss_grad = self.grad_loss(main_c, tgt)
             loss_tv = self.total_variation_loss(main_c)
 
-            total = (loss_mae + self.w_lab * loss_lab +
+            total = (loss_mae + self.w_de * loss_de +
+                     self.w_lab * loss_lab +
                      self.w_freq * loss_freq + self.w_grad * loss_grad +
                      self.w_ssim * loss_ssim + self.w_aux * loss_aux +
                      self.w_tv * loss_tv)
             details = {
                 'loss_mae': loss_mae,
+                'loss_de2000': loss_de,
                 'loss_lab': loss_lab,
                 'loss_freq': loss_freq,
                 'loss_grad': loss_grad,

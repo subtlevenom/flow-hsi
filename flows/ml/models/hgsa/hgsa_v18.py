@@ -381,10 +381,37 @@ class GlobalColorMatrix(nn.Module):
         return torch.einsum('boc,bchw->bohw', M, x) + b
 
 
+# ── IDEA #2 (local): per-pixel color matrix from spatial features ─────
+# The global CCM handles image-wide WB, but the source→target shift has a
+# large spatially-varying residual (per-region illumination / chroma).
+# This predicts a per-pixel 3x3 color matrix + bias from the encoder
+# features, applied residual-around-identity, giving the model local
+# chroma cross-talk that neither the global CCM nor the per-channel USGS
+# core can represent. Zero-init → identity at start.
+
+class LocalColorMatrix(nn.Module):
+    def __init__(self, feat_dim, c=3):
+        super().__init__()
+        self.c = c
+        self.pred = nn.Conv2d(feat_dim, c * c + c, 1)
+        nn.init.zeros_(self.pred.weight)
+        nn.init.zeros_(self.pred.bias)
+
+    def forward(self, x, feat):
+        B, C, H, W = x.shape
+        p = self.pred(feat)
+        M = p[:, :self.c * self.c].view(B, self.c, self.c, H, W)
+        b = p[:, self.c * self.c:]                        # [B, c, H, W]
+        eye = torch.eye(self.c, device=x.device, dtype=x.dtype)
+        M = eye.view(1, self.c, self.c, 1, 1) + M
+        # out_o(h,w) = sum_c M[o,c,h,w] * x[c,h,w]
+        return torch.einsum('bochw,bchw->bohw', M, x) + b
+
+
 # ── Top-level HGSA_v18 ───────────────────────────────────────────────
 
 class HGSA_v18(nn.Module):
-    def __init__(self, in_channels=3, out_channels=3, Q=8, M=4):
+    def __init__(self, in_channels=3, out_channels=3, Q=8, M=6):
         super().__init__()
         FEAT_DIM = 48
         ILLU_DIM = 16
@@ -399,6 +426,9 @@ class HGSA_v18(nn.Module):
 
         # Full-resolution encoder, no DWT bottleneck
         self.encoder = FullResEncoder(in_channels, FEAT_DIM, GIV_DIM)
+
+        # Per-pixel (local) color matrix — spatially-varying chroma coupling
+        self.local_ccm = LocalColorMatrix(FEAT_DIM, in_channels)
 
         # USGS manifold block
         self.usgs = HGSABlock_v18(
@@ -421,6 +451,10 @@ class HGSA_v18(nn.Module):
 
         # 2. Full-resolution spatial features + illumination (from raw input)
         feat, illu_fea, illu_map = self.encoder(x, giv)
+
+        # 2b. Per-pixel color correction: spatially-varying chroma coupling
+        #     on top of the global WB base, driven by the encoder features.
+        x_wb = self.local_ccm(x_wb, feat)
 
         # 3. USGS manifold: spatially-adaptive Gaussian superposition
         usgs_out, psi_raw = self.usgs(
