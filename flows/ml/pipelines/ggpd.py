@@ -27,8 +27,7 @@ class GGPDPipeline(L.LightningModule):
                  lr: float = 1e-3,
                  weight_decay: float = 0,
                  warmup_epochs: int = 0,
-                 hgsa_ckpt: str =
-                 '.experiments/ggpd.msab.huawei/logs/checkpoints/_last.ckpt',
+                 hgsa_ckpt: str = None,
                  sam_weight: float = 0.1,
                  metrics_channels: List[int] = [0, 1, 2]) -> None:
         super(GGPDPipeline, self).__init__()
