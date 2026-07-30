@@ -26,6 +26,10 @@ class GGPDPipeline(L.LightningModule):
                  optimizer: str = 'adam',
                  lr: float = 1e-3,
                  weight_decay: float = 0,
+                 warmup_epochs: int = 0,
+                 hgsa_ckpt: str =
+                 '.experiments/ggpd.msab.huawei/logs/checkpoints/_last.ckpt',
+                 sam_weight: float = 0.1,
                  metrics_channels: List[int] = [0, 1, 2]) -> None:
         super(GGPDPipeline, self).__init__()
 
@@ -33,6 +37,16 @@ class GGPDPipeline(L.LightningModule):
         self.optimizer_type = optimizer
         self.lr = lr
         self.weight_decay = weight_decay
+        # Warm-up: freeze the pretrained HGSA color-transport core for the
+        # first ``warmup_epochs`` epochs so the surrounding MSAB encoder/
+        # decoder can adapt to it before the whole network is fine-tuned.
+        self.warmup_epochs = warmup_epochs
+        self.hgsa_ckpt = hgsa_ckpt
+        # Spectral-angle (SAM) loss weight — key spectral-fidelity term for
+        # the HSI task; MAE alone matches per-band intensity but ignores
+        # the shape of the spectral signature.
+        self.sam_weight = sam_weight
+        self._hgsa_frozen = False
         self.ggpd_loss = GPDFLoss()
         self.mse_loss = nn.MSELoss(reduction='mean')
         self.mae_loss = nn.L1Loss(reduction='mean')
@@ -47,7 +61,10 @@ class GGPDPipeline(L.LightningModule):
 
     def setup(self, stage: str) -> None:
         '''
-        Initialize model weights before training
+        Initialize model weights, load the pretrained HGSA color-transport
+        core, and (optionally) freeze it for the warm-up epochs so the
+        surrounding MSAB encoder/decoder can adapt to the frozen core
+        before the whole network is fine-tuned jointly.
         '''
         if stage == 'fit' or stage is None:
             for m in self.model.modules():
@@ -71,12 +88,54 @@ class GGPDPipeline(L.LightningModule):
                     if m.bias is not None:
                         nn.init.constant_(m.bias, 0)
 
-        # MODEL_PATH = '.experiments/ggpd.msab.huawei/logs/checkpoints/_last.ckpt'
-        # models.load_model(self.model.layers.projector2, 'model.layers.projector1', MODEL_PATH)
-        # models.load_model(self.model.layers.encoder2, 'model.layers.encoder1', MODEL_PATH)
-        # models.require_grad(self.model.layers.encoder.gpd_x, requires_grad=False)
+            # Load the pretrained HGSA core over the freshly-initialized
+            # weights, then freeze it for the warm-up phase. Only done for
+            # training — for test/predict the full checkpoint is restored
+            # by Lightning and must not be partially overwritten here.
+            if self.hgsa_ckpt and os.path.isfile(self.hgsa_ckpt):
+                models.load_model(
+                    self.model.layers.hgsa, '_model', self.hgsa_ckpt)
+                Logger.info(
+                    f'Loaded pretrained HGSA core from {self.hgsa_ckpt}.')
+            else:
+                Logger.info(
+                    'No HGSA checkpoint found; training HGSA from scratch.')
 
-        Logger.info('Initialized model weights with isp pipeline.')
+            if self.warmup_epochs > 0:
+                self._set_hgsa_frozen(True)
+                Logger.info(
+                    f'HGSA core frozen for the first {self.warmup_epochs} '
+                    f'warm-up epoch(s).')
+
+            Logger.info('Initialized model weights with isp pipeline.')
+
+    def _set_hgsa_frozen(self, frozen: bool) -> None:
+        '''Freeze/unfreeze the pretrained HGSA color-transport core.'''
+        for p in self.model.layers.hgsa.parameters():
+            p.requires_grad = not frozen
+        self._hgsa_frozen = frozen
+
+    def on_train_epoch_start(self) -> None:
+        # Unfreeze the HGSA core once the warm-up phase is over so the
+        # whole network is fine-tuned jointly.
+        if self._hgsa_frozen and self.current_epoch >= self.warmup_epochs:
+            self._set_hgsa_frozen(False)
+            Logger.info(f'Unfroze HGSA core at epoch {self.current_epoch}.')
+
+    def spectral_angle_loss(self, pred: torch.Tensor,
+                            tgt: torch.Tensor) -> torch.Tensor:
+        '''Mean spectral angle (radians) across the spectral dimension.
+
+        Central spectral-fidelity objective for the HSI task. Fully
+        differentiable and guarded against the 0/0 (zero-spectrum) and
+        arccos(±1) singularities so gradients stay finite.
+        '''
+        p = pred.flatten(2)                       # [B, C, H*W]
+        t = tgt.flatten(2)
+        dot = (p * t).sum(dim=1)                   # [B, H*W]
+        denom = p.norm(dim=1) * t.norm(dim=1) + 1e-8
+        cos = (dot / denom).clamp(-1 + 1e-7, 1 - 1e-7)
+        return torch.arccos(cos).mean()
 
     def configure_optimizers(self):
         if self.optimizer_type == 'adam':
@@ -111,14 +170,17 @@ class GGPDPipeline(L.LightningModule):
         psnr_loss = self.psnr_metric(y, tgt)
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
+        sam_ang = self.spectral_angle_loss(y, tgt)
         # de_loss = self.de_metric(y[:, self.metrics_channels], tgt[:, self.metrics_channels])
-        loss = mae_loss #+ 0.15 * (1 - ssim_loss)
+        loss = mae_loss + self.sam_weight * sam_ang
 
         self.log('mae', mae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('ssim', ssim_loss, prog_bar=True, logger=True)
         self.log('sam', sam_loss, prog_bar=True, logger=True)
         # self.log('de', de_loss, prog_bar=True, logger=True)
+        self.log('hgsa_frozen', float(self._hgsa_frozen),
+                 prog_bar=True, logger=True)
         self.log('train_loss', loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
@@ -133,7 +195,7 @@ class GGPDPipeline(L.LightningModule):
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
         # de_loss = self.de_metric(y[:, self.metrics_channels], tgt[:, self.metrics_channels])
-        loss = mae_loss
+        loss = mae_loss + self.sam_weight * sam_loss
 
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
@@ -154,7 +216,7 @@ class GGPDPipeline(L.LightningModule):
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
         # de_loss = self.de_metric(y[:, self.metrics_channels], tgt[:, self.metrics_channels])
-        loss = mae_loss
+        loss = mae_loss + self.sam_weight * sam_loss
 
         self.log('test_mae', mae_loss, prog_bar=True, logger=True)
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
