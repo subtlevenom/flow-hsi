@@ -157,7 +157,7 @@ class GGPDPipeline(L.LightningModule):
             "monitor": "val_loss"
         }
 
-    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, y: torch.Tensor = None) -> torch.Tensor:
         pred = self.model(src=x, tgt=y)
         return pred['res']
 
