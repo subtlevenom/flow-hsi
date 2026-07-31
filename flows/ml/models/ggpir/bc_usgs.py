@@ -372,16 +372,23 @@ class BCUSGSLevel(nn.Module):
 
 
 class BCUSGSPyramid(nn.Module):
-    """Banded-Corrector USGS wavelet pyramid (Tier A).
+    """Banded-Corrector USGS coarse-to-fine pyramid (Tier A).
 
-    Three coarse-to-fine levels (X/4 -> X/2 -> X). Input scales are box-averaged
-    (the wavelet LL grid); each coarse spectral estimate is upsampled to the
-    next scale by an inverse-Haar-DWT synthesis with learned high-frequency
-    detail (WaveletUpsampler) and added as residual guidance -- there is no
-    bilinear resampling anywhere. Training returns the per-scale outputs for
-    deep supervision; inference returns only the full-resolution tensor.
-    Inputs are reflect-padded to a multiple of 4 for the 2-level wavelet grid
-    and the full-res output is cropped back.
+    Three coarse-to-fine levels (X/4 -> X/2 -> X) with a switchable
+    recomposition, selected by ``upsample``:
+
+      * ``wavelet``  (default): input scales are box-averaged (the wavelet LL
+        grid) and each coarse spectral estimate is upsampled to the next scale
+        by an exact inverse-Haar-DWT synthesis with learned high-frequency
+        detail (WaveletUpsampler) -- no bilinear resampling. Inputs are
+        reflect-padded to a multiple of 4 for the 2-level wavelet grid and the
+        full-res output is cropped back.
+      * ``bilinear`` (classic Laplacian pyramid): input scales and coarse->fine
+        upsampling both use bilinear interpolation. Same Tier A core, so this
+        is a clean pyramid-only A/B against the wavelet path.
+
+    Training returns the per-scale outputs for deep supervision; inference
+    returns only the full-resolution tensor.
     """
 
     def __init__(self, bands: int = 31,
@@ -389,8 +396,11 @@ class BCUSGSPyramid(nn.Module):
                  Q=[4, 6, 8], M=[2, 3, 4],
                  dim: int = 64, giv_dim: int = 64,
                  use_fourier: bool = True, param_head: str = 'wavelength',
-                 readout: str = 'msab', use_checkpoint: bool = True):
+                 readout: str = 'msab', use_checkpoint: bool = True,
+                 upsample: str = 'wavelet'):
         super().__init__()
+        assert upsample in ('wavelet', 'bilinear')
+        self.upsample = upsample
         Qs = [Q] * 3 if isinstance(Q, int) else list(Q)
         Ms = [M] * 3 if isinstance(M, int) else list(M)
         Ds = [dim] * 3 if isinstance(dim, int) else list(dim)
@@ -405,10 +415,14 @@ class BCUSGSPyramid(nn.Module):
         self.coarse = _level(0)
         self.mid = _level(1)
         self.fine = _level(2)
-        self.up_mid = WaveletUpsampler(bands)    # X/4 -> X/2 synthesis
-        self.up_fine = WaveletUpsampler(bands)   # X/2 -> X   synthesis
+        if upsample == 'wavelet':
+            self.up_mid = WaveletUpsampler(bands)    # X/4 -> X/2 synthesis
+            self.up_fine = WaveletUpsampler(bands)   # X/2 -> X   synthesis
+        else:
+            self.up_mid = None
+            self.up_fine = None
 
-    def forward(self, src: torch.Tensor):
+    def _forward_wavelet(self, src: torch.Tensor):
         H, W = src.shape[-2:]
         # Pad to a multiple of 4 so the 2-level wavelet grid round-trips exactly
         # (avg_pool /2 /4 and iDWT x2 x2 stay size-consistent for any input).
@@ -428,6 +442,29 @@ class BCUSGSPyramid(nn.Module):
 
         if Hp != H or Wp != W:
             y = y[..., :H, :W]
+        return y, y2, y4
+
+    def _forward_bilinear(self, src: torch.Tensor):
+        # Classic Laplacian pyramid: bilinear analysis + bilinear synthesis.
+        src2 = F.interpolate(src, scale_factor=0.5,
+                             mode='bilinear', align_corners=False)
+        src4 = F.interpolate(src, scale_factor=0.25,
+                             mode='bilinear', align_corners=False)
+
+        y4 = self.coarse(src4)                         # [B, bands, H/4, W/4]
+        up1 = F.interpolate(y4, size=src2.shape[-2:],
+                            mode='bilinear', align_corners=False)
+        y2 = self.mid(src2, coarse_out=up1)            # [B, bands, H/2, W/2]
+        up0 = F.interpolate(y2, size=src.shape[-2:],
+                            mode='bilinear', align_corners=False)
+        y = self.fine(src, coarse_out=up0)             # [B, bands, H, W]
+        return y, y2, y4
+
+    def forward(self, src: torch.Tensor):
+        if self.upsample == 'wavelet':
+            y, y2, y4 = self._forward_wavelet(src)
+        else:
+            y, y2, y4 = self._forward_bilinear(src)
 
         if self.training:
             return y, y2, y4          # deep supervision (fine, mid, coarse)
