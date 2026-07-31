@@ -91,16 +91,20 @@ class GGPDPipeline(L.LightningModule):
             # weights, then freeze it for the warm-up phase. Only done for
             # training — for test/predict the full checkpoint is restored
             # by Lightning and must not be partially overwritten here.
-            if self.hgsa_ckpt and os.path.isfile(self.hgsa_ckpt):
+            # Skipped for models without a discrete `hgsa` layer (e.g. the
+            # USGS pyramid, whose per-level cores are trained jointly).
+            has_hgsa = (hasattr(self.model, 'layers')
+                        and 'hgsa' in self.model.layers)
+            if has_hgsa and self.hgsa_ckpt and os.path.isfile(self.hgsa_ckpt):
                 models.load_model(
                     self.model.layers.hgsa, '_model', self.hgsa_ckpt)
                 Logger.info(
                     f'Loaded pretrained HGSA core from {self.hgsa_ckpt}.')
-            else:
+            elif has_hgsa:
                 Logger.info(
                     'No HGSA checkpoint found; training HGSA from scratch.')
 
-            if self.warmup_epochs > 0:
+            if has_hgsa and self.warmup_epochs > 0:
                 self._set_hgsa_frozen(True)
                 Logger.info(
                     f'HGSA core frozen for the first {self.warmup_epochs} '
@@ -110,6 +114,9 @@ class GGPDPipeline(L.LightningModule):
 
     def _set_hgsa_frozen(self, frozen: bool) -> None:
         '''Freeze/unfreeze the pretrained HGSA color-transport core.'''
+        if not (hasattr(self.model, 'layers')
+                and 'hgsa' in self.model.layers):
+            return
         for p in self.model.layers.hgsa.parameters():
             p.requires_grad = not frozen
         self._hgsa_frozen = frozen
@@ -180,10 +187,25 @@ class GGPDPipeline(L.LightningModule):
     def training_step(self, batch, batch_idx):
         src, tgt = batch
 
-        y = self(src, tgt).to(torch.float32)
+        out = self(src, tgt)
+
+        # Deep supervision: the USGS pyramid returns per-scale outputs
+        # (fine, mid, coarse) during training. Supervise each scale with
+        # MRAE against the correspondingly down-sampled target.
+        if isinstance(out, (tuple, list)):
+            y = out[0].to(torch.float32)
+            mrae_loss = self.mrae_loss(y, tgt)
+            ds_weights = (0.5, 0.25)
+            for yi, wi in zip(out[1:], ds_weights):
+                yi = yi.to(torch.float32)
+                tgt_i = F.interpolate(tgt, size=yi.shape[-2:],
+                                      mode='bilinear', align_corners=False)
+                mrae_loss = mrae_loss + wi * self.mrae_loss(yi, tgt_i)
+        else:
+            y = out.to(torch.float32)
+            mrae_loss = self.mrae_loss(y, tgt)
 
         mae_loss = self.mae_loss(y, tgt)
-        mrae_loss = self.mrae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)

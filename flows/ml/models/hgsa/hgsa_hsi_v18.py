@@ -420,6 +420,12 @@ class HGSA_v18(nn.Module):
         # HAIR-style global scene conditioner
         self.conditioner = DegradationAwareConditioner(in_channels, GIV_DIM)
 
+        # Fuses an (optional) external raw-HSI context vector into the GIV
+        # used to place the Sprecher/USGS coefficients. Lets the coefficient
+        # path see the raw, non-decorrelated spectrum (path decoupling)
+        # while the value path keeps operating on decorrelated triplets.
+        self.giv_fuse = nn.Linear(GIV_DIM * 2, GIV_DIM)
+
         # GIV-conditioned global color matrix — explicit cross-channel
         # (WB/CCM) coupling that the per-channel USGS core cannot model
         self.ccm = GlobalColorMatrix(GIV_DIM, in_channels)
@@ -440,9 +446,15 @@ class HGSA_v18(nn.Module):
         # Aux head for intermediate supervision
         self.aux_proj = nn.Conv2d(Q * out_channels, out_channels, 1)
 
-    def forward(self, x):
+    def forward(self, x, giv_raw=None):
         # 1. Global scene descriptor (HAIR DAC concept)
         giv = self.conditioner(x)
+
+        # 1a. Path decoupling: fuse the raw-HSI context (inferred from the
+        #     non-decorrelated bands by an external Laplacian cascade) into
+        #     the GIV that drives the Sprecher/USGS coefficient prediction.
+        if giv_raw is not None:
+            giv = self.giv_fuse(torch.cat([giv, giv_raw], dim=-1))
 
         # 1b. Explicit linear cross-channel color correction (WB/CCM prior).
         #     Handles the linear color component; the USGS manifold then

@@ -11,6 +11,7 @@ class GGPIRMSABEncoder(nn.Module):
         self,
         in_channels: int = 31,
         out_channels: int = 3,
+        extra_blocks: int = 0,
     ):
         super(GGPIRMSABEncoder, self).__init__()
 
@@ -41,6 +42,20 @@ class GGPIRMSABEncoder(nn.Module):
                     kernel_size=3,
                     padding=1,
                     bias=False,
+                ))
+
+        # Extra refinement blocks at the full (bands*triplet) width. Used by
+        # the coarse-to-fine pyramid to grow per-level depth (the "n=3/5/7"
+        # in the reference architecture) without changing the channel count,
+        # so the downstream rearrange into triplets is unaffected.
+        final_dim = dim_stage * out_channels
+        for _ in range(extra_blocks):
+            self.encoder_layers.append(
+                MSAB(
+                    dim=final_dim,
+                    num_blocks=1,
+                    dim_head=dim_head,
+                    heads=out_channels,
                 ))
 
     def forward(self, x: torch.Tensor):
