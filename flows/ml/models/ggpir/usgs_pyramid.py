@@ -103,12 +103,18 @@ class USGSPyramid(nn.Module):
     """
 
     def __init__(self, bands: int = 31, triplet: int = 3,
-                 depths: List[int] = [1, 3, 5], Q: int = 8, M: int = 4,
+                 depths: List[int] = [1, 3, 5],
+                 Q=[4, 6, 8], M=[2, 3, 4],
                  giv_dim: int = 64):
         super().__init__()
-        self.coarse = USGSLevel(bands, triplet, depths[0], Q, M, giv_dim)
-        self.mid = USGSLevel(bands, triplet, depths[1], Q, M, giv_dim)
-        self.fine = USGSLevel(bands, triplet, depths[2], Q, M, giv_dim)
+        # Per-level Sprecher capacity: smaller (Q, M) at coarse scales keeps
+        # the [B*bands, ...] Gaussian tensors light, larger toward full res.
+        # A scalar is broadcast to all three levels for backward-compat.
+        Qs = [Q] * 3 if isinstance(Q, int) else list(Q)
+        Ms = [M] * 3 if isinstance(M, int) else list(M)
+        self.coarse = USGSLevel(bands, triplet, depths[0], Qs[0], Ms[0], giv_dim)
+        self.mid = USGSLevel(bands, triplet, depths[1], Qs[1], Ms[1], giv_dim)
+        self.fine = USGSLevel(bands, triplet, depths[2], Qs[2], Ms[2], giv_dim)
 
     def forward(self, src: torch.Tensor):
         x2 = F.interpolate(src, scale_factor=0.5,

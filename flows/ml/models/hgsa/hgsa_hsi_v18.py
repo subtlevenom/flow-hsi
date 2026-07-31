@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from torch.utils.checkpoint import checkpoint
 
 
 # ── Kept from v17 unchanged ──────────────────────────────────────────
@@ -294,9 +295,14 @@ class HGSABlock_v18(nn.Module):
     5. spectral_calibrator and RecursiveFractalChi preserved.
     """
     def __init__(self, in_c=3, out_c=3, Q=8, M=4,
-                 feat_dim=48, illu_dim=16, giv_dim=64):
+                 feat_dim=48, illu_dim=16, giv_dim=64,
+                 use_checkpoint=True):
         super().__init__()
         self.Q, self.M, self.out_c = Q, M, out_c
+        # Gradient-checkpoint the per-expert Gaussian compute: without it the
+        # M iterations stack activations for [B, out_c, 3, Q, H, W] tensors,
+        # which dominates peak memory at full resolution.
+        self.use_checkpoint = use_checkpoint
 
         self.expert_heads = nn.ModuleList([
             SpatialExpertHead(feat_dim, illu_dim, out_c, Q, giv_dim)
@@ -337,24 +343,35 @@ class HGSABlock_v18(nn.Module):
             B, self.out_c, self.Q, H, W, device=x.device)
 
         for i in range(self.M):
-            # Full-resolution parameter map, per-expert GIV conditioning
-            p_e = self.expert_heads[i](feat, illu_fea, giv).view(
-                B, self.out_c, 3, self.Q, H, W)
-
-            w     = self.w_init + p_e[:, :, 0]
-            # mu: offset from evenly-spaced grid
-            mu    = (torch.tanh(self.mu_base + p_e[:, :, 1])
-                     * F.softplus(self.mu_scale) + 0.5)
-            s_b   = self.sigma_init[i].view(1, self.out_c, self.Q, 1, 1)
-            sigma = (F.softplus(s_b + p_e[:, :, 2]) + 0.01) * sigma_boost
-
-            g = torch.exp(-0.5 * ((xi - mu) / sigma).pow(2))
-            psi_total = psi_total + w * g
+            if self.use_checkpoint and self.training:
+                contrib = checkpoint(
+                    self._expert_contrib, i, feat, illu_fea, giv,
+                    xi, sigma_boost, use_reentrant=False)
+            else:
+                contrib = self._expert_contrib(
+                    i, feat, illu_fea, giv, xi, sigma_boost)
+            psi_total = psi_total + contrib
 
         psi_flat = psi_total.view(B, self.out_c * self.Q, H, W)
         psi_flat = psi_flat * self.spectral_calibrator(psi_flat)
         out, _   = self.chi_net(psi_flat, x)
         return out, psi_flat
+
+    def _expert_contrib(self, i, feat, illu_fea, giv, xi, sigma_boost):
+        B, _, _, H, W = xi.shape
+        # Full-resolution parameter map, per-expert GIV conditioning
+        p_e = self.expert_heads[i](feat, illu_fea, giv).view(
+            B, self.out_c, 3, self.Q, H, W)
+
+        w     = self.w_init + p_e[:, :, 0]
+        # mu: offset from evenly-spaced grid
+        mu    = (torch.tanh(self.mu_base + p_e[:, :, 1])
+                 * F.softplus(self.mu_scale) + 0.5)
+        s_b   = self.sigma_init[i].view(1, self.out_c, self.Q, 1, 1)
+        sigma = (F.softplus(s_b + p_e[:, :, 2]) + 0.01) * sigma_boost
+
+        g = torch.exp(-0.5 * ((xi - mu) / sigma).pow(2))
+        return w * g
 
 
 # ── IDEA #2: GIV-conditioned global color matrix ─────────────────────
