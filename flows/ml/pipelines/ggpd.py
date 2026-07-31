@@ -136,6 +136,19 @@ class GGPDPipeline(L.LightningModule):
         cos = (dot / denom).clamp(-1 + 1e-7, 1 - 1e-7)
         return torch.arccos(cos).mean()
 
+    def mrae_loss(self, pred: torch.Tensor, tgt: torch.Tensor,
+                  eps: float = 1e-3) -> torch.Tensor:
+        '''Mean Relative Absolute Error — the canonical NTIRE spectral
+        reconstruction metric.
+
+        Normalizes the per-pixel error by target magnitude, so dark
+        (low-reflectance) bands are weighted comparably to bright ones
+        — unlike plain MAE. ``eps`` floors the denominator to keep the
+        gradient finite where the target is near zero (paired with the
+        Trainer's gradient_clip_val for stability at batch_size=1).
+        '''
+        return (torch.abs(pred - tgt) / (tgt.abs() + eps)).mean()
+
     def configure_optimizers(self):
         if self.optimizer_type == 'adam':
             optimizer = optim.Adam(self.parameters(),
@@ -148,12 +161,16 @@ class GGPDPipeline(L.LightningModule):
         else:
             raise ValueError(
                 f'unsupported optimizer_type: {self.optimizer_type}')
-        scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=500, T_mult=1, eta_min=1e-5)
+        # Single cosine decay over the whole run so the LR actually reaches
+        # eta_min. (Previously T_0=500 with max_epochs<500 meant the cosine
+        # never completed a cycle and the LR never annealed.)
+        t_max = getattr(self.trainer, 'max_epochs', None) or 500
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=t_max, eta_min=1e-5)
         return {
             "optimizer": optimizer,
             "lr_scheduler": scheduler,
-            "monitor": "val_loss"
+            "monitor": "val_mrae"
         }
 
     def forward(self, x: torch.Tensor, y: torch.Tensor = None) -> torch.Tensor:
@@ -166,18 +183,19 @@ class GGPDPipeline(L.LightningModule):
         y = self(src, tgt).to(torch.float32)
 
         mae_loss = self.mae_loss(y, tgt)
+        mrae_loss = self.mrae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
         sam_ang = self.spectral_angle_loss(y, tgt)
-        # de_loss = self.de_metric(y[:, self.metrics_channels], tgt[:, self.metrics_channels])
-        loss = mae_loss + self.sam_weight * sam_ang
+        # MRAE is the primary NTIRE objective; SAM enforces spectral shape.
+        loss = mrae_loss + self.sam_weight * sam_ang
 
         self.log('mae', mae_loss, prog_bar=True, logger=True)
+        self.log('mrae', mrae_loss, prog_bar=True, logger=True)
         self.log('psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('ssim', ssim_loss, prog_bar=True, logger=True)
         self.log('sam', sam_loss, prog_bar=True, logger=True)
-        # self.log('de', de_loss, prog_bar=True, logger=True)
         self.log('hgsa_frozen', float(self._hgsa_frozen),
                  prog_bar=True, logger=True)
         self.log('train_loss', loss, prog_bar=True, logger=True)
@@ -190,17 +208,17 @@ class GGPDPipeline(L.LightningModule):
         y = self(src, tgt).to(torch.float32)
 
         mae_loss = self.mae_loss(y, tgt)
+        mrae_loss = self.mrae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
-        # de_loss = self.de_metric(y[:, self.metrics_channels], tgt[:, self.metrics_channels])
-        loss = mae_loss + self.sam_weight * sam_loss
+        loss = mrae_loss + self.sam_weight * sam_loss
 
         self.log('val_mae', mae_loss, prog_bar=True, logger=True)
+        self.log('val_mrae', mrae_loss, prog_bar=True, logger=True)
         self.log('val_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('val_ssim', ssim_loss, prog_bar=True, logger=True)
         self.log('val_sam', sam_loss, prog_bar=True, logger=True)
-        # self.log('val_de', de_loss, prog_bar=True, logger=True)
         self.log('val_loss', loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
@@ -211,17 +229,17 @@ class GGPDPipeline(L.LightningModule):
         y = self(src, tgt).to(torch.float32)
 
         mae_loss = self.mae_loss(y, tgt)
+        mrae_loss = self.mrae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
-        # de_loss = self.de_metric(y[:, self.metrics_channels], tgt[:, self.metrics_channels])
-        loss = mae_loss + self.sam_weight * sam_loss
+        loss = mrae_loss + self.sam_weight * sam_loss
 
         self.log('test_mae', mae_loss, prog_bar=True, logger=True)
+        self.log('test_mrae', mrae_loss, prog_bar=True, logger=True)
         self.log('test_psnr', psnr_loss, prog_bar=True, logger=True)
         self.log('test_ssim', ssim_loss, prog_bar=True, logger=True)
         self.log('test_sam', sam_loss, prog_bar=True, logger=True)
-        # self.log('test_de', de_loss, prog_bar=True, logger=True)
         self.log('test_loss', loss, prog_bar=True, logger=True)
 
         return {'loss': loss}
@@ -230,7 +248,7 @@ class GGPDPipeline(L.LightningModule):
     sum_psnr = 0
     sum_ssim = 0
     sum_sam = 0
-    sum_de = 0
+    sum_mrae = 0
     start_time = 0
 
     def predict_step(self, batch, batch_idx):
@@ -242,37 +260,36 @@ class GGPDPipeline(L.LightningModule):
         elapsed = time.perf_counter() - self.start_time
 
         mae_loss = self.mae_loss(y, tgt)
+        mrae_loss = self.mrae_loss(y, tgt)
         psnr_loss = self.psnr_metric(y, tgt)
         ssim_loss = self.ssim_metric(y, tgt)
         sam_loss = self.sam_metric(y, tgt)
-        de_loss = self.de_metric(y[:, self.metrics_channels],
-                                 tgt[:, self.metrics_channels])
 
         self.sum_mae += mae_loss
         self.sum_psnr += psnr_loss
         self.sum_ssim += ssim_loss
         self.sum_sam += sam_loss
-        self.sum_de += de_loss
+        self.sum_mrae += mrae_loss
         n = 1 + batch_idx
 
         text.print_json({
             name[0]: {
                 'CUR': {
                     'mae': mae_loss.item(),
+                    'mrae': mrae_loss.item(),
                     'psnr': psnr_loss.item(),
                     'ssim': ssim_loss.item(),
                     'sam': sam_loss.item(),
-                    'de': de_loss.item(),
                 },
                 'AVG': {
                     'mae': self.sum_mae.item() / n,
+                    'mrae': self.sum_mrae.item() / n,
                     'psnr': self.sum_psnr.item() / n,
                     'ssim': self.sum_ssim.item() / n,
                     'sam': self.sum_sam.item() / n,
-                    'de': self.sum_de.item() / n,
                 },
                 'TIME': elapsed / n,
             },
         })
 
-        return {'loss': de_loss}
+        return {'loss': mrae_loss}

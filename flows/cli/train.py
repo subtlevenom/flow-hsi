@@ -49,8 +49,8 @@ def train_default(config: DictConfig) -> None:
         gradient_clip_val=0.5,
         callbacks=[
             ModelCheckpoint(
-                filename="{epoch}-{val_de:.2f}",
-                monitor='val_de',  # Monitor Delta-E directly
+                filename="{epoch}-{val_mrae:.4f}",
+                monitor='val_mrae',  # NTIRE spectral primary metric
                 save_top_k=3,
                 save_last=True,
                 mode='min',
