@@ -25,7 +25,8 @@ New SOTA blocks vs. the current solution:
 Kept from the proven design: the USGS Gaussian core math, MSAB spectral
 attention, evenly-spaced mu-grid init, illumination-driven sigma boost,
 gradient checkpointing of the M-expert loop, per-level (Q, M), coarse-to-fine
-pyramid with deep supervision.
+pyramid with deep supervision. The coarse-to-fine recomposition is a
+critically-sampled inverse Haar wavelet synthesis (exact, no bilinear).
 """
 
 from typing import List
@@ -36,6 +37,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
 from flows.ml.layers.mst import MSAB
+from flows.ml.layers.mw_isp import DWTInverse
 from ..hgsa.hgsa_hsi_v18 import (
     DegradationAwareConditioner,
     GlobalColorMatrix,
@@ -143,40 +145,29 @@ class PerBandUSGS(nn.Module):
 
         psi_k = sum_q w_kq * exp(-1/2 ((V_k - mu_kq) / sigma_kq)^2)
 
-    summed over ``M`` experts. The Gaussian parameters are per-pixel offsets
-    (from the coeff features) around learnable priors: an evenly-spaced mu
-    grid, plus — for ``param_head='wavelength'`` — a smooth, per-band,
+    summed over ``M`` experts. The Gaussian parameters are per-band, per-pixel
+    offsets (from the coeff features) around learnable priors: an evenly-spaced
+    mu grid, plus — for ``param_head='wavelength'`` — a smooth, per-band,
     spatially-constant baseline predicted from a learned band embedding.
 
-    ``param_mode``:
-      * ``per_band`` (Tier A): independent parameters per band  -> highest ceiling.
-      * ``shared``   (Tier B): one shared dictionary broadcast to all bands
-                               (correction enters only through V_k)  -> lightest.
-
     The M-expert loop is gradient-checkpointed: only one expert's parameter
-    map ``[B, pc*3*Q, H, W]`` is live at a time.
+    map ``[B, bands*3*Q, H, W]`` is live at a time.
     """
 
     def __init__(self, bands: int, Q: int, M: int, dim: int,
                  param_head: str = 'wavelength',
-                 param_mode: str = 'per_band',
                  emb_dim: int = 16, use_checkpoint: bool = True):
         super().__init__()
-        assert param_mode in ('per_band', 'shared')
         assert param_head in ('wavelength', 'flat')
         self.bands, self.Q, self.M = bands, Q, M
-        self.param_mode = param_mode
         self.param_head = param_head
         self.use_checkpoint = use_checkpoint
-
-        pc = bands if param_mode == 'per_band' else 1        # parameter channels
-        self.pc = pc
 
         # Per-pixel spatial offset predictor, one Conv per expert. Kept as a
         # ModuleList so each expert's params can be recomputed independently
         # inside its own checkpoint (memory: one expert live at a time).
         self.expert_param = nn.ModuleList([
-            nn.Conv2d(dim, pc * 3 * Q, 1) for _ in range(M)
+            nn.Conv2d(dim, bands * 3 * Q, 1) for _ in range(M)
         ])
         # Small offset scale, robust to the pipeline's generic re-init (a bare
         # Parameter is not touched by the Conv/Linear/BN re-init in setup()).
@@ -184,15 +175,15 @@ class PerBandUSGS(nn.Module):
 
         # Learnable priors (broadcast over batch / space).
         mu_grid = torch.linspace(0.1, 0.9, Q).view(1, 1, Q, 1, 1)
-        self.mu_base = nn.Parameter(mu_grid.expand(1, pc, Q, 1, 1).clone())
-        self.mu_scale = nn.Parameter(torch.ones(1, pc, Q, 1, 1) * 4.5)
-        self.w_init = nn.Parameter(0.1 * torch.randn(1, pc, Q, 1, 1))
-        self.sigma_init = nn.Parameter(torch.ones(M, pc, Q) * 0.2)
+        self.mu_base = nn.Parameter(mu_grid.expand(1, bands, Q, 1, 1).clone())
+        self.mu_scale = nn.Parameter(torch.ones(1, bands, Q, 1, 1) * 4.5)
+        self.w_init = nn.Parameter(0.1 * torch.randn(1, bands, Q, 1, 1))
+        self.sigma_init = nn.Parameter(torch.ones(M, bands, Q) * 0.2)
 
         # Wavelength-conditioned baseline: a smooth, per-band, spatially
         # constant offset for {w, mu, sigma} x Q, from a learned band
-        # embedding. Only meaningful when parameters are per-band.
-        if param_head == 'wavelength' and param_mode == 'per_band':
+        # embedding.
+        if param_head == 'wavelength':
             self.band_emb = nn.Parameter(0.02 * torch.randn(bands, emb_dim))
             self.band_mlp = nn.Sequential(
                 nn.Linear(emb_dim, emb_dim * 2), nn.GELU(),
@@ -213,18 +204,17 @@ class PerBandUSGS(nn.Module):
         B = feat.size(0)
         H, W = feat.shape[-2:]
         p_e = self.expert_param[i](feat).view(
-            B, self.pc, 3, self.Q, H, W)
+            B, self.bands, 3, self.Q, H, W)
         if wl_bias is not None:
             p_e = p_e + wl_bias
         p_e = self.offset_scale * p_e
 
-        w = self.w_init + p_e[:, :, 0]                        # [B, pc, Q, H, W]
+        w = self.w_init + p_e[:, :, 0]                        # [B, bands, Q, H, W]
         mu = (torch.tanh(self.mu_base + p_e[:, :, 1])
               * F.softplus(self.mu_scale) + 0.5)
-        s_b = self.sigma_init[i].view(1, self.pc, self.Q, 1, 1)
+        s_b = self.sigma_init[i].view(1, self.bands, self.Q, 1, 1)
         sigma = (F.softplus(s_b + p_e[:, :, 2]) + 0.01) * sigma_boost
 
-        # xi: [B, bands, 1, H, W] broadcasts against pc in {1, bands}.
         g = torch.exp(-0.5 * ((xi - mu) / sigma).pow(2))      # [B, bands, Q, H, W]
         return w * g
 
@@ -310,14 +300,44 @@ class SpectralReadout(nn.Module):
         return y
 
 
+class WaveletUpsampler(nn.Module):
+    """Exact 2x upsampling via inverse Haar DWT with predicted detail.
+
+    Replaces bilinear upsampling in the coarse-to-fine pyramid. The coarse
+    image fills the LL slot (scaled by 2 to preserve magnitude: iDWT of a pure
+    LL yields a 0.5x box, so the 2x cancels it); the three high subbands
+    (LH, HL, HH) are predicted from the coarse image, so the upsampling injects
+    learned high-frequency detail and recomposes exactly through DWTInverse. A
+    small gamma keeps it near a plain box-upsample at init (and robust to the
+    pipeline's generic conv re-init).
+    """
+
+    def __init__(self, bands: int, hidden: int = None):
+        super().__init__()
+        self.bands = bands
+        hidden = hidden or bands * 2
+        self.idwt = DWTInverse()
+        self.detail = nn.Sequential(
+            nn.Conv2d(bands, hidden, 3, padding=1), nn.GELU(),
+            nn.Conv2d(hidden, bands * 3, 3, padding=1))
+        self.gamma = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, ic: torch.Tensor) -> torch.Tensor:
+        B, C, h, w = ic.shape
+        detail = self.detail(ic).view(B, C, 3, h, w)          # LH, HL, HH
+        ll = (2.0 * ic).unsqueeze(2)                          # magnitude-preserving LL
+        merged = torch.cat([ll, self.gamma * detail], dim=2)  # [B, C, 4, h, w]
+        merged = merged.reshape(B, C * 4, h, w)               # band-major (ll,lh,hl,hh)
+        return self.idwt(merged)                              # [B, C, 2h, 2w]
+
+
 class BCUSGSLevel(nn.Module):
-    """One coarse-to-fine pyramid level of BC-USGS (Tier A by default)."""
+    """One coarse-to-fine pyramid level of BC-USGS (Tier A)."""
 
     def __init__(self, bands: int = 31, Q: int = 8, M: int = 4,
                  dim: int = 64, giv_dim: int = 64, blocks: int = 2,
                  use_fourier: bool = True, param_head: str = 'wavelength',
-                 param_mode: str = 'per_band', readout: str = 'msab',
-                 use_checkpoint: bool = True):
+                 readout: str = 'msab', use_checkpoint: bool = True):
         super().__init__()
         self.bands = bands
         self.giv = DegradationAwareConditioner(bands, giv_dim)
@@ -326,7 +346,7 @@ class BCUSGSLevel(nn.Module):
             bands, dim, giv_dim, num_blocks=max(1, blocks),
             use_fourier=use_fourier)
         self.core = PerBandUSGS(
-            bands, Q, M, dim, param_head=param_head, param_mode=param_mode,
+            bands, Q, M, dim, param_head=param_head,
             use_checkpoint=use_checkpoint)
         self.readout = SpectralReadout(bands, Q, readout=readout)
         self.gccm = GlobalColorMatrix(giv_dim, bands)
@@ -334,10 +354,10 @@ class BCUSGSLevel(nn.Module):
 
     def forward(self, src: torch.Tensor,
                 coarse_out: torch.Tensor = None) -> torch.Tensor:
-        x = src
-        if coarse_out is not None:
-            x = x + F.interpolate(coarse_out, size=src.shape[-2:],
-                                  mode='bilinear', align_corners=False)
+        # coarse_out is already upsampled to this level's resolution by the
+        # pyramid's WaveletUpsampler (exact iDWT synthesis), so it is added
+        # directly as residual guidance -- no bilinear interpolation.
+        x = src if coarse_out is None else src + coarse_out
 
         giv = self.giv(x)                                    # [B, giv_dim]
         V = self.value_enc(x)                                # [B, bands, H, W]
@@ -352,13 +372,16 @@ class BCUSGSLevel(nn.Module):
 
 
 class BCUSGSPyramid(nn.Module):
-    """Banded-Corrector USGS Laplacian pyramid (Tier A).
+    """Banded-Corrector USGS wavelet pyramid (Tier A).
 
-    Three coarse-to-fine levels (X/4 -> X/2 -> X). Each level runs a whitened
-    per-band Gaussian core with a spatial coefficient hypernetwork and a
-    spectral read-out. Coarse spectral estimates are upsampled and added as
-    residuals into finer levels. Training returns the per-scale outputs for
+    Three coarse-to-fine levels (X/4 -> X/2 -> X). Input scales are box-averaged
+    (the wavelet LL grid); each coarse spectral estimate is upsampled to the
+    next scale by an inverse-Haar-DWT synthesis with learned high-frequency
+    detail (WaveletUpsampler) and added as residual guidance -- there is no
+    bilinear resampling anywhere. Training returns the per-scale outputs for
     deep supervision; inference returns only the full-resolution tensor.
+    Inputs are reflect-padded to a multiple of 4 for the 2-level wavelet grid
+    and the full-res output is cropped back.
     """
 
     def __init__(self, bands: int = 31,
@@ -366,8 +389,7 @@ class BCUSGSPyramid(nn.Module):
                  Q=[4, 6, 8], M=[2, 3, 4],
                  dim: int = 64, giv_dim: int = 64,
                  use_fourier: bool = True, param_head: str = 'wavelength',
-                 param_mode: str = 'per_band', readout: str = 'msab',
-                 use_checkpoint: bool = True):
+                 readout: str = 'msab', use_checkpoint: bool = True):
         super().__init__()
         Qs = [Q] * 3 if isinstance(Q, int) else list(Q)
         Ms = [M] * 3 if isinstance(M, int) else list(M)
@@ -377,22 +399,35 @@ class BCUSGSPyramid(nn.Module):
             return BCUSGSLevel(
                 bands=bands, Q=Qs[idx], M=Ms[idx], dim=Ds[idx],
                 giv_dim=giv_dim, blocks=depths[idx], use_fourier=use_fourier,
-                param_head=param_head, param_mode=param_mode, readout=readout,
+                param_head=param_head, readout=readout,
                 use_checkpoint=use_checkpoint)
 
         self.coarse = _level(0)
         self.mid = _level(1)
         self.fine = _level(2)
+        self.up_mid = WaveletUpsampler(bands)    # X/4 -> X/2 synthesis
+        self.up_fine = WaveletUpsampler(bands)   # X/2 -> X   synthesis
 
     def forward(self, src: torch.Tensor):
-        x2 = F.interpolate(src, scale_factor=0.5,
-                           mode='bilinear', align_corners=False)
-        x4 = F.interpolate(src, scale_factor=0.25,
-                           mode='bilinear', align_corners=False)
+        H, W = src.shape[-2:]
+        # Pad to a multiple of 4 so the 2-level wavelet grid round-trips exactly
+        # (avg_pool /2 /4 and iDWT x2 x2 stay size-consistent for any input).
+        Hp = (H + 3) // 4 * 4
+        Wp = (W + 3) // 4 * 4
+        if Hp != H or Wp != W:
+            src = F.pad(src, (0, Wp - W, 0, Hp - H), mode='reflect')
 
-        y4 = self.coarse(x4)
-        y2 = self.mid(x2, coarse_out=y4)
-        y = self.fine(src, coarse_out=y2)
+        src2 = F.avg_pool2d(src, 2)                    # X/2 input (LL grid)
+        src4 = F.avg_pool2d(src2, 2)                   # X/4 input (LL grid)
+
+        y4 = self.coarse(src4)                         # [B, bands, H/4, W/4]
+        up1 = self.up_mid(y4)                          # exact iDWT synthesis -> H/2
+        y2 = self.mid(src2, coarse_out=up1)            # [B, bands, H/2, W/2]
+        up0 = self.up_fine(y2)                         # exact iDWT synthesis -> H
+        y = self.fine(src, coarse_out=up0)             # [B, bands, H, W]
+
+        if Hp != H or Wp != W:
+            y = y[..., :H, :W]
 
         if self.training:
             return y, y2, y4          # deep supervision (fine, mid, coarse)
