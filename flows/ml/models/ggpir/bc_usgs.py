@@ -111,30 +111,126 @@ class BCValueEncoder(nn.Module):
         return x + self.head(f)                               # [B, bands, H, W]
 
 
+class MultiScaleDilated(nn.Module):
+    """v18 FullResEncoder multi-scale context, ported to HSI.
+
+    Parallel dilated depthwise branches (rates 1, 2, 4) fused by a SAFMN-style
+    channel mixer, applied as a residual. Gives the coefficient trunk an
+    explicit local->mid-range receptive field (edges, illumination gradients)
+    to complement the MSAB spectral attention and the global Fourier mixer.
+    """
+
+    def __init__(self, dim: int):
+        super().__init__()
+        self.d1 = nn.Conv2d(dim, dim, 3, padding=1, dilation=1, groups=dim)
+        self.d2 = nn.Conv2d(dim, dim, 3, padding=2, dilation=2, groups=dim)
+        self.d4 = nn.Conv2d(dim, dim, 3, padding=4, dilation=4, groups=dim)
+        self.mix = nn.Sequential(
+            nn.Conv2d(dim * 3, dim * 2, 1), nn.GELU(),
+            nn.Conv2d(dim * 2, dim, 1),
+            nn.GroupNorm(min(4, dim), dim))
+
+    def forward(self, f: torch.Tensor) -> torch.Tensor:
+        b1 = F.gelu(self.d1(f))
+        b2 = F.gelu(self.d2(f))
+        b4 = F.gelu(self.d4(f))
+        return f + self.mix(torch.cat([b1, b2, b4], dim=1))
+
+
+class IlluminationEstimator(nn.Module):
+    """Learned illumination sub-network (v18 FullResEncoder), widened to HSI.
+
+    From the raw bands plus their spatial mean it estimates:
+      * ``illu_map`` [B, bands, H, W] -- a positive per-band illumination map
+        (exp of a bounded logit) that drives the Gaussian ``sigma`` boost, so
+        dark / low-SNR regions widen their kernels; and
+      * ``illu_fea`` [B, illu_dim, H, W] -- illumination features fed to the
+        per-expert parameter heads, giving each expert an explicit,
+        spatially-varying illumination view (which the raw-brightness proxy
+        could not provide).
+    Ported from v18's 3-band illumination estimator, generalized to `bands`.
+    """
+
+    def __init__(self, bands: int, illu_dim: int = 32):
+        super().__init__()
+        self.conv1 = nn.Conv2d(bands + 1, illu_dim, 1)
+        self.dw = nn.Conv2d(illu_dim, illu_dim, 5, padding=4,
+                            dilation=2, groups=illu_dim)
+        self.conv2 = nn.Conv2d(illu_dim, bands, 1)
+
+    def forward(self, x: torch.Tensor):
+        illu_in = torch.cat([x, x.mean(1, keepdim=True)], dim=1)
+        illu_fea = self.dw(self.conv1(illu_in))              # [B, illu_dim, H, W]
+        illu_map = torch.exp(
+            torch.clamp(self.conv2(illu_fea), -2, 2))        # [B, bands, H, W]
+        return illu_fea, illu_map
+
+
 class BCCoeffEncoder(nn.Module):
     """Spatial hypernetwork context for the Gaussian coefficients.
 
-    MSAB (spectral context) -> optional Global Fourier mixer (global spatial
-    context) -> FiLM injection of a global scene descriptor (GIV). Produces
-    the feature map from which the per-band Gaussian parameters are read.
+    HSI-adapted port of v18's FullResEncoder: MSAB (spectral context) ->
+    multi-scale dilated branches (local/mid-range spatial context) -> optional
+    Global Fourier mixer (global spatial context) -> FiLM injection of a global
+    scene descriptor (GIV). Alongside the feature map it runs the learned
+    illumination sub-network, returning ``(feat, illu_fea, illu_map)`` — the
+    weights-path signals the per-band Gaussian parameters are read from.
     """
 
     def __init__(self, bands: int, dim: int, giv_dim: int,
-                 num_blocks: int = 2, heads: int = 4,
+                 illu_dim: int = 32, num_blocks: int = 2, heads: int = 4,
                  use_fourier: bool = True):
         super().__init__()
         self.stem = nn.Conv2d(bands, dim, 3, padding=1)
         self.body = _make_msab(dim, num_blocks=num_blocks, heads=heads)
+        self.dilated = MultiScaleDilated(dim)
         self.fourier = GlobalFourierMixer(dim) if use_fourier else None
         self.film = FiLM(giv_dim, dim)
         self.norm = nn.GroupNorm(min(4, dim), dim)
+        self.illu = IlluminationEstimator(bands, illu_dim)
 
-    def forward(self, x: torch.Tensor, giv: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, giv: torch.Tensor):
+        illu_fea, illu_map = self.illu(x)
         f = self.body(self.stem(x))
+        f = self.dilated(f)
         if self.fourier is not None:
             f = self.fourier(f)
         f = self.film(f, giv)
-        return self.norm(f)                                   # [B, dim, H, W]
+        return self.norm(f), illu_fea, illu_map              # feat, illu_fea, illu_map
+
+
+class ExpertParamHead(nn.Module):
+    """Per-expert Gaussian-parameter predictor (restores v18 expressivity).
+
+    Each USGS expert gets its own conditioned, mixing parameter head rather
+    than a single shared 1x1 projection: it consumes the coefficient features
+    concatenated with the illumination features, then applies per-expert
+    FiLM(giv) global-scene conditioning, a channel mixer (1x1 -> GELU -> 1x1)
+    and a depthwise 3x3 spatial mixer, added as a small gated residual (gamma,
+    a bare Parameter that survives the pipeline's generic conv re-init), then
+    projects to the (bands*3*Q) parameter map. The overall map is further
+    scaled by the core's offset_scale, so the head starts tame regardless of
+    re-init.
+    """
+
+    def __init__(self, dim: int, illu_dim: int, out_ch: int, giv_dim: int):
+        super().__init__()
+        in_dim = dim + illu_dim
+        self.film = FiLM(giv_dim, in_dim)
+        self.ch_mix = nn.Sequential(
+            nn.Conv2d(in_dim, in_dim * 2, 1), nn.GELU(),
+            nn.Conv2d(in_dim * 2, in_dim, 1))
+        self.sp_mix = nn.Conv2d(in_dim, in_dim, 3, padding=1, groups=in_dim)
+        self.norm = nn.GroupNorm(min(4, in_dim), in_dim)
+        self.proj = nn.Conv2d(in_dim, out_ch, 1)
+        self.gamma = nn.Parameter(torch.tensor(0.1))
+
+    def forward(self, feat: torch.Tensor, illu_fea: torch.Tensor,
+                giv: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([feat, illu_fea], dim=1)
+        x = self.film(x, giv)
+        x = x + self.gamma * (self.ch_mix(x) + self.sp_mix(x))
+        return self.proj(self.norm(x))
 
 
 class PerBandUSGS(nn.Module):
@@ -155,7 +251,7 @@ class PerBandUSGS(nn.Module):
     """
 
     def __init__(self, bands: int, Q: int, M: int, dim: int,
-                 param_head: str = 'wavelength',
+                 giv_dim: int, illu_dim: int, param_head: str = 'wavelength',
                  emb_dim: int = 16, use_checkpoint: bool = True):
         super().__init__()
         assert param_head in ('wavelength', 'flat')
@@ -163,11 +259,16 @@ class PerBandUSGS(nn.Module):
         self.param_head = param_head
         self.use_checkpoint = use_checkpoint
 
-        # Per-pixel spatial offset predictor, one Conv per expert. Kept as a
-        # ModuleList so each expert's params can be recomputed independently
-        # inside its own checkpoint (memory: one expert live at a time).
+        # Per-expert parameter head. Restores the expressive, per-expert
+        # weights-path of the original USGS (v18 SpatialExpertHead): per-expert
+        # FiLM(giv) conditioning + channel mixing + depthwise spatial mixing on
+        # the coefficient AND illumination features, instead of a single
+        # shared-trunk 1x1 projection. Kept as a ModuleList so each expert is
+        # recomputed independently inside its own gradient checkpoint (one
+        # expert's activations live at a time).
         self.expert_param = nn.ModuleList([
-            nn.Conv2d(dim, bands * 3 * Q, 1) for _ in range(M)
+            ExpertParamHead(dim, illu_dim, bands * 3 * Q, giv_dim)
+            for _ in range(M)
         ])
         # Small offset scale, robust to the pipeline's generic re-init (a bare
         # Parameter is not touched by the Conv/Linear/BN re-init in setup()).
@@ -199,11 +300,13 @@ class PerBandUSGS(nn.Module):
         return b.view(1, self.bands, 3, self.Q, 1, 1)
 
     def _expert_contrib(self, i: int, feat: torch.Tensor,
+                        illu_fea: torch.Tensor,
                         xi: torch.Tensor, sigma_boost: torch.Tensor,
-                        wl_bias: torch.Tensor) -> torch.Tensor:
+                        wl_bias: torch.Tensor,
+                        giv: torch.Tensor) -> torch.Tensor:
         B = feat.size(0)
         H, W = feat.shape[-2:]
-        p_e = self.expert_param[i](feat).view(
+        p_e = self.expert_param[i](feat, illu_fea, giv).view(
             B, self.bands, 3, self.Q, H, W)
         if wl_bias is not None:
             p_e = p_e + wl_bias
@@ -219,12 +322,15 @@ class PerBandUSGS(nn.Module):
         return w * g
 
     def forward(self, V: torch.Tensor, feat: torch.Tensor,
-                brightness: torch.Tensor) -> torch.Tensor:
+                illu_fea: torch.Tensor, illu_map: torch.Tensor,
+                giv: torch.Tensor) -> torch.Tensor:
         B, bands, H, W = V.shape
         xi = V.unsqueeze(2)                                   # [B, bands, 1, H, W]
-        # Illumination-driven sigma boost (cheap, from input brightness).
+        # Illumination-driven sigma boost from the learned per-band map: dark /
+        # low-SNR regions widen their Gaussian kernels (v18 behavior).
         sigma_boost = torch.clamp(
-            1.0 / (brightness + 1e-4), 1.0, 2.5).unsqueeze(2)  # [B, 1, 1, H, W]
+            1.0 / (illu_map.mean(1, keepdim=True) + 1e-4),
+            1.0, 2.5).unsqueeze(2)                            # [B, 1, 1, H, W]
 
         wl_bias = (self._wavelength_bias()
                    if self.band_mlp is not None else None)
@@ -234,11 +340,11 @@ class PerBandUSGS(nn.Module):
         for i in range(self.M):
             if self.use_checkpoint and self.training:
                 contrib = checkpoint(
-                    self._expert_contrib, i, feat, xi, sigma_boost, wl_bias,
-                    use_reentrant=False)
+                    self._expert_contrib, i, feat, illu_fea, xi, sigma_boost,
+                    wl_bias, giv, use_reentrant=False)
             else:
                 contrib = self._expert_contrib(
-                    i, feat, xi, sigma_boost, wl_bias)
+                    i, feat, illu_fea, xi, sigma_boost, wl_bias, giv)
             psi_total = psi_total + contrib
         return psi_total                                      # [B, bands, Q, H, W]
 
@@ -277,7 +383,8 @@ class SpectralReadout(nn.Module):
        the per-band Gaussian core cannot represent).
     """
 
-    def __init__(self, bands: int, Q: int, readout: str = 'msab'):
+    def __init__(self, bands: int, Q: int, readout: str = 'msab',
+                 mix_blocks: int = 2):
         super().__init__()
         self.bands, self.Q = bands, Q
         sq = bands * Q
@@ -287,7 +394,7 @@ class SpectralReadout(nn.Module):
             nn.Conv2d(max(1, sq // 4), sq, 1), nn.Sigmoid())
         # groups=bands: each band's Q responses -> a single band value.
         self.q_collapse = nn.Conv2d(sq, bands, 1, groups=bands)
-        self.mix = (_make_msab(bands, num_blocks=1, heads=1)
+        self.mix = (_make_msab(bands, num_blocks=mix_blocks, heads=1)
                     if readout == 'msab' else None)
 
     def forward(self, psi: torch.Tensor) -> torch.Tensor:
@@ -337,17 +444,18 @@ class BCUSGSLevel(nn.Module):
     def __init__(self, bands: int = 31, Q: int = 8, M: int = 4,
                  dim: int = 64, giv_dim: int = 64, blocks: int = 2,
                  use_fourier: bool = True, param_head: str = 'wavelength',
-                 readout: str = 'msab', use_checkpoint: bool = True):
+                 readout: str = 'msab', use_checkpoint: bool = True,
+                 illu_dim: int = 32):
         super().__init__()
         self.bands = bands
         self.giv = DegradationAwareConditioner(bands, giv_dim)
         self.value_enc = BCValueEncoder(bands, dim, num_blocks=2)
         self.coeff_enc = BCCoeffEncoder(
-            bands, dim, giv_dim, num_blocks=max(1, blocks),
+            bands, dim, giv_dim, illu_dim=illu_dim, num_blocks=max(1, blocks),
             use_fourier=use_fourier)
         self.core = PerBandUSGS(
-            bands, Q, M, dim, param_head=param_head,
-            use_checkpoint=use_checkpoint)
+            bands, Q, M, dim, giv_dim=giv_dim, illu_dim=illu_dim,
+            param_head=param_head, use_checkpoint=use_checkpoint)
         self.readout = SpectralReadout(bands, Q, readout=readout)
         self.gccm = GlobalColorMatrix(giv_dim, bands)
         self.lccm = LocalColorMatrixLR(dim, bands)
@@ -361,10 +469,9 @@ class BCUSGSLevel(nn.Module):
 
         giv = self.giv(x)                                    # [B, giv_dim]
         V = self.value_enc(x)                                # [B, bands, H, W]
-        Fc = self.coeff_enc(x, giv)                          # [B, dim, H, W]
-        brightness = x.mean(1, keepdim=True)                 # [B, 1, H, W]
+        Fc, illu_fea, illu_map = self.coeff_enc(x, giv)      # weights-path
 
-        psi = self.core(V, Fc, brightness)                   # [B, bands, Q, H, W]
+        psi = self.core(V, Fc, illu_fea, illu_map, giv)      # [B, bands, Q, H, W]
         y = self.readout(psi)                                # [B, bands, H, W]
         y = self.gccm(y, giv)                                # global cross-band
         y = self.lccm(y, Fc)                                 # local cross-band
@@ -397,7 +504,7 @@ class BCUSGSPyramid(nn.Module):
                  dim: int = 64, giv_dim: int = 64,
                  use_fourier: bool = True, param_head: str = 'wavelength',
                  readout: str = 'msab', use_checkpoint: bool = True,
-                 upsample: str = 'wavelet'):
+                 upsample: str = 'wavelet', illu_dim: int = 32):
         super().__init__()
         assert upsample in ('wavelet', 'bilinear')
         self.upsample = upsample
@@ -410,7 +517,7 @@ class BCUSGSPyramid(nn.Module):
                 bands=bands, Q=Qs[idx], M=Ms[idx], dim=Ds[idx],
                 giv_dim=giv_dim, blocks=depths[idx], use_fourier=use_fourier,
                 param_head=param_head, readout=readout,
-                use_checkpoint=use_checkpoint)
+                use_checkpoint=use_checkpoint, illu_dim=illu_dim)
 
         self.coarse = _level(0)
         self.mid = _level(1)
