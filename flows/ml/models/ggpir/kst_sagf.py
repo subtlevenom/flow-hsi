@@ -25,15 +25,15 @@ The four hypernetwork-driven pieces, matching the requested design:
   3. ``a_q`` — the per-term shifts that replace the fixed ``q*a`` grid — come
      from a *separate* per-pixel hypernetwork (initialized to an even ``q*step``
      grid so it starts paper-faithful, then adapts).
-  4. ``Phi_q`` — the outer functions — are, faithfully to the paper, genuine
-     *1-D* scalar functions ``R -> R`` (``Phi1D``), one per superposition term
-     ``q``, applied elementwise to ``xi_q``. The cross-channel mixing is a
-     *separate, extra* external operator (``ExternalChannelMixer``): ``bands``
-     learned band-queries (conditioned on the global scene vector) cross-attend
-     over the ``Qo`` post-outer tokens ``u_q = Phi_q(xi_q)`` to produce the 31
-     bands. The pure Kolmogorov sum ``sum_q Phi_q(xi_q)`` is additionally added
-     back as a per-band residual, giving the 1-D outer functions a direct
-     gradient path.
+  4. ``Phi_q`` — the outer functions — with two switchable forms (``readout``):
+     * ``kan`` (default, ``PerBandKANReadout``): the paper-literal vector form,
+       a full ``Qo x bands`` grid of independent 1-D functions ``Phi_{q,o}``
+       (a Kolmogorov-Arnold layer), ``y_o = sum_q Phi_{q,o}(xi_q)``. No
+       cross-channel attention bottleneck — highest capacity.
+     * ``mixer``: a single shared 1-D ``Phi_q`` (``Phi1D``) applied per term,
+       followed by a *separate* external multi-head cross-channel attention
+       (``ExternalChannelMixer``) that expands ``Qo -> bands``, plus the pure
+       Kolmogorov sum ``sum_q Phi_q(xi_q)`` as a per-band residual.
 
 Everything else that made the previous design train — the coefficient encoder
 (MSAB + multi-scale dilation + global Fourier + FiLM(GIV) + illumination),
@@ -227,10 +227,11 @@ class ExternalChannelMixer(nn.Module):
     ``u_q = Phi_q(xi_q)`` into the ``bands`` output channels. It is deliberately
     kept *separate* from ``Phi_q`` (which is 1-D and per-``q``): all cross-
     channel coupling lives here. ``bands`` learned band-queries (offset by a
-    global-scene / GIV-conditioned term) cross-attend over the ``Qo`` tokens::
+    global-scene / GIV-conditioned term) cross-attend, with ``heads`` heads,
+    over the ``Qo`` tokens::
 
         key_q, val_q = Embed(u_q) + posemb_q                 (linear embedding)
-        A[o, q]      = softmax_q( <query_o, key_q> / sqrt(d) )
+        A[o, q]      = softmax_q( <query_o, key_q> / sqrt(d_head) )
         y_o          = out_proj( sum_q A[o, q] * val_q ) + bias_o(giv)
 
     The token embedding is purely linear (the nonlinearity now lives in
@@ -239,10 +240,15 @@ class ExternalChannelMixer(nn.Module):
     token batch).
     """
 
-    def __init__(self, Qo: int, bands: int, giv_dim: int, d: int = 32):
+    def __init__(self, Qo: int, bands: int, giv_dim: int, d: int = 32,
+                 heads: int = 4):
         super().__init__()
+        heads = max(1, heads)
+        while d % heads != 0:
+            heads -= 1
         self.Qo, self.bands, self.d = Qo, bands, d
-        self.scale = d ** -0.5
+        self.heads, self.dh = heads, d // heads
+        self.scale = self.dh ** -0.5
         # Linear token embedding of the scalar u_q -> key & value.
         self.embed = nn.Linear(1, 2 * d)
         self.q_pos = nn.Parameter(0.02 * torch.randn(Qo, 2 * d))
@@ -259,18 +265,70 @@ class ExternalChannelMixer(nn.Module):
 
     def forward(self, u: torch.Tensor, giv: torch.Tensor) -> torch.Tensor:
         B, Qo, H, W = u.shape
-        d = self.d
+        d, hh, e = self.d, self.heads, self.dh
         t = u.permute(0, 2, 3, 1).reshape(B, H * W, Qo, 1)   # scalar tokens
         kv = self.embed(t) + self.q_pos                      # [B, HW, Qo, 2d]
         k, v = kv[..., :d], kv[..., d:]
         q = self.band_base.unsqueeze(0) + \
             self.q_from_giv(giv).view(B, self.bands, d)      # [B, bands, d]
-        scores = torch.einsum('bnqd,bod->bnoq', k, q) * self.scale
+        # Split into heads: e = d // heads.
+        N = H * W
+        k = k.view(B, N, Qo, hh, e)
+        v = v.view(B, N, Qo, hh, e)
+        qh = q.view(B, self.bands, hh, e)
+        scores = torch.einsum('bnqhe,bohe->bnhoq', k, qh) * self.scale
         attn = torch.softmax(scores, dim=-1)                 # over Qo
-        out = torch.einsum('bnoq,bnqd->bnod', attn, v)       # [B, HW, bands, d]
+        out = torch.einsum('bnhoq,bnqhe->bnohe', attn, v)    # [B,HW,bands,hh,e]
+        out = out.reshape(B, N, self.bands, d)
         y = self.out_proj(out).squeeze(-1)                   # [B, HW, bands]
         y = y + self.band_bias(giv).unsqueeze(1)
         return y.reshape(B, H, W, self.bands).permute(0, 3, 1, 2)
+
+
+class PerBandKANReadout(nn.Module):
+    """Step 4 (KAN grid) — per-band, per-term 1-D outer functions ``Phi_{q,o}``.
+
+    The most paper-literal outer stage for a vector output: instead of a single
+    shared ``Phi_q`` followed by a cross-channel mixer, this is a full
+    ``Qo x bands`` grid of independent 1-D functions (a Kolmogorov-Arnold
+    Network layer)::
+
+        y_o = sum_{q=0}^{Qo-1} Phi_{q,o}( xi_q ),
+
+    with each edge a KAN spline-plus-base::
+
+        Phi_{q,o}(xi) = wb_{q,o} * SiLU(xn) + sum_{j=1}^{G} c_{q,o,j} * rbf_j(xn),
+        xn = tanh(in_scale * xi)  in (-1, 1),
+
+    where ``rbf_j`` are ``G`` Gaussian bases on a fixed ``[-1, 1]`` grid. The
+    ``tanh`` squashing fixes the spline domain regardless of the (unbounded)
+    ``xi`` range, and every learnable weight is a bare ``Parameter`` (survives
+    the pipeline's generic re-init). Removing the ``Qo -> bands`` attention
+    bottleneck lets each band read the superposition terms with its own set of
+    nonlinearities — higher capacity, the direction toward PSNR 42.
+    """
+
+    def __init__(self, Qo: int, bands: int, num_basis: int = 8):
+        super().__init__()
+        self.Qo, self.bands, self.G = Qo, bands, num_basis
+        centers = torch.linspace(-1.0, 1.0, num_basis)
+        self.register_buffer('centers', centers.view(1, 1, num_basis, 1, 1))
+        self.width = 2.0 / max(1, num_basis - 1)
+        self.in_scale = nn.Parameter(torch.tensor(1.0))
+        # Per-edge KAN coefficients (bare Parameters, survive re-init).
+        self.coef = nn.Parameter(
+            (0.1 / num_basis ** 0.5) * torch.randn(Qo, bands, num_basis))
+        self.w_base = nn.Parameter(0.1 * torch.randn(Qo, bands))
+        self.bias = nn.Parameter(torch.zeros(bands))
+
+    def forward(self, xi: torch.Tensor) -> torch.Tensor:
+        B, Qo, H, W = xi.shape
+        xn = torch.tanh(self.in_scale * xi)                  # [B, Qo, H, W]
+        rbf = torch.exp(
+            -((xn.unsqueeze(2) - self.centers) / self.width) ** 2)  # [B,Qo,G,H,W]
+        y = torch.einsum('qoj,bqjhw->bohw', self.coef, rbf)
+        y = y + torch.einsum('qo,bqhw->bohw', self.w_base, F.silu(xn))
+        return y + self.bias.view(1, self.bands, 1, 1)       # [B, bands, H, W]
 
 
 class KSTSagfLevel(nn.Module):
@@ -278,10 +336,13 @@ class KSTSagfLevel(nn.Module):
 
     def __init__(self, bands: int = 31, n: int = 31, Qo: int = 8, M: int = 4,
                  dim: int = 96, giv_dim: int = 64, blocks: int = 2,
-                 phi_dim: int = 32, use_fourier: bool = True,
+                 phi_dim: int = 64, phi_heads: int = 4, readout: str = 'kan',
+                 kan_basis: int = 8, use_fourier: bool = True,
                  use_checkpoint: bool = True, illu_dim: int = 32):
         super().__init__()
+        assert readout in ('kan', 'mixer')
         self.bands = bands
+        self.readout = readout
         self.giv = DegradationAwareConditioner(bands, giv_dim)
         # Step 0: control-vector attention (img -> x, n coordinates).
         self.channel_mix = ChannelMixAttention(bands, n, dim=dim)
@@ -293,14 +354,21 @@ class KSTSagfLevel(nn.Module):
         self.core = SAGFHyperCore(
             n, Qo, M, feat_dim=dim, giv_dim=giv_dim, illu_dim=illu_dim,
             use_checkpoint=use_checkpoint)
-        # Step 4a: paper-faithful 1-D outer functions Phi_q (per term, R->R).
-        self.phi = Phi1D(Qo)
-        # Step 4b: extra external cross-channel function (attention) u_q -> bands.
-        self.mixer = ExternalChannelMixer(Qo, bands, giv_dim, d=phi_dim)
-        # Direct Kolmogorov superposition term sum_q Phi_q(xi_q), broadcast to
-        # every band as a residual so the 1-D outer functions get a clean
-        # gradient path independent of the cross-channel mixer.
-        self.kst_gamma = nn.Parameter(torch.tensor(0.1))
+        # Step 4 — outer stage. Two switchable forms:
+        if readout == 'kan':
+            # 'kan': a full Qo x bands grid of 1-D functions Phi_{q,o}
+            # (paper-literal for a vector output; no attention bottleneck).
+            self.kan = PerBandKANReadout(Qo, bands, num_basis=kan_basis)
+        else:
+            # 'mixer': shared 1-D Phi_q (per term) + external multi-head
+            # cross-channel attention that expands Qo -> bands.
+            self.phi = Phi1D(Qo)
+            self.mixer = ExternalChannelMixer(
+                Qo, bands, giv_dim, d=phi_dim, heads=phi_heads)
+            # Direct Kolmogorov superposition term sum_q Phi_q(xi_q), broadcast
+            # to every band as a residual so the 1-D outer functions get a clean
+            # gradient path independent of the cross-channel mixer.
+            self.kst_gamma = nn.Parameter(torch.tensor(0.1))
         # Cross-band polish (residual around identity), as in bc_usgs.
         self.gccm = GlobalColorMatrix(giv_dim, bands)
         self.lccm = LocalColorMatrixLR(dim, bands)
@@ -321,9 +389,12 @@ class KSTSagfLevel(nn.Module):
         ctrl = torch.cat([feat, illu_fea], dim=1)            # hypernet input
 
         xi = self.core(coords, ctrl)                         # [B, Qo, H, W]
-        u = self.phi(xi)                                     # Phi_q(xi_q) 1-D
-        y = self.mixer(u, giv)                               # external mixer
-        y = y + self.kst_gamma * u.sum(1, keepdim=True)      # pure-KST term
+        if self.readout == 'kan':
+            y = self.kan(xi)                                 # Phi_{q,o} grid
+        else:
+            u = self.phi(xi)                                 # Phi_q(xi_q) 1-D
+            y = self.mixer(u, giv)                           # external mixer
+            y = y + self.kst_gamma * u.sum(1, keepdim=True)  # pure-KST term
         y = self.gccm(y, giv)                                # global cross-band
         y = self.lccm(y, feat)                               # local cross-band
         y = self.out_gate * torch.tanh(y)                    # bounded correction
@@ -341,8 +412,9 @@ class KSTSagfPyramid(nn.Module):
 
     def __init__(self, bands: int = 31, n: int = 31,
                  depths: List[int] = [1, 2, 3],
-                 Qo=[6, 8, 10], M=[2, 3, 4],
-                 dim: int = 96, giv_dim: int = 64, phi_dim: int = 32,
+                 Qo=[12, 16, 24], M=[2, 3, 4],
+                 dim: int = 96, giv_dim: int = 64, phi_dim: int = 64,
+                 phi_heads: int = 4, readout: str = 'kan', kan_basis: int = 8,
                  use_fourier: bool = True, use_checkpoint: bool = True,
                  upsample: str = 'bilinear', illu_dim: int = 32):
         super().__init__()
@@ -356,6 +428,7 @@ class KSTSagfPyramid(nn.Module):
             return KSTSagfLevel(
                 bands=bands, n=n, Qo=Qs[idx], M=Ms[idx], dim=Ds[idx],
                 giv_dim=giv_dim, blocks=depths[idx], phi_dim=phi_dim,
+                phi_heads=phi_heads, readout=readout, kan_basis=kan_basis,
                 use_fourier=use_fourier, use_checkpoint=use_checkpoint,
                 illu_dim=illu_dim)
 
