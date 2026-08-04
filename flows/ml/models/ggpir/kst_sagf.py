@@ -66,10 +66,13 @@ class ChannelMixAttention(nn.Module):
     """Step 0 — mix the source bands into the ``n``-D control vector ``x``.
 
     Spectral (MSAB) attention over the input bands produces the per-pixel
-    Kolmogorov coordinate vector ``x`` used as the argument of the inner
-    function. When ``n == bands`` the mixing is a residual around the input
-    (so ``x`` stays in the input's ~[0, 1] reflectance range that the SAGF
-    ``mu`` grid and shift priors expect); otherwise it is a learned projection.
+    Kolmogorov coordinate vector ``x``. The output is squashed with a sigmoid
+    into the paper's unit-cube domain ``[0, 1]^n`` (Thm 2.1 is stated on
+    ``I^n``), which is exactly the range the SAGF ``mu`` grid (init ``[0.1,
+    0.9]``) and the shift priors expect. Bounding the coordinate is essential:
+    it keeps the Gaussian argument ``(x_p + a_q - mu) / sigma`` well-conditioned
+    regardless of the pipeline's generic Conv/Linear re-init and of the
+    coarse-to-fine residual accumulation across pyramid levels.
     """
 
     def __init__(self, bands: int, n: int, dim: int = 64,
@@ -82,10 +85,7 @@ class ChannelMixAttention(nn.Module):
 
     def forward(self, img: torch.Tensor) -> torch.Tensor:
         f = self.body(self.stem(img))
-        x = self.head(f)
-        if self.n == self.bands:
-            x = x + img                                      # residual coords
-        return x                                             # [B, n, H, W]
+        return torch.sigmoid(self.head(f))                   # x in (0, 1)^n
 
 
 class SAGFHyperCore(nn.Module):
@@ -145,7 +145,8 @@ class SAGFHyperCore(nn.Module):
         p = p.view(B, 3, self.M, H, W) * s
         amp = self.amp_base + p[:, 0]                         # [B, M, H, W]
         mu = self.mu_base + p[:, 1]
-        sigma = F.softplus(self.sigma_base + p[:, 2]) + 1e-2
+        # sigma floored well above 0 so (x - mu)/sigma cannot overflow fp16.
+        sigma = F.softplus(self.sigma_base + p[:, 2]) + 5e-2
         alpha = self.alpha_base + s * self.alpha_head(ctrl)   # [B, n, H, W]
         shift = self.shift_base + s * self.shift_head(ctrl)   # [B, Qo, H, W]
         return amp, mu, sigma, alpha, shift
@@ -157,7 +158,11 @@ class SAGFHyperCore(nn.Module):
         a = amp[:, m].unsqueeze(1).unsqueeze(1)               # [B,1,1,H,W]
         mu_m = mu[:, m].unsqueeze(1).unsqueeze(1)
         sig_m = sigma[:, m].unsqueeze(1).unsqueeze(1)
-        g = a * torch.exp(-0.5 * ((xs - mu_m) / sig_m).pow(2))  # [B,n,Qo,H,W]
+        # Clamp the normalized argument to +-8 sigma (Gaussian is ~1e-14 there)
+        # so ((xs-mu)/sigma)^2 never overflows fp16 and the backward pass
+        # cannot produce inf/0*inf -> NaN.
+        z = ((xs - mu_m) / sig_m).clamp(-8.0, 8.0)
+        g = a * torch.exp(-0.5 * z * z)                       # [B,n,Qo,H,W]
         return (alpha.unsqueeze(2) * g).sum(dim=1)            # [B, Qo, H, W]
 
     def forward(self, x: torch.Tensor, ctrl: torch.Tensor) -> torch.Tensor:
@@ -299,6 +304,12 @@ class KSTSagfLevel(nn.Module):
         # Cross-band polish (residual around identity), as in bc_usgs.
         self.gccm = GlobalColorMatrix(giv_dim, bands)
         self.lccm = LocalColorMatrixLR(dim, bands)
+        # Bounded, bare-Parameter-gated correction. The pipeline's generic
+        # re-init clobbers every Conv/Linear identity/zero init, so nothing
+        # else guarantees a near-identity start; ``out_gate`` (a bare Parameter,
+        # untouched by re-init) both soft-clamps the correction via tanh (it can
+        # never blow up) and keeps the level close to identity at init.
+        self.out_gate = nn.Parameter(torch.tensor(0.2))
 
     def forward(self, src: torch.Tensor,
                 coarse_out: torch.Tensor = None) -> torch.Tensor:
@@ -315,6 +326,7 @@ class KSTSagfLevel(nn.Module):
         y = y + self.kst_gamma * u.sum(1, keepdim=True)      # pure-KST term
         y = self.gccm(y, giv)                                # global cross-band
         y = self.lccm(y, feat)                               # local cross-band
+        y = self.out_gate * torch.tanh(y)                    # bounded correction
         return y + x_in                                      # residual
 
 
