@@ -245,6 +245,43 @@ class GGPDPipeline(L.LightningModule):
 
         return {'loss': loss}
 
+    # Bare-Parameter gate scalars whose magnitude tells us whether a gated
+    # (near-identity at init) capacity module is actually coming online. Keyed
+    # by a short log name -> predicate on the fully-qualified parameter name.
+    # A model without these gates simply logs nothing (all no-op).
+    _GATE_SPECS = {
+        'gate/out': lambda n: n.endswith('.out_gate'),
+        'gate/kst': lambda n: n.endswith('.kst_gamma'),
+        'gate/head_spatial': lambda n: n.endswith('.head_gamma'),
+        'gate/offset_scale': lambda n: n.endswith('.offset_scale'),
+        'gate/spectral_smooth': lambda n: n.endswith('.smooth_gamma'),
+        'gate/kan_in_scale': lambda n: n.endswith('.in_scale'),
+        'gate/post_crossband': lambda n: n.endswith('.g_cb'),
+        'gate/post_spatial': lambda n: n.endswith('.g_sp'),
+        'gate/fine_refine': lambda n: 'refine' in n and n.endswith('.gamma'),
+        'gate/lccm': lambda n: 'lccm' in n and n.endswith('.gamma'),
+    }
+
+    def on_validation_epoch_end(self) -> None:
+        '''Log the mean magnitude of each gated-capacity scalar.
+
+        For gated residuals ``y + gamma * f(x)`` the module's contribution — and
+        its learning rate — scale with ``|gamma|``. Tracking these over epochs
+        shows whether the A-E capacity levers are activating (gates growing) or
+        staying inert (stuck at init), which for a gated hypernetwork is far more
+        diagnostic than the early-epoch val_psnr level.
+        '''
+        sums = {k: [0.0, 0] for k in self._GATE_SPECS}
+        for name, p in self.model.named_parameters():
+            for key, match in self._GATE_SPECS.items():
+                if match(name):
+                    sums[key][0] += p.detach().abs().mean().item()
+                    sums[key][1] += 1
+        for key, (total, count) in sums.items():
+            if count:
+                self.log(key, total / count, prog_bar=False, logger=True)
+
+
     def test_step(self, batch, batch_idx):
         src, tgt = batch
 
