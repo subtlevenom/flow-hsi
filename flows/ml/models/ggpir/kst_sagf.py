@@ -25,39 +25,27 @@ The four hypernetwork-driven pieces, matching the requested design:
   3. ``a_q`` — the per-term shifts that replace the fixed ``q*a`` grid — come
      from a *separate* per-pixel hypernetwork (initialized to an even ``q*step``
      grid so it starts paper-faithful, then adapts).
-  4. ``Phi_q`` — the outer functions — with two switchable forms (``readout``):
-     * ``kan`` (default, ``PerBandKANReadout``): the paper-literal vector form,
-       a full ``Qo x bands`` grid of independent 1-D functions ``Phi_{q,o}``
-       (a Kolmogorov-Arnold layer), ``y_o = sum_q Phi_{q,o}(xi_q)``. No
-       cross-channel attention bottleneck — highest capacity.
-     * ``mixer``: a single shared 1-D ``Phi_q`` (``Phi1D``) applied per term,
-       followed by a *separate* external multi-head cross-channel attention
-       (``ExternalChannelMixer``) that expands ``Qo -> bands``, plus the pure
-       Kolmogorov sum ``sum_q Phi_q(xi_q)`` as a per-band residual.
+  4. ``Phi_q`` — the outer functions — realized as an **MSAB-based external
+     operator** (``ChiReadout``, in the spirit of MST++/hgsa_v15's ``ChiNet``):
+     the ``Qo`` inner sums ``xi_q`` are concatenated with the coefficient
+     features and passed through a spectral-attention (MSAB) block that expands
+     ``Qo -> bands``. The pure Kolmogorov superposition ``sum_q xi_q`` is kept
+     as a bare-``Parameter``-gated per-band residual so the depth-2 sum stays
+     the backbone.
 
-Everything else that made the previous design train — the coefficient encoder
-(MSAB + multi-scale dilation + global Fourier + FiLM(GIV) + illumination),
-global/low-rank-local color matrices, the coarse-to-fine Laplacian/​wavelet
-pyramid with deep supervision, and gradient checkpointing of the ``M`` loop —
-is preserved. Learnable priors are bare ``nn.Parameter`` s (they survive the
-pipeline's generic Conv/Linear re-init), gated by a small ``offset_scale``.
-
-Capacity levers (all bare-``Parameter``-gated residuals, so each is reducible
-to a no-op and the Sprecher superposition stays the backbone):
-
-  A. ``PostKSTRefine`` — post-superposition MSAB cross-band re-coupling (+ an
-     optional depthwise-3x3 spatial mixer) on the reconstructed spectra.
-  B. ``SAGFHyperCore(head_spatial=True)`` — a gated depthwise-3x3 mixer on the
-     control features before the pointwise coefficient heads (enriches only the
-     hypernetwork; the ``xi_q`` evaluation is unchanged).
-  C. ``PerBandKANReadout(spectral_prior=True)`` — a smooth per-band baseline
-     from a learned band embedding plus gated band-axis smoothing.
-  D. larger ``M`` — a richer single shared inner function ``psi``.
-  E. ``FineRefiner`` — a full-res residual conv block on the finest output.
-
-A's spatial half and E introduce a receptive field, so they are auxiliary
-*post-KST* terms (outside Thm 2.1's pointwise property); B, C, D and A's
-cross-band half stay within the superposition's form.
+The coefficient (weights) path is a hgsa_v15-style encoder
+(``V15CoeffEncoder``): a learned illumination sub-network gates a multi-scale
+MSAB spectral transformer fused by gated ``AdvancedGFFN`` feed-forwards — the
+structure that produced hgsa_v15's good results. The value path (the ``n``
+Kolmogorov coordinates) is wrapped by a gated channel-mix **before**
+(``val_premix``) and the inner sums ``xi`` by a gated channel-mix **after**
+(``val_postmix``) the SAGF core. Global/low-rank-local color matrices, the
+coarse-to-fine Laplacian/wavelet pyramid with deep supervision, and gradient
+checkpointing of the ``M`` loop are preserved. A lightweight attention
+(``PyramidChannelFusion``) fuses the three pyramid levels by concatenating
+their channels, applying channel attention and reducing back to ``bands``.
+Learnable priors are bare ``nn.Parameter`` s (survive the pipeline's generic
+Conv/Linear re-init), gated by a small ``offset_scale``.
 """
 
 from typing import List
@@ -72,7 +60,7 @@ from ..hgsa.hgsa_hsi_v18 import (
     GlobalColorMatrix,
 )
 from .bc_usgs import (
-    BCCoeffEncoder,
+    IlluminationEstimator,
     LocalColorMatrixLR,
     WaveletUpsampler,
     _make_msab,
@@ -125,30 +113,12 @@ class SAGFHyperCore(nn.Module):
     """
 
     def __init__(self, n: int, Qo: int, M: int, feat_dim: int,
-                 giv_dim: int, illu_dim: int, shift_step: float = 0.03,
-                 use_checkpoint: bool = True, head_spatial: bool = True):
+                 illu_dim: int, shift_step: float = 0.03,
+                 use_checkpoint: bool = True):
         super().__init__()
         self.n, self.Qo, self.M = n, Qo, M
         self.use_checkpoint = use_checkpoint
         in_dim = feat_dim + illu_dim
-
-        # (B) Spatially-aware coefficient head: a gated depthwise-3x3 + 1x1
-        # mixer on the control features before the pointwise parameter heads,
-        # so psi/alpha/shift adapt to *local* structure (restores the
-        # ExpertParamHead spatial capacity that the plain 1x1 heads dropped).
-        # This enriches only the hypernetwork that *predicts* the coefficients;
-        # the Sprecher evaluation xi_q = sum_p alpha_p psi(x_p + a_q) below is
-        # unchanged, so Theorem 2.1's form is preserved. Gated by a bare
-        # Parameter (survives re-init; reducible to the pure 1x1 head).
-        if head_spatial:
-            self.head_mix = nn.Sequential(
-                nn.Conv2d(in_dim, in_dim, 3, padding=1, groups=in_dim),
-                nn.GroupNorm(1, in_dim), nn.GELU(),
-                nn.Conv2d(in_dim, in_dim, 1))
-            self.head_gamma = nn.Parameter(torch.tensor(0.1))
-        else:
-            self.head_mix = None
-            self.head_gamma = None
 
         # --- Hypernetwork heads (per-pixel 1x1 conv on the control features) ---
         # psi (SAGF) coefficients: 3*M maps (A, mu, sigma) per pixel.
@@ -175,9 +145,6 @@ class SAGFHyperCore(nn.Module):
     def _params(self, ctrl: torch.Tensor):
         """Predict the per-pixel SAGF / alpha / shift fields from features."""
         s = self.offset_scale
-        # (B) gated spatial enrichment of the control features.
-        if self.head_mix is not None:
-            ctrl = ctrl + self.head_gamma * self.head_mix(ctrl)
         p = self.psi_head(ctrl)                               # [B, 3M, H, W]
         B, _, H, W = p.shape
         p = p.view(B, 3, self.M, H, W) * s
@@ -220,248 +187,148 @@ class SAGFHyperCore(nn.Module):
         return xi                                            # [B, Qo, H, W]
 
 
-class Phi1D(nn.Module):
-    """Step 4a — the paper's 1-D outer functions ``Phi_q : R -> R``.
+class AdvancedGFFN(nn.Module):
+    """Gated feed-forward (hgsa_v15 ``Advanced_GFFN``), generalized to HSI.
 
-    Exactly as in remonkoe.pdf Thm 2.1, each superposition term ``q`` gets its
-    own *scalar* outer function applied elementwise to the inner sum ``xi_q``
-    (no cross-channel coupling here — that is deferred to the external mixer).
-    Each ``Phi_q`` is a tiny per-``q`` 1-D MLP (``1 -> h -> 1`` with GELU),
-    written as a residual around the identity::
-
-        u_q = xi_q + gamma * ( W2_q . GELU(W1_q * xi_q + b1_q) + b2_q )
-
-    The residual/identity start (small ``gamma``) keeps the model close to a
-    plain linear outer function at init — stable — while giving each term a
-    genuine, independent 1-D nonlinearity that grows during training. The
-    per-``q`` parameters are bare ``Parameter`` s (survive the pipeline's
-    generic re-init). ``sum_q u_q`` is the pure Kolmogorov superposition scalar.
+    ``project_in`` doubles the width; a squeeze-excite spectral calibration
+    re-weights the channels; the two halves are combined multiplicatively as a
+    depthwise-3x3 branch gated by ``sigmoid`` of a depthwise-5x5 branch. This is
+    the proven feed-forward that fused hgsa_v15's multi-scale encoder features.
     """
 
-    def __init__(self, Qo: int, hidden: int = 16):
+    def __init__(self, in_dim: int, out_dim: int):
         super().__init__()
-        self.Qo, self.h = Qo, hidden
-        self.w1 = nn.Parameter(torch.randn(Qo, hidden))
-        self.b1 = nn.Parameter(torch.zeros(Qo, hidden))
-        self.w2 = nn.Parameter(torch.randn(Qo, hidden) / hidden ** 0.5)
-        self.b2 = nn.Parameter(torch.zeros(Qo))
+        self.project_in = nn.Conv2d(in_dim, out_dim * 2, 1)
+        self.cal = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(out_dim * 2, out_dim * 2, 1), nn.Sigmoid())
+        self.dw3 = nn.Conv2d(out_dim, out_dim, 3, padding=1, groups=out_dim)
+        self.dw5 = nn.Conv2d(out_dim, out_dim, 5, padding=2, groups=out_dim)
+        self.project_out = nn.Conv2d(out_dim, out_dim, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        c = self.project_in(x)
+        c = c * self.cal(c)
+        x1, x2 = c.chunk(2, dim=1)
+        return self.project_out(self.dw3(x1) * torch.sigmoid(self.dw5(x2)))
+
+
+class GatedChannelMix(nn.Module):
+    """Lightweight, gated MSAB channel mixer (near-identity at init).
+
+    Used to wrap the **value path** (the ``n`` Kolmogorov coordinates before the
+    SAGF core, and the ``Qo`` inner sums ``xi`` after it). MSAB is internally
+    residual, so ``x + gamma * (MSAB(x) - x)`` isolates its delta and the bare
+    ``Parameter`` gate keeps the mixer reducible to a no-op / stable at init.
+    """
+
+    def __init__(self, ch: int, heads: int = 4, num_blocks: int = 1):
+        super().__init__()
+        self.mix = _make_msab(ch, num_blocks=num_blocks, heads=heads)
         self.gamma = nn.Parameter(torch.tensor(0.1))
 
-    def forward(self, xi: torch.Tensor) -> torch.Tensor:
-        B, Qo, H, W = xi.shape
-        t = xi.unsqueeze(-1)                                  # [B, Qo, H, W, 1]
-        w1 = self.w1.view(1, Qo, 1, 1, self.h)
-        b1 = self.b1.view(1, Qo, 1, 1, self.h)
-        hdn = F.gelu(t * w1 + b1)                             # [B, Qo, H, W, h]
-        w2 = self.w2.view(1, Qo, 1, 1, self.h)
-        phi = (hdn * w2).sum(-1) + self.b2.view(1, Qo, 1, 1)  # [B, Qo, H, W]
-        return xi + self.gamma * phi                         # u_q
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x + self.gamma * (self.mix(x) - x)
 
 
-class ExternalChannelMixer(nn.Module):
-    """Step 4b — the *extra*, external cross-channel function (attention-based).
+class ChiReadout(nn.Module):
+    """Step 4 — the MSAB-based external outer operator ``Phi_q`` (χ / ChiNet).
 
-    This is the operator that turns the ``Qo`` post-outer values
-    ``u_q = Phi_q(xi_q)`` into the ``bands`` output channels. It is deliberately
-    kept *separate* from ``Phi_q`` (which is 1-D and per-``q``): all cross-
-    channel coupling lives here. ``bands`` learned band-queries (offset by a
-    global-scene / GIV-conditioned term) cross-attend, with ``heads`` heads,
-    over the ``Qo`` tokens::
+    In the spirit of MST++ and hgsa_v15's ``ChiNet``, the outer stage is a
+    spectral-attention (MSAB) network rather than a bank of scalar 1-D
+    functions. The ``Qo`` inner sums ``xi_q`` are concatenated with the
+    coefficient features, projected to a hidden width, mixed by an MSAB block,
+    then (with an ``xi`` skip) projected to the ``bands`` output channels::
 
-        key_q, val_q = Embed(u_q) + posemb_q                 (linear embedding)
-        A[o, q]      = softmax_q( <query_o, key_q> / sqrt(d_head) )
-        y_o          = out_proj( sum_q A[o, q] * val_q ) + bias_o(giv)
+        h = MSAB( conv1x1( [xi ; feat] ) )
+        y = conv1x1( [h ; xi] )
 
-    The token embedding is purely linear (the nonlinearity now lives in
-    ``Phi_q``); the per-``q`` positional embedding lets a given band prefer
-    specific superposition terms. Everything is per-pixel (H, W folded into the
-    token batch).
+    The cross-channel coupling that expands ``Qo -> bands`` lives entirely in
+    this external operator, matching the requested design.
     """
 
-    def __init__(self, Qo: int, bands: int, giv_dim: int, d: int = 32,
-                 heads: int = 4):
+    def __init__(self, bands: int, Qo: int, feat_dim: int,
+                 hidden: int = 64, num_blocks: int = 2, heads: int = 4):
         super().__init__()
-        heads = max(1, heads)
-        while d % heads != 0:
-            heads -= 1
-        self.Qo, self.bands, self.d = Qo, bands, d
-        self.heads, self.dh = heads, d // heads
-        self.scale = self.dh ** -0.5
-        # Linear token embedding of the scalar u_q -> key & value.
-        self.embed = nn.Linear(1, 2 * d)
-        self.q_pos = nn.Parameter(0.02 * torch.randn(Qo, 2 * d))
-        # Band queries: learned base + global-scene (GIV) conditioning.
-        self.band_base = nn.Parameter(0.02 * torch.randn(bands, d))
-        self.q_from_giv = nn.Linear(giv_dim, bands * d)
-        nn.init.zeros_(self.q_from_giv.weight)
-        nn.init.zeros_(self.q_from_giv.bias)
-        # Value -> per-band scalar, plus a global-scene bias per band.
-        self.out_proj = nn.Linear(d, 1)
-        self.band_bias = nn.Linear(giv_dim, bands)
-        nn.init.zeros_(self.band_bias.weight)
-        nn.init.zeros_(self.band_bias.bias)
+        self.pre = nn.Conv2d(Qo + feat_dim, hidden, 1)
+        self.msab = _make_msab(hidden, num_blocks=num_blocks, heads=heads)
+        self.post = nn.Conv2d(hidden + Qo, bands, 1)
 
-    def forward(self, u: torch.Tensor, giv: torch.Tensor) -> torch.Tensor:
-        B, Qo, H, W = u.shape
-        d, hh, e = self.d, self.heads, self.dh
-        t = u.permute(0, 2, 3, 1).reshape(B, H * W, Qo, 1)   # scalar tokens
-        kv = self.embed(t) + self.q_pos                      # [B, HW, Qo, 2d]
-        k, v = kv[..., :d], kv[..., d:]
-        q = self.band_base.unsqueeze(0) + \
-            self.q_from_giv(giv).view(B, self.bands, d)      # [B, bands, d]
-        # Split into heads: e = d // heads.
-        N = H * W
-        k = k.view(B, N, Qo, hh, e)
-        v = v.view(B, N, Qo, hh, e)
-        qh = q.view(B, self.bands, hh, e)
-        scores = torch.einsum('bnqhe,bohe->bnhoq', k, qh) * self.scale
-        attn = torch.softmax(scores, dim=-1)                 # over Qo
-        out = torch.einsum('bnhoq,bnqhe->bnohe', attn, v)    # [B,HW,bands,hh,e]
-        out = out.reshape(B, N, self.bands, d)
-        y = self.out_proj(out).squeeze(-1)                   # [B, HW, bands]
-        y = y + self.band_bias(giv).unsqueeze(1)
-        return y.reshape(B, H, W, self.bands).permute(0, 3, 1, 2)
+    def forward(self, xi: torch.Tensor, feat: torch.Tensor) -> torch.Tensor:
+        h = self.pre(torch.cat([xi, feat], dim=1))
+        h = self.msab(h)
+        return self.post(torch.cat([h, xi], dim=1))
 
 
-class PerBandKANReadout(nn.Module):
-    """Step 4 (KAN grid) — per-band, per-term 1-D outer functions ``Phi_{q,o}``.
+class V15CoeffEncoder(nn.Module):
+    """Coefficient (weights) path — a hgsa_v15 ``Encoder2D``-style encoder.
 
-    The most paper-literal outer stage for a vector output: instead of a single
-    shared ``Phi_q`` followed by a cross-channel mixer, this is a full
-    ``Qo x bands`` grid of independent 1-D functions (a Kolmogorov-Arnold
-    Network layer)::
+    Mirrors the structure that produced hgsa_v15's good results, generalized
+    from RGB to ``bands`` inputs with the *tested* MSAB spectral-attention
+    block:
 
-        y_o = sum_{q=0}^{Qo-1} Phi_{q,o}( xi_q ),
+      * a learned illumination sub-network (Retinex-style) whose features gate
+        the stem, giving illumination-aware conditioning;
+      * a multi-scale spectral transformer — full-, half- and quarter-scale
+        MSAB branches (down/up by average pooling + bilinear) — for local and
+        global spatial context;
+      * gated ``AdvancedGFFN`` feed-forwards to fuse the scales.
 
-    with each edge a KAN spline-plus-base::
-
-        Phi_{q,o}(xi) = wb_{q,o} * SiLU(xn) + sum_{j=1}^{G} c_{q,o,j} * rbf_j(xn),
-        xn = tanh(in_scale * xi)  in (-1, 1),
-
-    where ``rbf_j`` are ``G`` Gaussian bases on a fixed ``[-1, 1]`` grid. The
-    ``tanh`` squashing fixes the spline domain regardless of the (unbounded)
-    ``xi`` range, and every learnable weight is a bare ``Parameter`` (survives
-    the pipeline's generic re-init). Removing the ``Qo -> bands`` attention
-    bottleneck lets each band read the superposition terms with its own set of
-    nonlinearities — higher capacity, the direction toward PSNR 42.
+    Returns ``(feat[B, dim, H, W], illu_fea[B, illu_dim, H, W])`` — the two
+    signals the SAGF hypernetwork heads read from.
     """
 
-    def __init__(self, Qo: int, bands: int, num_basis: int = 8,
-                 spectral_prior: bool = True, emb_dim: int = 16):
+    def __init__(self, bands: int, dim: int, illu_dim: int = 32,
+                 blocks: int = 2, heads: int = 4):
         super().__init__()
-        self.Qo, self.bands, self.G = Qo, bands, num_basis
-        centers = torch.linspace(-1.0, 1.0, num_basis)
-        self.register_buffer('centers', centers.view(1, 1, num_basis, 1, 1))
-        self.width = 2.0 / max(1, num_basis - 1)
-        self.in_scale = nn.Parameter(torch.tensor(1.0))
-        # Per-edge KAN coefficients (bare Parameters, survive re-init).
-        self.coef = nn.Parameter(
-            (0.1 / num_basis ** 0.5) * torch.randn(Qo, bands, num_basis))
-        self.w_base = nn.Parameter(0.1 * torch.randn(Qo, bands))
-        self.bias = nn.Parameter(torch.zeros(bands))
-        # (C) Spectral-smoothness prior. HSI bands are highly correlated, so we
-        # add (i) a smooth per-band baseline from a learned low-dim band
-        # embedding (adjacent bands share structure through the shared MLP) and
-        # (ii) a gated fixed 3-tap smoothing along the band axis. Both are
-        # pointwise cross-band operations (they stay within the "sum of
-        # univariate functions of xi_q" spirit of Thm 2.1) and the smoothing is
-        # a bare-Parameter-gated residual (reducible to no-op).
-        if spectral_prior:
-            self.band_emb = nn.Parameter(0.02 * torch.randn(bands, emb_dim))
-            self.band_mlp = nn.Sequential(
-                nn.Linear(emb_dim, emb_dim * 2), nn.GELU(),
-                nn.Linear(emb_dim * 2, 1))
-            self.smooth_gamma = nn.Parameter(torch.tensor(0.05))
-        else:
-            self.band_emb = None
-            self.band_mlp = None
-            self.smooth_gamma = None
+        self.illu = IlluminationEstimator(bands, illu_dim)
+        self.stem = nn.Conv2d(bands, dim, 3, padding=1)
+        self.illu_gate = nn.Conv2d(illu_dim, dim, 1)
+        self.enc0 = _make_msab(dim, num_blocks=blocks, heads=heads)
+        self.enc1 = _make_msab(dim, num_blocks=blocks, heads=heads)
+        self.enc2 = _make_msab(dim, num_blocks=blocks, heads=heads)
+        self.fuse = AdvancedGFFN(dim * 3, dim)
+        self.norm = nn.GroupNorm(min(4, dim), dim)
+        self.gffn = AdvancedGFFN(dim, dim)
 
-    @staticmethod
-    def _band_smooth(y: torch.Tensor) -> torch.Tensor:
-        # Replicate-padded 3-tap [0.25, 0.5, 0.25] smoothing over the band axis.
-        yl = torch.cat([y[:, :1], y[:, :-1]], dim=1)
-        yr = torch.cat([y[:, 1:], y[:, -1:]], dim=1)
-        return 0.25 * yl + 0.5 * y + 0.25 * yr
-
-    def forward(self, xi: torch.Tensor) -> torch.Tensor:
-        B, Qo, H, W = xi.shape
-        xn = torch.tanh(self.in_scale * xi)                  # [B, Qo, H, W]
-        rbf = torch.exp(
-            -((xn.unsqueeze(2) - self.centers) / self.width) ** 2)  # [B,Qo,G,H,W]
-        y = torch.einsum('qoj,bqjhw->bohw', self.coef, rbf)
-        y = y + torch.einsum('qo,bqhw->bohw', self.w_base, F.silu(xn))
-        y = y + self.bias.view(1, self.bands, 1, 1)          # [B, bands, H, W]
-        if self.band_mlp is not None:                        # (C) spectral prior
-            base = self.band_mlp(self.band_emb).view(1, self.bands, 1, 1)
-            y = y + base
-            y = y + self.smooth_gamma * (self._band_smooth(y) - y)
-        return y
+    def forward(self, x: torch.Tensor):
+        illu_fea, _ = self.illu(x)                           # [B, illu_dim, H, W]
+        f = self.stem(x) * torch.sigmoid(self.illu_gate(illu_fea))
+        f0 = self.enc0(f)
+        f1 = self.enc1(F.avg_pool2d(f0, 2))
+        f1 = F.interpolate(f1, size=f0.shape[-2:],
+                           mode='bilinear', align_corners=False)
+        f2 = self.enc2(F.avg_pool2d(f0, 4))
+        f2 = F.interpolate(f2, size=f0.shape[-2:],
+                           mode='bilinear', align_corners=False)
+        fused = self.fuse(torch.cat([f0, f1, f2], dim=1))
+        return self.gffn(self.norm(fused)) + fused, illu_fea
 
 
-class PostKSTRefine(nn.Module):
-    """(A) Post-superposition refinement — cross-band + spatial re-coupling.
+class PyramidChannelFusion(nn.Module):
+    """Request 5 — lightweight attention fusion of the Laplacian pyramid.
 
-    The KST outer stage is pointwise in ``xi``; it cannot re-couple the output
-    bands spatially or restore cross-band correlation beyond what the shared
-    ``xi_q`` carry. This module adds, as **bare-Parameter-gated residuals** on
-    the reconstructed spectra ``y`` (so it is reducible to a no-op and the model
-    still starts essentially as the pure superposition):
-
-      * ``cb`` — an MSAB cross-band mixer (restores band correlation the
-        per-band outer functions miss). This is the plateau-breaker.
-      * ``sp`` — a depthwise-3x3 + 1x1 spatial mixer. NOTE: this introduces a
-        receptive field, so it is an *auxiliary, post-KST* term that steps
-        outside Theorem 2.1's pointwise property; the ``g_sp`` gate keeps it a
-        small, disableable correction on top of the superposition backbone.
+    The three pyramid levels' outputs (all brought to the finest resolution)
+    are fused by *concatenating their channels*, applying a squeeze-excite
+    channel attention over the concatenation, and reducing the ``n_levels *
+    bands`` channels back to ``bands`` with a 1x1 convolution. Added to the
+    finest output as a bare-``Parameter``-gated residual (reducible to a no-op).
     """
 
-    def __init__(self, bands: int, spatial: bool = True,
-                 crossband: bool = True):
+    def __init__(self, bands: int, n_levels: int = 3):
         super().__init__()
-        self.cb = _make_msab(bands, num_blocks=1, heads=1) if crossband else None
-        self.g_cb = nn.Parameter(torch.tensor(0.1)) if crossband else None
-        if spatial:
-            self.sp = nn.Sequential(
-                nn.Conv2d(bands, bands, 3, padding=1, groups=bands),
-                nn.GroupNorm(1, bands), nn.GELU(),
-                nn.Conv2d(bands, bands, 1))
-            self.g_sp = nn.Parameter(torch.tensor(0.05))
-        else:
-            self.sp = None
-            self.g_sp = None
+        c = bands * n_levels
+        self.attn = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c, max(1, c // 4), 1), nn.GELU(),
+            nn.Conv2d(max(1, c // 4), c, 1), nn.Sigmoid())
+        self.reduce = nn.Conv2d(c, bands, 1)
+        self.gamma = nn.Parameter(torch.tensor(0.1))
 
-    def forward(self, y: torch.Tensor) -> torch.Tensor:
-        if self.cb is not None:
-            # MSAB is internally residual; (cb(y) - y) isolates its delta so the
-            # gate g_cb cleanly scales (and can zero) the cross-band correction.
-            y = y + self.g_cb * (self.cb(y) - y)
-        if self.sp is not None:
-            y = y + self.g_sp * self.sp(y)
-        return y
-
-
-class FineRefiner(nn.Module):
-    """(E) Full-resolution residual refiner for the finest pyramid output.
-
-    A small 3-conv block that injects high-frequency spatial detail into the
-    final full-res reconstruction, as a bare-Parameter-gated residual. Like the
-    spatial half of ``PostKSTRefine`` this is an auxiliary, post-KST spatial
-    term (outside the pointwise Thm 2.1 form) but is reducible to a no-op via
-    its gate, so the superposition remains the backbone.
-    """
-
-    def __init__(self, bands: int, hidden: int = None):
-        super().__init__()
-        hidden = hidden or bands * 2
-        self.body = nn.Sequential(
-            nn.Conv2d(bands, hidden, 3, padding=1), nn.GELU(),
-            nn.Conv2d(hidden, hidden, 3, padding=1), nn.GELU(),
-            nn.Conv2d(hidden, bands, 3, padding=1))
-        self.gamma = nn.Parameter(torch.tensor(0.05))
-
-    def forward(self, y: torch.Tensor) -> torch.Tensor:
-        return y + self.gamma * self.body(y)
+    def forward(self, feats: List[torch.Tensor]) -> torch.Tensor:
+        x = torch.cat(feats, dim=1)                          # [B, n*bands, H, W]
+        x = x * self.attn(x)
+        return feats[0] + self.gamma * self.reduce(x)
 
 
 class KSTSagfLevel(nn.Module):
@@ -469,54 +336,37 @@ class KSTSagfLevel(nn.Module):
 
     def __init__(self, bands: int = 31, n: int = 31, Qo: int = 8, M: int = 4,
                  dim: int = 96, giv_dim: int = 64, blocks: int = 2,
-                 phi_dim: int = 64, phi_heads: int = 4, readout: str = 'kan',
-                 kan_basis: int = 8, use_fourier: bool = True,
-                 use_checkpoint: bool = True, illu_dim: int = 32,
-                 head_spatial: bool = True, spectral_prior: bool = True,
-                 post_refine: bool = True, post_spatial: bool = True):
+                 chi_hidden: int = 64, chi_heads: int = 4,
+                 use_checkpoint: bool = True, illu_dim: int = 32):
         super().__init__()
-        assert readout in ('kan', 'mixer')
         self.bands = bands
-        self.readout = readout
         self.giv = DegradationAwareConditioner(bands, giv_dim)
-        # Step 0: control-vector attention (img -> x, n coordinates).
+        # --- Value path: img -> n Kolmogorov coordinates, wrapped by gated
+        # channel-mixers before (val_premix) and after (val_postmix, on xi) the
+        # SAGF core. These mix ONLY the value path (not the coefficient path).
         self.channel_mix = ChannelMixAttention(bands, n, dim=dim)
-        # Hypernetwork context (MSAB + dilation + Fourier + FiLM + illumination).
-        self.coeff_enc = BCCoeffEncoder(
-            bands, dim, giv_dim, illu_dim=illu_dim, num_blocks=max(1, blocks),
-            use_fourier=use_fourier)
-        # Steps 1-3: Sprecher inner sums with SAGF psi. (B) spatial hyper-heads.
+        self.val_premix = GatedChannelMix(n, heads=1)
+        self.val_postmix = GatedChannelMix(Qo, heads=chi_heads)
+        # --- Coefficient path: hgsa_v15-style illumination-gated multi-scale
+        # MSAB encoder (the structure that produced hgsa_v15's good results).
+        self.coeff_enc = V15CoeffEncoder(
+            bands, dim, illu_dim=illu_dim, blocks=max(1, blocks))
+        # Steps 1-3: Sprecher inner sums with the shared SAGF inner function.
         self.core = SAGFHyperCore(
-            n, Qo, M, feat_dim=dim, giv_dim=giv_dim, illu_dim=illu_dim,
-            use_checkpoint=use_checkpoint, head_spatial=head_spatial)
-        # Step 4 — outer stage. Two switchable forms:
-        if readout == 'kan':
-            # 'kan': a full Qo x bands grid of 1-D functions Phi_{q,o}
-            # (paper-literal for a vector output; no attention bottleneck).
-            # (C) spectral-smoothness prior baked into the read-out.
-            self.kan = PerBandKANReadout(
-                Qo, bands, num_basis=kan_basis, spectral_prior=spectral_prior)
-        else:
-            # 'mixer': shared 1-D Phi_q (per term) + external multi-head
-            # cross-channel attention that expands Qo -> bands.
-            self.phi = Phi1D(Qo)
-            self.mixer = ExternalChannelMixer(
-                Qo, bands, giv_dim, d=phi_dim, heads=phi_heads)
-            # Direct Kolmogorov superposition term sum_q Phi_q(xi_q), broadcast
-            # to every band as a residual so the 1-D outer functions get a clean
-            # gradient path independent of the cross-channel mixer.
-            self.kst_gamma = nn.Parameter(torch.tensor(0.1))
-        # (A) Post-superposition cross-band + spatial refinement (gated).
-        self.post = (PostKSTRefine(bands, spatial=post_spatial)
-                     if post_refine else None)
+            n, Qo, M, feat_dim=dim, illu_dim=illu_dim,
+            use_checkpoint=use_checkpoint)
+        # Step 4: MSAB-based external outer operator Phi_q (Qo -> bands) ...
+        self.chi = ChiReadout(
+            bands, Qo, feat_dim=dim, hidden=chi_hidden, heads=chi_heads)
+        # ... plus the pure Kolmogorov superposition sum_q xi_q as a gated
+        # per-band residual, so the depth-2 sum stays the backbone.
+        self.kst_gamma = nn.Parameter(torch.tensor(0.1))
         # Cross-band polish (residual around identity), as in bc_usgs.
         self.gccm = GlobalColorMatrix(giv_dim, bands)
         self.lccm = LocalColorMatrixLR(dim, bands)
-        # Bounded, bare-Parameter-gated correction. The pipeline's generic
-        # re-init clobbers every Conv/Linear identity/zero init, so nothing
-        # else guarantees a near-identity start; ``out_gate`` (a bare Parameter,
-        # untouched by re-init) both soft-clamps the correction via tanh (it can
-        # never blow up) and keeps the level close to identity at init.
+        # Bounded, bare-Parameter-gated correction (near-identity at init;
+        # tanh soft-clamps so the level can never blow up under the pipeline's
+        # generic Conv/Linear re-init).
         self.out_gate = nn.Parameter(torch.tensor(0.2))
 
     def forward(self, src: torch.Tensor,
@@ -525,18 +375,14 @@ class KSTSagfLevel(nn.Module):
 
         giv = self.giv(x_in)                                 # [B, giv_dim]
         coords = self.channel_mix(x_in)                      # x [B, n, H, W]
-        feat, illu_fea, _ = self.coeff_enc(x_in, giv)        # control features
+        coords = self.val_premix(coords)                     # value-path pre-mix
+        feat, illu_fea = self.coeff_enc(x_in)                # coefficient path
         ctrl = torch.cat([feat, illu_fea], dim=1)            # hypernet input
 
         xi = self.core(coords, ctrl)                         # [B, Qo, H, W]
-        if self.readout == 'kan':
-            y = self.kan(xi)                                 # Phi_{q,o} grid
-        else:
-            u = self.phi(xi)                                 # Phi_q(xi_q) 1-D
-            y = self.mixer(u, giv)                           # external mixer
-            y = y + self.kst_gamma * u.sum(1, keepdim=True)  # pure-KST term
-        if self.post is not None:
-            y = self.post(y)                                 # (A) refine spectra
+        xi = self.val_postmix(xi)                            # value-path post-mix
+        y = self.chi(xi, feat)                               # MSAB Phi_q -> bands
+        y = y + self.kst_gamma * xi.sum(1, keepdim=True)     # pure-KST backbone
         y = self.gccm(y, giv)                                # global cross-band
         y = self.lccm(y, feat)                               # local cross-band
         y = self.out_gate * torch.tanh(y)                    # bounded correction
@@ -555,13 +401,11 @@ class KSTSagfPyramid(nn.Module):
     def __init__(self, bands: int = 31, n: int = 31,
                  depths: List[int] = [1, 2, 3],
                  Qo=[12, 16, 24], M=[3, 4, 6],
-                 dim: int = 96, giv_dim: int = 64, phi_dim: int = 64,
-                 phi_heads: int = 4, readout: str = 'kan', kan_basis: int = 8,
-                 use_fourier: bool = True, use_checkpoint: bool = True,
+                 dim: int = 96, giv_dim: int = 64,
+                 chi_hidden: int = 64, chi_heads: int = 4,
+                 use_checkpoint: bool = True,
                  upsample: str = 'bilinear', illu_dim: int = 32,
-                 head_spatial: bool = True, spectral_prior: bool = True,
-                 post_refine: bool = True, post_spatial: bool = True,
-                 fine_refine: bool = True):
+                 pyramid_fusion: bool = True):
         super().__init__()
         assert upsample in ('wavelet', 'bilinear')
         self.upsample = upsample
@@ -572,18 +416,15 @@ class KSTSagfPyramid(nn.Module):
         def _level(idx: int) -> KSTSagfLevel:
             return KSTSagfLevel(
                 bands=bands, n=n, Qo=Qs[idx], M=Ms[idx], dim=Ds[idx],
-                giv_dim=giv_dim, blocks=depths[idx], phi_dim=phi_dim,
-                phi_heads=phi_heads, readout=readout, kan_basis=kan_basis,
-                use_fourier=use_fourier, use_checkpoint=use_checkpoint,
-                illu_dim=illu_dim, head_spatial=head_spatial,
-                spectral_prior=spectral_prior, post_refine=post_refine,
-                post_spatial=post_spatial)
+                giv_dim=giv_dim, blocks=depths[idx], chi_hidden=chi_hidden,
+                chi_heads=chi_heads, use_checkpoint=use_checkpoint,
+                illu_dim=illu_dim)
 
         self.coarse = _level(0)
         self.mid = _level(1)
         self.fine = _level(2)
-        # (E) Full-res residual refiner on the finest output only.
-        self.refine = FineRefiner(bands) if fine_refine else None
+        # Request 5: lightweight attention fusion of the three pyramid levels.
+        self.fusion = PyramidChannelFusion(bands) if pyramid_fusion else None
         if upsample == 'wavelet':
             self.up_mid = WaveletUpsampler(bands)
             self.up_fine = WaveletUpsampler(bands)
@@ -602,8 +443,12 @@ class KSTSagfPyramid(nn.Module):
         y4 = self.coarse(src4)
         y2 = self.mid(src2, coarse_out=self.up_mid(y4))
         y = self.fine(src, coarse_out=self.up_fine(y2))
-        if self.refine is not None:
-            y = self.refine(y)                               # (E) full-res detail
+        if self.fusion is not None:
+            y2u = F.interpolate(y2, size=y.shape[-2:],
+                                mode='bilinear', align_corners=False)
+            y4u = F.interpolate(y4, size=y.shape[-2:],
+                                mode='bilinear', align_corners=False)
+            y = self.fusion([y, y2u, y4u])                   # pyramid fusion
         if Hp != H or Wp != W:
             y = y[..., :H, :W]
         return y, y2, y4
@@ -620,8 +465,12 @@ class KSTSagfPyramid(nn.Module):
         up0 = F.interpolate(y2, size=src.shape[-2:],
                             mode='bilinear', align_corners=False)
         y = self.fine(src, coarse_out=up0)
-        if self.refine is not None:
-            y = self.refine(y)                               # (E) full-res detail
+        if self.fusion is not None:
+            y2u = F.interpolate(y2, size=y.shape[-2:],
+                                mode='bilinear', align_corners=False)
+            y4u = F.interpolate(y4, size=y.shape[-2:],
+                                mode='bilinear', align_corners=False)
+            y = self.fusion([y, y2u, y4u])                   # pyramid fusion
         return y, y2, y4
 
     def forward(self, src: torch.Tensor):

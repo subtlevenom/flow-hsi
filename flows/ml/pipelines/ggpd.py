@@ -252,13 +252,10 @@ class GGPDPipeline(L.LightningModule):
     _GATE_SPECS = {
         'gate/out': lambda n: n.endswith('.out_gate'),
         'gate/kst': lambda n: n.endswith('.kst_gamma'),
-        'gate/head_spatial': lambda n: n.endswith('.head_gamma'),
         'gate/offset_scale': lambda n: n.endswith('.offset_scale'),
-        'gate/spectral_smooth': lambda n: n.endswith('.smooth_gamma'),
-        'gate/kan_in_scale': lambda n: n.endswith('.in_scale'),
-        'gate/post_crossband': lambda n: n.endswith('.g_cb'),
-        'gate/post_spatial': lambda n: n.endswith('.g_sp'),
-        'gate/fine_refine': lambda n: 'refine' in n and n.endswith('.gamma'),
+        'gate/val_premix': lambda n: n.endswith('val_premix.gamma'),
+        'gate/val_postmix': lambda n: n.endswith('val_postmix.gamma'),
+        'gate/pyramid_fusion': lambda n: n.endswith('fusion.gamma'),
         'gate/lccm': lambda n: 'lccm' in n and n.endswith('.gamma'),
     }
 
