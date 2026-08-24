@@ -13,7 +13,7 @@ from ..models import Flow
 from ..metrics import (PSNR, SSIM, SAM, DeltaE)
 
 
-class KSTSagfPipeline(L.LightningModule):
+class USGSExpertPipeline(L.LightningModule):
     '''Dual-branch training pipeline for the USGS expert restorer.
 
     The :class:`USGSExpertPyramid` model exposes two explicit branch
@@ -42,7 +42,7 @@ class KSTSagfPipeline(L.LightningModule):
                  kl_weight: float = 1e-4,
                  ds_weights: List[float] = [0.5, 0.25],
                  metrics_channels: List[int] = [0, 1, 2]) -> None:
-        super(KSTSagfPipeline, self).__init__()
+        super(USGSExpertPipeline, self).__init__()
 
         self.model = model
         self.optimizer_type = optimizer
