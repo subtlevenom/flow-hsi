@@ -32,6 +32,7 @@ from typing import List, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 from ..hgsa.hgsa_hsi_v18 import DegradationAwareConditioner
 from .bc_usgs import IlluminationEstimator, WaveletUpsampler, _make_msab
@@ -131,7 +132,8 @@ class SharpnessBlock(nn.Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         illu_fea, illu_map = self.illu(x)
         f = self.stem(x) * torch.sigmoid(self.illu_gate(illu_fea))
-        f0 = self.enc0(f)
+        f0 = checkpoint(self.enc0, f, use_reentrant=False) if self.training \
+            else self.enc0(f)
         f1 = self.enc1(F.avg_pool2d(f0, 2))
         f1 = F.interpolate(f1, size=f0.shape[-2:], mode='bilinear',
                            align_corners=False)
@@ -208,7 +210,13 @@ class ExpertRouter(nn.Module):
         gate = torch.softmax(self.router(feat), dim=1)       # [B, E, H, W]
         latents, mus, logvars = [], [], []
         for i, expert in enumerate(self.experts):
-            z, mu, logvar = expert(feat, cond_vec, stochastic=True)
+            # Checkpoint each expert: 8x full-res MSAB activations otherwise
+            # dominate peak memory. Recomputed in backward instead of stored.
+            if self.training:
+                z, mu, logvar = checkpoint(expert, feat, cond_vec,
+                                           use_reentrant=False)
+            else:
+                z, mu, logvar = expert(feat, cond_vec, stochastic=True)
             latents.append(z * gate[:, i:i + 1])
             mus.append(mu)
             logvars.append(logvar)
@@ -233,8 +241,12 @@ class SharedColorMatchingHead(nn.Module):
     def forward(self, latents: torch.Tensor,
                 sharp_feat: torch.Tensor) -> torch.Tensor:
         h = self.pre(torch.cat([latents, sharp_feat], dim=1))
-        h0 = self.body0(h)
-        h1 = self.body1(self.down(h0))
+        if self.training:
+            h0 = checkpoint(self.body0, h, use_reentrant=False)
+            h1 = checkpoint(self.body1, self.down(h0), use_reentrant=False)
+        else:
+            h0 = self.body0(h)
+            h1 = self.body1(self.down(h0))
         h1 = F.interpolate(h1, size=h0.shape[-2:], mode='bilinear',
                            align_corners=False)
         h2 = self.up(h0)
@@ -282,7 +294,7 @@ class USGSExpertLevel(nn.Module):
                                    heads=4)
         self.shared_head = SharedColorMatchingHead(
             latent_dim=latent_dim, feat_dim=feat_dim, bands=bands,
-            num_experts=num_experts, num_blocks=4, heads=4)
+            num_experts=num_experts, num_blocks=2, heads=4)
         self.color_gate = nn.Parameter(torch.tensor(0.2))
         self.decoders = nn.ModuleList([
             ExpertDecoder(latent_dim=latent_dim, bands=bands, feat_dim=48)
