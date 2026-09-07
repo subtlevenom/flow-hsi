@@ -1,0 +1,43 @@
+name: flow
+params:
+  metadata:
+
+    - layer: encoder
+      inputs:
+        - src
+      outputs:
+        - x
+
+    - layer: hgsa
+      inputs:
+        - x
+      outputs:
+        - y
+
+    - layer: decoder
+      inputs:
+        - y
+      outputs:
+        - res
+
+  layers:
+
+    encoder:
+      model: ggpir.GGPIRMSABEncoder
+      params:
+        in_channels: 31
+        out_channels: 3
+
+    hgsa:
+      model: hgsa.HGSA
+      params:
+        in_channels: 3
+        out_channels: 3
+        Q: 8
+        M: 4
+
+    decoder:
+      model: ggpir.GGPIRMSABDecoder
+      params:
+        in_channels: 3
+        out_channels: 31

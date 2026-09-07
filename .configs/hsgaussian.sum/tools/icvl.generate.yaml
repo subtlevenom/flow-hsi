@@ -1,0 +1,13 @@
+task: tools
+tool: generate
+type: icvl
+input_path: /data/nikonorov/Hydra.DS/V8/ICVL
+output_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/all/raw
+split:
+  gt:
+    input: ${input_path}/gt/mat/mat
+    output: ${output_path}/gt
+  model:
+    input: ${input_path}/NO_norm
+    output: ${output_path}/model
+seed: 43

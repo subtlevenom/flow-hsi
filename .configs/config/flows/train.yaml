@@ -1,0 +1,15 @@
+task: train
+experiment: usgs_expert.ntire
+save_dir: .experiments
+accelerator: gpu
+devices: [0]
+resume: True
+epochs: 200
+save_freq: 1
+visualize_freq: 1
+
+defaults:
+  - model: usgs_expert
+  - data: ntire
+  - pipeline: usgs_expert
+  - _self_

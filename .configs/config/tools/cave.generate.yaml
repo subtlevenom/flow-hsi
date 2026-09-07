@@ -1,0 +1,9 @@
+task: tools
+tool: generate
+type: cave-hsi
+input_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/original
+output_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/all/raw/gt
+seed: 43
+
+defaults:
+  - _self_

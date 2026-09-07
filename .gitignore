@@ -214,6 +214,7 @@ __marimo__/
 .data/
 *.yaml
 !config.example.yaml
+!.configs/**
 
 !sandbox/**/*.yaml
 !sandbox/**/*.json

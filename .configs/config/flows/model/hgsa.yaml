@@ -1,0 +1,20 @@
+name: flow
+params:
+  metadata:
+
+    - layer: hgsa
+      inputs:
+        - src
+      outputs:
+        - res
+
+  layers:
+
+    hgsa:
+      model: hgsa.HGSA
+      params:
+        in_channels: 3
+        out_channels: 3
+        Q: 8
+        M: 6
+

@@ -1,0 +1,39 @@
+name: flow
+params:
+  metadata:
+
+    - layer: pyramid
+      inputs:
+        - src
+      outputs:
+        - res
+
+  layers:
+
+    pyramid:
+      model: ggpir.BCUSGSPyramid
+      params:
+        bands: 31
+        # coeff-encoder MSAB block count per level (coarse -> mid -> fine);
+        # grows spatial-spectral context toward finer scales.
+        depths: [1, 2, 3]
+        # per-level Sprecher capacity [X/4, X/2, X]: light at coarse scales,
+        # full at fine (per-band Gaussians are 3x lighter than the old fold).
+        Q: [6, 8, 8]
+        M: [2, 3, 4]
+        # feature width of the value/coeff encoders (int or per-level list).
+        dim: 96
+        giv_dim: 64
+        # width of the learned illumination features fed to the expert heads
+        # (v18 FullResEncoder illumination sub-network, widened for 31 bands).
+        illu_dim: 32
+        # global Fourier spatial mixer in the coeff head (illumination/WB ctx).
+        use_fourier: true
+        # 'wavelength' = smooth per-band param prior; 'flat' = plain per-band.
+        param_head: wavelength
+        # 'msab' = spectral re-coupling read-out; 'linear' = Q-collapse only.
+        readout: msab
+        use_checkpoint: true
+        # coarse->fine recomposition: 'wavelet' = exact inverse-Haar-DWT
+        # synthesis with learned detail; 'bilinear' = classic Laplacian pyramid.
+        upsample: bilinear
