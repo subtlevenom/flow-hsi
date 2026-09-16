@@ -1,0 +1,25 @@
+name: flow
+params:
+  metadata:
+
+    - layer: pyramid
+      inputs:
+        - src
+      outputs:
+        - res
+
+  layers:
+
+    pyramid:
+      model: ggpir.USGSPyramid
+      params:
+        bands: 31
+        triplet: 3
+        # extra MSAB refinement blocks per level (coarse -> mid -> fine);
+        # grows depth toward finer scales, mirroring the "n=3/5/7" reference.
+        depths: [1, 3, 5]
+        # Per-level Sprecher capacity [X/4, X/2, X]: light at coarse scales
+        # (each Gaussian tensor is [B*31, out_c, Q, H, W]), full at fine.
+        Q: [4, 6, 8]
+        M: [2, 3, 4]
+        giv_dim: 64

@@ -1,0 +1,7 @@
+task: tools
+tool: normalize
+type: cave-hsi
+gt_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/all/raw/gt
+src_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/all/raw/model
+output_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/all/normalized
+seed: 43

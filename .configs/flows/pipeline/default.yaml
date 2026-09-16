@@ -1,0 +1,5 @@
+name: default
+params:
+  optimizer: 'adam'
+  lr: 1e-5
+  weight_decay: 0

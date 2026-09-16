@@ -213,9 +213,6 @@ __marimo__/
 .models
 .experiments/
 .data/
-.configs
-*.yaml
-!config.example.yaml
 
 !sandbox/**/*.yaml
 !sandbox/**/*.json

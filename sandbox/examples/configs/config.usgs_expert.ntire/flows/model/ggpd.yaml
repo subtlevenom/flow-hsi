@@ -1,0 +1,61 @@
+name: flow
+params:
+  metadata:
+
+    # x
+
+    # projector
+
+    - layer: projector
+      inputs:
+        - src
+      outputs:
+        - x
+
+    - layer: encoder
+      inputs:
+        - src
+      outputs:
+        - w
+
+    - layer: aggregator
+      inputs:
+        - x
+        - w
+      outputs:
+        - res
+      
+  layers:
+
+    projector:
+      model: ggpd.GPProjectors
+      params:
+        in_channels: 3
+        out_channels: 3 
+        alg: msab
+        num_blocks:
+          - 2
+          - 4
+          - 4
+
+    encoder:
+      model: ggpd.GPEncoder
+      params:
+        in_channels: 3
+        mid_channels: 14
+        out_channels: 3 
+        alg: msab
+        num_blocks:
+          - 2
+          - 4
+          - 4
+
+    aggregator:
+      model: ggpd.GPAggregator
+      params:
+        grid_size: 7
+        spline_order: 5
+        residual_std: 0.1
+        grid_range:
+          - 0.0
+          - 1.0

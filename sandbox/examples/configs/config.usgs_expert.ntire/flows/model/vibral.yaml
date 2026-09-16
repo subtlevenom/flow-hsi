@@ -1,0 +1,17 @@
+name: flow
+params:
+  metadata:
+
+    - layer: usgs
+      inputs:
+        - src
+      outputs:
+        - res
+
+  layers:
+
+    usgs:
+      model: sagf.USGS
+      params:
+        channels: 16
+

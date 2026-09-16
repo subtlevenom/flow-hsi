@@ -1,0 +1,63 @@
+name: flow
+params:
+  metadata:
+
+    - layer: pyramid
+      inputs:
+        - src
+      outputs:
+        - res
+
+  layers:
+
+    pyramid:
+      model: ggpir.KSTSagfPyramid
+      params:
+        bands: 31
+        # n = dimension of the per-pixel control vector x (step 0 channel mix).
+        # n == bands makes the mixing a residual around the input coordinates.
+        n: 31
+        # coeff/hypernetwork-context MSAB block count per level (coarse->fine).
+        depths: [1, 2, 3]
+        # Qo = number of outer superposition terms Phi_q (the "2n+1" dial, but
+        # amortized: per-level [X/4, X/2, X]). Raised toward 2n+1 for capacity.
+        Qo: [12, 16, 24]
+        # M = SAGF order (number of Gaussians in the inner function psi).
+        # Raised (D): the single shared psi is the whole inner core, so more
+        # Gaussians = richer inner function (most paper-faithful capacity lever).
+        M: [3, 4, 6]
+        # feature width of the channel-mix / coeff encoders (int or per-level list).
+        dim: 96
+        giv_dim: 64
+        # outer-stage read-out:
+        #   'kan'   = Qo x bands grid of 1-D KAN functions Phi_{q,o} (default,
+        #             paper-literal vector form, highest capacity);
+        #   'mixer' = shared 1-D Phi_q + external multi-head cross-channel attn.
+        readout: kan
+        # number of RBF bases per KAN edge (readout: kan).
+        kan_basis: 8
+        # embedding width of the external cross-channel mixer (readout: mixer).
+        phi_dim: 64
+        # attention heads of the external cross-channel mixer (readout: mixer).
+        phi_heads: 4
+        # width of the learned illumination features fed to the hypernetwork.
+        illu_dim: 32
+        # --- capacity levers A-E (all gated residuals, reducible to pure KST) ---
+        # (B) spatial (depthwise-3x3) enrichment of the coefficient hypernet heads.
+        head_spatial: true
+        # (C) spectral-smoothness prior (band-embedding baseline + band smoothing).
+        spectral_prior: true
+        # (A) post-superposition refinement of the reconstructed spectra.
+        post_refine: true
+        # (A) include the spatial (depthwise) half of the post-refinement.
+        # NOTE: this + fine_refine introduce a receptive field -> auxiliary,
+        # post-KST terms outside Thm 2.1's pointwise form (gate-disableable).
+        post_spatial: true
+        # (E) full-resolution residual refiner on the finest pyramid output.
+        fine_refine: true
+        # global Fourier spatial mixer in the coeff head (illumination/WB ctx).
+        use_fourier: true
+        use_checkpoint: true
+        # coarse->fine recomposition: 'bilinear' = classic Laplacian pyramid;
+        # 'wavelet' = exact inverse-Haar-DWT synthesis with learned detail.
+        upsample: bilinear

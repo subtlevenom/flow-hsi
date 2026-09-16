@@ -1,0 +1,19 @@
+task: tools
+tool: convert
+# input_path: /data/korepanov/CAVE-HSI/Test/SRC/pompoms.mat
+input_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/dataset/val/target/4cam_0411-1640-1_0.npy
+# input_path: /home/korepanov/work/flow-hsi/.data/cave-hsi-26/val/target/oil_painting_0.npy
+output_path: .experiments/temp/4cam_0411-1640-1_0_.png
+params:
+  converter: hs_rgb
+  format: .png
+  bands:
+    -
+      - 21
+      - 31
+    -
+      - 11
+      - 21
+    -
+      - 0
+      - 11

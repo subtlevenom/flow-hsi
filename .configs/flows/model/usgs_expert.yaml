@@ -1,0 +1,29 @@
+name: flow
+params:
+  metadata:
+
+    - layer: pyramid
+      inputs:
+        - src
+      outputs:
+        - res
+
+  layers:
+
+    pyramid:
+      model: ggpir.USGSExpertPyramid
+      params:
+        # 31-band HSI reconstruction (NTIRE).
+        bands: 31
+        # feature width of the per-level restorer / branch encoders.
+        feat_dim: 64
+        # per-expert latent width (light Gaussian bottleneck).
+        latent_dim: 4
+        # degradation-aware conditioner (FiLM) context width.
+        cond_dim: 64
+        # illumination-estimator width for the sharpness branch.
+        illu_dim: 32
+        # number of routed latent experts.
+        num_experts: 4
+        # coarse->fine upsampler: 'bilinear' (cheap) or 'wavelet'.
+        upsample: bilinear

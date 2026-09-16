@@ -1,0 +1,17 @@
+name: usgs_expert
+params:
+  optimizer: 'adam'
+  lr: 1e-3
+  weight_decay: 1e-5
+  # Spectral-angle weight on the fused reconstruction (spectral fidelity).
+  sam_weight: 0.1
+  # Structural / sharpness branch (SSIM + gradient) weight.
+  struct_weight: 0.5
+  # Color-matching branch (L1 + spectral angle) weight.
+  color_weight: 0.5
+  # Expert-latent KL regulariser (near-zero — light bottleneck prior).
+  kl_weight: 1e-4
+  # Deep-supervision weights for the coarse pyramid aux scales (mid, coarse).
+  ds_weights: [0.5, 0.25]
+  # Channels used for the (RGB-only) DeltaE metric.
+  metrics_channels: [0, 1, 2]

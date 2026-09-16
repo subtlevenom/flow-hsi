@@ -1,0 +1,11 @@
+task: tools
+tool: split
+type: icvl
+source_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/all/normalized/model
+target_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/all/normalized/gt
+output_path: /data/korepanov/datasets/Hydra.DS/ICVL/v8.251222/split
+split:
+  train: 0.7
+  val: 0.1 
+  test: 0.2 
+seed: 43

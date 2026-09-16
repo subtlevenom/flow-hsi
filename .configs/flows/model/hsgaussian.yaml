@@ -1,0 +1,42 @@
+name: flow
+params:
+  metadata:
+
+    - layer: encoder
+      inputs:
+        - image
+      outputs:
+        - x
+
+    - layer: hskan
+      inputs:
+        - x
+      outputs:
+        - y
+
+    - layer: decoder
+      inputs:
+        - y
+      outputs:
+        - result
+
+  layers:
+
+    encoder:
+      model: hskan.HSEncoder
+      params:
+        in_channels: 31
+        out_channels: 3
+
+    hskan:
+      model: hskan.HSLayer
+      params:
+        in_channels: 3
+        out_channels: 3
+        n_layers: 7
+
+    decoder:
+      model: hskan.HSDecoder
+      params:
+        in_channels: 3
+        out_channels: 31

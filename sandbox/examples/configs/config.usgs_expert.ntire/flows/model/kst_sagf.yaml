@@ -1,0 +1,44 @@
+name: flow
+params:
+  metadata:
+
+    - layer: pyramid
+      inputs:
+        - src
+      outputs:
+        - res
+
+  layers:
+
+    pyramid:
+      model: ggpir.KSTSagfPyramid
+      params:
+        bands: 31
+        # n = dimension of the per-pixel control vector x (step 0 channel mix).
+        # n == bands makes the mixing a residual around the input coordinates.
+        n: 31
+        # coeff/hypernetwork-context MSAB block count per level (coarse->fine).
+        depths: [1, 2, 3]
+        # Qo = number of outer superposition terms Phi_q (the "2n+1" dial, but
+        # amortized: per-level [X/4, X/2, X]). Raised toward 2n+1 for capacity.
+        Qo: [12, 16, 24]
+        # M = SAGF order (number of Gaussians in the inner function psi).
+        # Raised (D): the single shared psi is the whole inner core, so more
+        # Gaussians = richer inner function (most paper-faithful capacity lever).
+        M: [3, 4, 6]
+        # feature width of the channel-mix / coeff encoders (int or per-level list).
+        dim: 96
+        giv_dim: 64
+        # --- outer stage: MSAB-based external Phi_q (ChiReadout / ChiNet) ---
+        # hidden width of the MSAB outer operator that expands Qo -> bands.
+        chi_hidden: 64
+        # attention heads of the MSAB outer operator (and the xi post-mix).
+        chi_heads: 4
+        # width of the learned illumination features fed to the hypernetwork.
+        illu_dim: 32
+        # request 5: lightweight channel-attention fusion of the 3 pyramid levels.
+        pyramid_fusion: true
+        use_checkpoint: true
+        # coarse->fine recomposition: 'bilinear' = classic Laplacian pyramid;
+        # 'wavelet' = exact inverse-Haar-DWT synthesis with learned detail.
+        upsample: bilinear

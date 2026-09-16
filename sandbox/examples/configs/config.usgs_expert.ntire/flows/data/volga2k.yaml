@@ -1,0 +1,26 @@
+name: huawei
+params:
+  train:
+    source: '/data/korepanov/datasets/volga2k/dataset/train/source'
+    target: '/data/korepanov/datasets/volga2k/dataset/train/target'
+    batch_size: 16
+  val:
+    # source: '/data/korepanov/datasets/volga2k/original/source'
+    # target: '/data/korepanov/datasets/volga2k/original/reference'
+    source: '/data/korepanov/datasets/volga2k/dataset/val/source'
+    target: '/data/korepanov/datasets/volga2k/dataset/val/target'
+    batch_size: 16
+  test:
+    source: '/data/korepanov/datasets/volga2k/original/source'
+    target: '/data/korepanov/datasets/volga2k/original/reference'
+    # source: '/data/korepanov/datasets/volga2k/dataset/test/source'
+    # target: '/data/korepanov/datasets/volga2k/dataset/test/target'
+    batch_size: 1
+  predict:
+    source: '/data/korepanov/datasets/volga2k/original/source'
+    target: '/data/korepanov/datasets/volga2k/original/reference'
+    # source: '/data/korepanov/datasets/volga2k/dataset/test/source'
+    # target: '/data/korepanov/datasets/volga2k/dataset/test/target'
+    batch_size: 1
+  num_workers: 12
+  seed: 43

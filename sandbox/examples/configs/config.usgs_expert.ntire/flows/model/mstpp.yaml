@@ -1,0 +1,20 @@
+name: flow
+params:
+  metadata:
+
+    - layer: encoder
+      inputs:
+        - src
+      outputs:
+        - res
+
+  layers:
+
+    encoder:
+      model: layers.mst.MSTpp
+      params:
+        in_channels: 31
+        out_channels: 31
+        stage: 3
+        n_feat: 64
+

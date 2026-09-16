@@ -1,0 +1,10 @@
+task: tools
+tool: split
+type: cave-hsi
+source_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/all/normalized/model
+target_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/all/normalized/gt
+output_path: /data/korepanov/datasets/Hydra.DS/CAVE-HSI/v8.251218/split
+split:
+  train: 0.85
+  val: 0.15 
+seed: 43

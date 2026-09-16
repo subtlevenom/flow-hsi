@@ -1,0 +1,5 @@
+name: usgs
+params:
+  optimizer: 'adam'
+  lr: 2e-4
+  weight_decay: 1e-5

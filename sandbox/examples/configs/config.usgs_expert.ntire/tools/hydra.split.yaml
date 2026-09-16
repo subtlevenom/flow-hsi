@@ -1,0 +1,10 @@
+task: tools
+tool: split
+type: hydra
+source_path:  /data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/origin/Hydra
+target_path:  /data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/origin/Specim
+output_path:  /data/korepanov/datasets/Hydra.DS/HYDRA-Specim/v1/split
+split:
+  train: 0.8
+  val: 0.2 
+seed: 43

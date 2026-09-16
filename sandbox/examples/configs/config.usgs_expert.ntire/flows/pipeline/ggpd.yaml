@@ -1,0 +1,7 @@
+name: ggpd
+params:
+  optimizer: 'adam'
+  lr: 1e-3
+  weight_decay: 1e-5
+  warmup_epochs: 0
+  sam_weight: 0.1
