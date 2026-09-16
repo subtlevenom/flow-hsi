@@ -14,8 +14,8 @@ class HSGaussian(SepGaussian):
         return MST_Plus_Plus(
             in_channels=in_channels,
             out_channels=out_channels,
-            n_feat=20,
-            stage=2
+            n_feat=out_channels,
+            stage=3
         )
         return LightCMEncoder(in_channels, out_channels)
 

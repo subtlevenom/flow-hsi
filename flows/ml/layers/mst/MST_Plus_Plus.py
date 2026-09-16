@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 import torch.nn.functional as F
 from einops import rearrange
+from torch.utils.checkpoint import checkpoint
 import math
 import warnings
 from torch.nn.init import _calculate_fan_in_and_fan_out
@@ -164,14 +165,21 @@ class MSAB(nn.Module):
             dim_head,
             heads,
             num_blocks,
+            use_checkpoint=True,
     ):
         super().__init__()
+        self.use_checkpoint = use_checkpoint
         self.blocks = nn.ModuleList([])
         for _ in range(num_blocks):
             self.blocks.append(nn.ModuleList([
                 MS_MSA(dim=dim, dim_head=dim_head, heads=heads),
                 PreNorm(dim, FeedForward(dim=dim))
             ]))
+
+    def _block_forward(self, x, attn, ff):
+        x = attn(x) + x
+        x = ff(x) + x
+        return x
 
     def forward(self, x):
         """
@@ -180,8 +188,11 @@ class MSAB(nn.Module):
         """
         x = x.permute(0, 2, 3, 1)
         for (attn, ff) in self.blocks:
-            x = attn(x) + x
-            x = ff(x) + x
+            if self.use_checkpoint and self.training and torch.is_grad_enabled():
+                x = checkpoint(self._block_forward, x, attn, ff,
+                               use_reentrant=False)
+            else:
+                x = self._block_forward(x, attn, ff)
         out = x.permute(0, 3, 1, 2)
         return out
 

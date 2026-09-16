@@ -15,7 +15,7 @@ class HSLayer(nn.Module):
         in_channels: int = 3,
         out_channels: int = 3,
         n_layers: int = 7,
-        use_checkpoint: bool = True,
+        use_checkpoint: bool = False,
     ):
         super(HSLayer, self).__init__()
 
