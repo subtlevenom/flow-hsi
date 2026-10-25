@@ -10,3 +10,4 @@ from .hs_decoder import HSDecoder
 from .hs_layer import HSLayer
 from .ggpir import HSNet
 from .usgs_expert import USGSExpertPyramid, USGSExpertLevel, USGSExpertNet
+from .usgs_unet import ParallelHyperspectralUNets

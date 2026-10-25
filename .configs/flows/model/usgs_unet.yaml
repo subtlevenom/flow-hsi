@@ -1,0 +1,23 @@
+name: flow
+params:
+  metadata:
+
+    - layer: pyramid
+      inputs:
+        - src
+      outputs:
+        - res
+
+  layers:
+
+    pyramid:
+      model: ggpir.ParallelHyperspectralUNets
+      params:
+        spectral_channels: 31
+        num_cascades: 3
+        cm_base_channels: 32
+        hyper_channels: 24
+        hyper_base_channels: 24
+        num_gaussians: 6
+        gain_scale: 0.1
+        offset_scale: 0.05
