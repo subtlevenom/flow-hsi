@@ -6,11 +6,14 @@ import torch
 from torch import nn, optim
 import torch.nn.functional as F
 
+from flows.ml.layers.spectral_color import NTIREColorimetry
+from flows.ml.metrics.delta_e_2000 import _delta_E_CIE2000
+
 
 class USGSUNetPipeline(L.LightningModule):
     """Masked-channel pretraining followed by paired spectral restoration.
 
-    Model constructors own initialization: in particular, Gaussian amplitudes
+    Model constructors own initialization: in particular, FiLM amplitudes
     and CM output heads must keep their identity-preserving zero initialization.
     """
 
@@ -26,13 +29,15 @@ class USGSUNetPipeline(L.LightningModule):
         spectral_gradient_weight: float = 0.1,
         color_weight: float = 0.0,
         spectral_response: Optional[Sequence[Sequence[float]]] = None,
+        perceptual_weight: float = 0.1,
     ):
         super().__init__()
         if pretrain_epochs < 0 or not 0.0 < mask_ratio < 1.0:
             raise ValueError("Require pretrain_epochs >= 0 and 0 < mask_ratio < 1.")
         if lr <= 0 or weight_decay < 0:
             raise ValueError("Require lr > 0 and weight_decay >= 0.")
-        if min(mrae_weight, spectral_weight, spectral_gradient_weight, color_weight) < 0:
+        if min(mrae_weight, spectral_weight, spectral_gradient_weight,
+               color_weight, perceptual_weight) < 0:
             raise ValueError("Loss weights must be nonnegative.")
         response = None
         if spectral_response is not None:
@@ -54,6 +59,8 @@ class USGSUNetPipeline(L.LightningModule):
         self.spectral_weight = spectral_weight
         self.spectral_gradient_weight = spectral_gradient_weight
         self.color_weight = color_weight
+        self.perceptual_weight = perceptual_weight
+        self.colorimetry = NTIREColorimetry()
         self.register_buffer("spectral_response", response)
         self.save_hyperparameters(ignore=["model"])
 
@@ -110,23 +117,50 @@ class USGSUNetPipeline(L.LightningModule):
                 torch.einsum("rc,bchw->brhw", self.spectral_response, pred),
                 torch.einsum("rc,bchw->brhw", self.spectral_response, target),
             )
+        perceptual = pred.new_zeros(())
+        if self.perceptual_weight:
+            perceptual = F.l1_loss(self.colorimetry(pred), self.colorimetry(target)) / 100.0
         loss = (mae + self.mrae_weight * relative + self.spectral_weight * spectral
-                + self.spectral_gradient_weight * gradient + self.color_weight * color)
+                + self.spectral_gradient_weight * gradient + self.color_weight * color
+                + self.perceptual_weight * perceptual)
         return {"loss": loss, "mae": mae, "mrae": relative,
-                "spectral": spectral, "spectral_gradient": gradient, "color": color}
+                "spectral": spectral, "spectral_gradient": gradient, "color": color,
+                "perceptual": perceptual}
+
+    @torch.no_grad()
+    def quality_metrics(self, pred: torch.Tensor, target: torch.Tensor):
+        # PSNR uses all 31 bands and a fixed unit data range. DeltaE is CIEDE2000
+        # in integrated Lab, not an arbitrary 3-band RGB slice.
+        mse = (pred.float() - target.float()).square().flatten(1).mean(dim=1)
+        psnr = (-10.0 * torch.log10(mse.clamp_min(1e-12))).mean()
+        de = _delta_E_CIE2000(
+            self.colorimetry(pred), self.colorimetry(target),
+        ).mean().float()
+        return {"psnr": psnr, "de": de}
+
+    def log_quality(self, pred, target, prefix):
+        for name, value in self.quality_metrics(pred, target).items():
+            self.log(f"{prefix}_{name}", value, prog_bar=True,
+                     on_step=prefix == "train", on_epoch=True,
+                     batch_size=target.shape[0], sync_dist=True)
 
     def training_step(self, batch, batch_idx):
         src, target = batch
         if self.pretraining:
             masked, mask = self.mask_channels(target)
-            loss = self.masked_mae(self(masked), target, mask)
+            pred = self(masked)
+            loss = self.masked_mae(pred, target, mask)
             self.log("masked_mae", loss, on_epoch=True, batch_size=target.shape[0])
         else:
-            terms = self.restoration_losses(self(src), target)
+            pred = self(src)
+            terms = self.restoration_losses(pred, target)
             loss = terms["loss"]
             for name, value in terms.items():
                 if name != "loss":
                     self.log(name, value, on_epoch=True, batch_size=target.shape[0])
+        # During pretraining these describe masked reconstruction, not paired
+        # restoration. Reuse its prediction rather than adding a model pass.
+        self.log_quality(pred, target, "train")
         self.log("pretraining", float(self.pretraining), on_epoch=True,
                  batch_size=target.shape[0])
         self.log("train_loss", loss, prog_bar=True, batch_size=target.shape[0])
@@ -147,9 +181,7 @@ class USGSUNetPipeline(L.LightningModule):
             if name != "loss":
                 self.log(f"{prefix}_{name}", value, prog_bar=name == "mrae",
                          batch_size=target.shape[0], sync_dist=True)
-        mse = F.mse_loss(pred, target.float())
-        psnr = -10.0 * torch.log10(mse.clamp_min(1e-12))
-        self.log(f"{prefix}_psnr", psnr, batch_size=target.shape[0], sync_dist=True)
+        self.log_quality(pred, target, prefix)
         self.log(f"{prefix}_loss", loss, batch_size=target.shape[0], sync_dist=True)
         return {"loss": loss}
 

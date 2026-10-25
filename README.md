@@ -35,7 +35,7 @@ python main.py sample-image-data -i /data/korepanov/color-transfer/huawei/src -o
 $ python main.py
 $ python main.py task=test
 
-## NTIRE: MSAB Gaussian U-Net cascades
+## NTIRE: efficient MSAB / spatial FiLM U-Net cascades
 
 `python main.py` now selects the 31-band NTIRE dataset, the `usgs_unet` model,
 and its dedicated training pipeline. The configuration is in
@@ -47,15 +47,26 @@ Training uses aligned 128x128 crops with batch size 4; validation and test
 retain full images with batch size 1 to reduce memory use. Keep validation
 scenes separate from the final test set when selecting loss weights.
 
-The CM branch retains its convolutional residual U-Nets. Each parameter-branch
-U-Net now uses MST MSAB spectral-attention blocks at every encoder, bottleneck,
-and decoder level (`hyper_num_blocks: 1` per level). Its cascaded feature state
-predicts spatially varying Gaussian gains/offsets that modulate the CM output.
+The default has **two cascades**, each containing a convolutional CM U-Net and
+a parameter U-Net. The parameter U-Net uses lightweight convolutional residual
+blocks at full resolution, with MST MSAB spectral attention at half/quarter
+resolution and the bottleneck (`hyper_num_blocks: 1` per level). There are
+five MSAB modules per cascade rather than seven. Its feature state predicts
+31 spatially varying gains and 31 offsets through a zero-initialized FiLM head.
+FiLM directly modulates the provisional CM spectrum with
+`spectrum * (1 + 0.1 * tanh(gain)) + 0.05 * tanh(offset)`, eliminating the
+per-pixel Gaussian basis and exponential evaluation.
 Odd spatial sizes remain supported by explicit skip-size interpolation.
 Constructor initialization is preserved: every cascade initially maps its
 input to itself.
-Older convolution-only `usgs_unet` checkpoints are not architecture-compatible;
-use the new experiment directory rather than resuming those weights.
+Earlier Gaussian / full-resolution-attention checkpoints are not compatible
+with this default. The experiment directory is now `usgs-unet.film.ntire` to
+avoid resuming those weights. For controlled comparisons, Gaussian modulation
+and full-resolution MSAB remain available as model options:
+`modulation=gaussian` and `hyper_full_resolution_msab=true` under
+`model.params.layers.pyramid.params`; `num_cascades=3` restores the old depth.
+Direct FiLM does not enforce smooth correction fields across wavelength.
+These are efficiency changes, not a guarantee of improved task accuracy.
 
 The default 20-epoch run has two phases using the same model and optimizer:
 
@@ -65,8 +76,16 @@ The default 20-epoch run has two phases using the same model and optimizer:
   an efficient token-dropping ViT MAE: dense U-Nets still process all bands.
 - Epochs 5-19: paired source-to-target color restoration. The objective is
   all-band MAE + 0.1 MRAE + 0.1 spectral cosine distance + 0.1 spectral
-  first-difference error. MRAE uses a 1e-3 denominator floor to limit the
-  influence of dark bands; the cosine term ignores zero target spectra.
+  first-difference error + 0.1 perceptual loss. Perceptual loss is differentiable
+  CIE Lab L1 divided by 100, not an ImageNet/VGG feature loss. MRAE uses a 1e-3
+  denominator floor to limit the influence of dark bands; the cosine term
+  ignores zero target spectra.
+
+Both training and validation progress bars show PSNR and `de` (CIEDE2000).
+PSNR averages per-image PSNR across all 31 bands with a fixed data range of 1.
+During pretraining, training metrics describe masked reconstruction; validation
+metrics always describe paired source-to-target restoration. Training metrics
+reuse the current prediction and do not require an extra model forward pass.
 
 Validation masking is repeatable. `val_masked_mae` tracks reconstruction during
 pretraining, while `val_mrae` **always** measures paired source-to-target
@@ -94,20 +113,27 @@ wiggles without forcing all spectra to be flat. Compare these loss weights and
 masked pretraining against the supervised-only ablation on held-out scenes;
 pretraining is a hypothesis, not an established accuracy improvement.
 
-For perceptual color fidelity, supply a calibrated **linear** spectral-to-RGB
-or spectral-to-XYZ integration matrix as `pipeline.params.spectral_response`
-(three rows, 31 columns, including wavelength-bin and illuminant weighting),
-then enable `pipeline.params.color_weight`. The pipeline applies that same
-matrix to predictions and targets for a differentiable color-projection L1
-term. No camera response is guessed and no arbitrary three-band slice is
-reported as DeltaE. True DeltaE evaluation additionally requires the correct
-illuminant, reference white, and XYZ/Lab conversion.
+Color loss and DeltaE use the **CIE 1931 2-degree observer with D65**, assuming
+31 ordered relative-reflectance bands from **400 to 700 nm in 10 nm steps**.
+XYZ is integrated with trapezoidal weights and normalized to unit perfect-
+diffuser luminance. Lab uses the corresponding band-limited D65 diffuser white
+so a flat spectrum remains neutral. Integration covers only the measured
+400-700 nm range; this is not full-visible-spectrum colorimetry. Numeric CIE
+observer/D65 tables are embedded; no runtime downloads or new dependencies
+are needed. Perceptual loss operates directly on Lab without RGB gamut clipping.
 
-For nonuniform band spacing, pass physical wavelengths to
-`model.params.layers.pyramid.params.wavelengths`; Gaussian modulation will use
-their normalized positions. The adjacent-band loss assumes the default evenly
-spaced NTIRE bands. Keep source/target normalization consistent across all
-bands (avoid independent per-image or per-band normalization, which removes
-the intensity/color differences the model must learn). If random-band
-pretraining transfers poorly, ablate contiguous-band masks and spatial masks
-separately rather than assuming more masking is better.
+This assumption is not valid for arbitrary camera channels, independently
+normalized bands, or radiance already containing an illuminant spectrum.
+For those data, adapt the color conversion before interpreting DeltaE or using
+the perceptual loss. `perceptual_weight=0` disables that loss but does not change
+the colorimetry used for logged metrics.
+
+An optional calibrated linear projection L1 term remains available through
+`pipeline.params.spectral_response` (three rows, 31 columns) and `color_weight`;
+that auxiliary matrix does **not** replace the CIE/D65 perceptual/metric path.
+Keep source/target normalization consistent across all bands (avoid independent
+per-image or per-band normalization, which removes the intensity/color
+differences the model must learn). The adjacent-band loss assumes equally
+spaced bands. Gaussian-only wavelength overrides do not alter colorimetry.
+If random-band pretraining transfers poorly, compare contiguous-band masks and
+spatial masks separately rather than assuming more masking is better.

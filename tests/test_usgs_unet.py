@@ -8,10 +8,13 @@ from hydra import compose, initialize_config_dir
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+from skimage.color import deltaE_ciede2000
 
 from flows.core.selector import ModelSelector, PipelineSelector
 from flows.ml.layers.mst import MSAB
 from flows.ml.models.ggpir import ParallelHyperspectralUNets
+from flows.ml.models.ggpir.usgs_unet import GaussianInjection, SpatialFiLM
+from flows.ml.layers.spectral_color import NTIREColorimetry
 from flows.ml.models.flow import Flow
 from flows.ml.pipelines.usgs_unet import USGSUNetPipeline
 from flows.cli.train import train_default
@@ -49,14 +52,56 @@ def make_pipeline(**kwargs):
 @pytest.mark.parametrize("shape", [(2, 31, 17, 19), (1, 31, 8, 8), (1, 31, 1, 1)])
 def test_msab_parameter_cascades_preserve_shape_and_identity(shape):
     model = make_model()
-    assert sum(isinstance(m, MSAB) for m in model.hyper_stages.modules()) == 14
+    assert sum(isinstance(m, MSAB) for m in model.hyper_stages.modules()) == 10
     assert not any(isinstance(m, MSAB) for m in model.cm_stages.modules())
+    for stage in model.hyper_stages:
+        assert not any(isinstance(m, MSAB) for m in stage.encoder0.modules())
+        assert not any(isinstance(m, MSAB) for m in stage.decoder0.modules())
+        assert any(isinstance(m, MSAB) for m in stage.bottleneck.modules())
+    assert all(isinstance(m, SpatialFiLM) for m in model.injections)
     x = torch.rand(shape)
     y, stages = model(x, return_intermediate=True)
     assert len(stages) == 2
     for stage in stages:
         torch.testing.assert_close(stage, x, atol=1e-6, rtol=1e-6)
     assert y.shape == x.shape
+
+
+def test_gaussian_full_attention_baseline_remains_available():
+    model = ParallelHyperspectralUNets(
+        num_cascades=3, cm_base_channels=4, hyper_channels=4,
+        hyper_base_channels=4, modulation="gaussian",
+        hyper_full_resolution_msab=True, num_gaussians=2,
+    )
+    assert all(isinstance(m, GaussianInjection) for m in model.injections)
+    assert sum(isinstance(m, MSAB) for m in model.hyper_stages.modules()) == 21
+    x = torch.rand(1, 31, 9, 11)
+    torch.testing.assert_close(model(x), x)
+
+
+def test_spatial_film_bounds_initialization_and_gradients():
+    film = SpatialFiLM(4)
+    features = torch.randn(1, 4, 7, 9, requires_grad=True)
+    spectrum = torch.ones(1, 31, 7, 9)
+    torch.testing.assert_close(film(spectrum, features), spectrum, rtol=0, atol=0)
+    with torch.no_grad():
+        film.parameters_out.weight.normal_(std=0.1)
+        film.parameters_out.bias.fill_(100)
+    upper = film(spectrum, features)
+    torch.testing.assert_close(upper, torch.full_like(upper, 1.15))
+    with torch.no_grad():
+        film.parameters_out.bias.fill_(-100)
+    torch.testing.assert_close(film(spectrum, features), torch.full_like(upper, 0.85))
+    with torch.no_grad():
+        film.parameters_out.bias.zero_()
+    output = film(spectrum, features)
+    output.sum().backward()
+    assert torch.isfinite(features.grad).all()
+    assert features.grad.abs().sum() > 0
+    with pytest.raises(ValueError, match="nonnegative"):
+        SpatialFiLM(4, gain_scale=-1)
+    with pytest.raises(ValueError, match="modulation"):
+        ParallelHyperspectralUNets(modulation="invalid")
 
 
 def test_masking_and_held_out_objective():
@@ -148,6 +193,7 @@ def test_calibrated_color_projection():
     {"lr": 0}, {"spectral_weight": -1}, {"color_weight": 1},
     {"spectral_response": [[1, 2]]}, {"spectral_response": [[0, 0]] * 3},
     {"spectral_response": [[float("nan"), 1]] * 3},
+    {"perceptual_weight": -1},
 ])
 def test_invalid_pipeline_configuration_is_rejected(kwargs):
     with pytest.raises(ValueError):
@@ -162,6 +208,9 @@ def test_default_configuration_uses_ntire_msab_model_and_pipeline():
     assert cfg.pipeline.name == "usgs_unet"
     assert cfg.pipeline.params.pretrain_epochs < cfg.epochs
     assert not cfg.swa
+    assert cfg.model.params.layers.pyramid.params.num_cascades == 2
+    assert cfg.model.params.layers.pyramid.params.modulation == "film"
+    assert cfg.pipeline.params.perceptual_weight > 0
     model = ModelSelector.select(cfg.model)
     pipeline = PipelineSelector.select(model, cfg.pipeline)
     assert isinstance(model, Flow)
@@ -198,7 +247,7 @@ def test_training_transitions_and_resumes_with_identity_initialization_intact(tm
     first_phase = RecordPhase(stop=True)
     checkpoint = ModelCheckpoint(monitor="val_mrae", save_last=True)
     first = trainer(tmp_path, [first_phase, checkpoint])
-    # setup must not reset zero Gaussian amplitudes, centers, or CM output heads.
+    # setup must preserve zero FiLM and CM output heads.
     pipeline.trainer = first
     before = {k: v.clone() for k, v in pipeline.state_dict().items()}
     pipeline.setup("fit")
@@ -208,6 +257,10 @@ def test_training_transitions_and_resumes_with_identity_initialization_intact(tm
     assert first_phase.phases == [True]
     assert "val_mrae" in first.callback_metrics
     assert "val_masked_mae" in first.callback_metrics
+    assert "train_psnr_step" in first.progress_bar_metrics
+    assert "train_de_step" in first.progress_bar_metrics
+    assert "val_psnr" in first.progress_bar_metrics
+    assert "val_de" in first.progress_bar_metrics
     assert Path(checkpoint.last_model_path).is_file()
 
     second_phase = RecordPhase()
@@ -217,6 +270,10 @@ def test_training_transitions_and_resumes_with_identity_initialization_intact(tm
     assert second_phase.phases == [False]
     assert second.global_step == 4
     assert "mrae" in second.callback_metrics
+    assert "train_psnr_step" in second.progress_bar_metrics
+    assert "train_de_step" in second.progress_bar_metrics
+    assert "val_psnr" in second.progress_bar_metrics
+    assert "val_de" in second.progress_bar_metrics
     assert torch.isfinite(second.callback_metrics["val_mrae"])
     assert second.test(resumed, loader, verbose=False)[0]["test_mrae"] >= 0
     prediction = resumed.predict_step((src, src, ["a.npy", "b.npy"]), 0)
@@ -277,4 +334,52 @@ def test_ntire_training_entrypoint_writes_checkpoints_and_previews(tmp_path):
     assert (logs / "figures" / "reconst_0.png").is_file()
     assert (logs / "figures" / "reconst_1.png").is_file()
     metrics = (logs / "metrics.csv").read_text()
-    assert "val_mrae" in metrics and "masked_mae" in metrics
+    for metric in ("val_mrae", "masked_mae", "train_psnr", "train_de",
+                   "val_psnr", "val_de", "perceptual"):
+        assert metric in metrics
+
+
+@pytest.mark.parametrize("value,lightness", [(0.0, 0.0), (1.0, 100.0), (0.18, 49.4961076)])
+def test_cie_conversion_reference_neutrals(value, lightness):
+    color = NTIREColorimetry()
+    lab = color(torch.full((1, 31, 2, 3), value))
+    expected = torch.tensor([lightness, 0.0, 0.0])[None, :, None, None].expand_as(lab)
+    torch.testing.assert_close(lab, expected, atol=5e-5, rtol=1e-6)
+    torch.testing.assert_close(color.response[1].sum(), torch.tensor(1.0))
+    # 600 nm CIE 1931 observer chromatic ratios, independent of D65 intensity.
+    torch.testing.assert_close(color.response[:, 20] / color.response[1, 20],
+                               torch.tensor([1.0622 / 0.631, 1.0, 0.0008 / 0.631]))
+    with pytest.raises(ValueError, match="31 ordered bands"):
+        color(torch.zeros(1, 3, 2, 3))
+
+
+@pytest.mark.parametrize("value", [-0.1, 0.0, 0.001, 0.5, 1.2])
+def test_perceptual_loss_gradient_is_finite_and_nonzero(value):
+    pipeline = make_pipeline(
+        mrae_weight=0, spectral_weight=0, spectral_gradient_weight=0,
+        perceptual_weight=1,
+    )
+    pred = torch.full((1, 31, 3, 5), value, requires_grad=True)
+    target = torch.full_like(pred, 0.3)
+    perceptual = pipeline.restoration_losses(pred, target)["perceptual"]
+    perceptual.backward()
+    assert torch.isfinite(perceptual)
+    assert torch.isfinite(pred.grad).all()
+    assert pred.grad.abs().sum() > 0
+    assert torch.count_nonzero(pred.grad.flatten(2).sum(dim=2)) == 31
+
+
+def test_quality_metrics_match_independent_ciede2000_and_psnr():
+    pipeline = make_pipeline()
+    pred, target = torch.rand(2, 31, 4, 5), torch.rand(2, 31, 4, 5)
+    actual = pipeline.quality_metrics(pred, target)
+    lab_pred = pipeline.colorimetry(pred).permute(0, 2, 3, 1).numpy().astype(np.float64)
+    lab_target = pipeline.colorimetry(target).permute(0, 2, 3, 1).numpy().astype(np.float64)
+    expected_de = deltaE_ciede2000(lab_pred, lab_target).mean()
+    assert actual["de"].item() == pytest.approx(expected_de, rel=1e-5)
+    expected_psnr = (-10 * np.log10(
+        np.mean((pred.numpy() - target.numpy()) ** 2, axis=(1, 2, 3)))).mean()
+    assert actual["psnr"].item() == pytest.approx(expected_psnr, rel=1e-5)
+    matched = pipeline.quality_metrics(target, target)
+    assert matched["de"] == 0
+    assert torch.isfinite(matched["psnr"])

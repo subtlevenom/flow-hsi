@@ -14,11 +14,13 @@ params:
       model: ggpir.ParallelHyperspectralUNets
       params:
         spectral_channels: 31
-        num_cascades: 3
+        num_cascades: 2
         cm_base_channels: 32
         hyper_channels: 24
         hyper_base_channels: 24
         hyper_num_blocks: 1
-        num_gaussians: 6
+        hyper_full_resolution_msab: false
+        modulation: film
+        num_gaussians: 6  # Used only with modulation: gaussian.
         gain_scale: 0.1
         offset_scale: 0.05

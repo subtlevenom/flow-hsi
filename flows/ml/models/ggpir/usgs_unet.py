@@ -99,6 +99,7 @@ class UNet(nn.Module):
         base_channels: int = 32,
         zero_output: bool = False,
         msab_blocks: int = 0,
+        full_resolution_msab: bool = True,
     ):
         super().__init__()
 
@@ -117,14 +118,15 @@ class UNet(nn.Module):
                 ),
             )
 
-        self.encoder0 = block(in_channels, b)
+        full_block = block if full_resolution_msab else ResidualBlock
+        self.encoder0 = full_block(in_channels, b)
         self.encoder1 = DownBlock(b, 2 * b, block)
         self.encoder2 = DownBlock(2 * b, 4 * b, block)
         self.bottleneck = DownBlock(4 * b, 8 * b, block)
 
         self.decoder2 = UpBlock(8 * b, 4 * b, 4 * b, block)
         self.decoder1 = UpBlock(4 * b, 2 * b, 2 * b, block)
-        self.decoder0 = UpBlock(2 * b, b, b, block)
+        self.decoder0 = UpBlock(2 * b, b, b, full_block)
 
         self.output = nn.Conv2d(b, out_channels, 1)
 
@@ -293,6 +295,37 @@ class GaussianInjection(nn.Module):
         return spectrum * (1.0 + gamma) + beta
 
 
+class SpatialFiLM(nn.Module):
+    """Predict bounded per-pixel, per-band gains and offsets without a basis."""
+
+    def __init__(
+        self, feature_channels: int, spectral_channels: int = 31,
+        gain_scale: float = 0.1, offset_scale: float = 0.05,
+    ):
+        super().__init__()
+        if feature_channels < 1 or spectral_channels < 2:
+            raise ValueError("Require positive features and at least two spectral channels.")
+        if gain_scale < 0 or offset_scale < 0:
+            raise ValueError("Modulation scales must be nonnegative.")
+        self.gain_scale = gain_scale
+        self.offset_scale = offset_scale
+        self.reduce = nn.Sequential(
+            nn.Conv2d(feature_channels, max(8, feature_channels // 2), 1),
+            nn.SiLU(inplace=True),
+        )
+        self.parameters_out = nn.Conv2d(
+            max(8, feature_channels // 2), 2 * spectral_channels, 1,
+        )
+        nn.init.zeros_(self.parameters_out.weight)
+        nn.init.zeros_(self.parameters_out.bias)
+
+    def forward(self, spectrum, features):
+        gain, offset = self.parameters_out(self.reduce(features)).chunk(2, dim=1)
+        gain = self.gain_scale * torch.tanh(gain.float())
+        offset = self.offset_scale * torch.tanh(offset.float())
+        return spectrum * (1.0 + gain.to(spectrum.dtype)) + offset.to(spectrum.dtype)
+
+
 class ParallelHyperspectralUNets(nn.Module):
     """
     Cascaded parallel Unet-CM and Unet-H.
@@ -301,13 +334,13 @@ class ParallelHyperspectralUNets(nn.Module):
     Output: [B, 31, H, W]
 
     The MSAB parameter Unet-H evolves independently of the CM state.
-    The branches interact through the Gaussian injection heads.
+    The branches interact through spatial FiLM injection heads by default.
     """
 
     def __init__(
         self,
         spectral_channels: int = 31,
-        num_cascades: int = 3,
+        num_cascades: int = 2,
         cm_base_channels: int = 32,
         hyper_channels: int = 24,
         hyper_base_channels: int = 24,
@@ -316,6 +349,8 @@ class ParallelHyperspectralUNets(nn.Module):
         gain_scale: float = 0.1,
         offset_scale: float = 0.05,
         hyper_num_blocks: int = 1,
+        modulation: str = "film",
+        hyper_full_resolution_msab: bool = False,
     ):
         super().__init__()
 
@@ -323,6 +358,10 @@ class ParallelHyperspectralUNets(nn.Module):
             raise ValueError("num_cascades must be positive.")
         if hyper_num_blocks < 1:
             raise ValueError("hyper_num_blocks must be positive.")
+        if modulation not in ("film", "gaussian"):
+            raise ValueError("modulation must be 'film' or 'gaussian'.")
+        if modulation == "film" and wavelengths is not None:
+            raise ValueError("wavelengths applies only to Gaussian modulation.")
 
         self.spectral_channels = spectral_channels
 
@@ -347,6 +386,7 @@ class ParallelHyperspectralUNets(nn.Module):
                 base_channels=hyper_base_channels,
                 zero_output=False,
                 msab_blocks=hyper_num_blocks,
+                full_resolution_msab=hyper_full_resolution_msab,
             )
             for _ in range(num_cascades)
         ])
@@ -357,6 +397,11 @@ class ParallelHyperspectralUNets(nn.Module):
                 spectral_channels=spectral_channels,
                 num_gaussians=num_gaussians,
                 wavelengths=wavelengths,
+                gain_scale=gain_scale,
+                offset_scale=offset_scale,
+            ) if modulation == "gaussian" else SpatialFiLM(
+                feature_channels=hyper_channels,
+                spectral_channels=spectral_channels,
                 gain_scale=gain_scale,
                 offset_scale=offset_scale,
             )
@@ -397,7 +442,7 @@ class ParallelHyperspectralUNets(nn.Module):
 if __name__ == "__main__":
     model = ParallelHyperspectralUNets(
         spectral_channels=31,
-        num_cascades=3,
+        num_cascades=2,
         cm_base_channels=32,
         hyper_channels=24,
         hyper_base_channels=24,

@@ -7,6 +7,8 @@ params:
   mrae_weight: 0.1
   spectral_weight: 0.1
   spectral_gradient_weight: 0.1
+  # CIE Lab L1 / 100, assuming 400:10:700 nm relative reflectance under D65.
+  perceptual_weight: 0.1
   # Supply a calibrated [3, 31] response before enabling the color loss.
   spectral_response: null
   color_weight: 0.0
