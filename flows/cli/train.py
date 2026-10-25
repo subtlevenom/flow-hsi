@@ -37,34 +37,36 @@ def train_default(config: DictConfig) -> None:
         version='',
     )
 
-    # cmKAN-Killer Training Configuration
+    callbacks = [
+        ModelCheckpoint(
+            filename="{epoch}-{val_mrae:.4f}",
+            monitor='val_mrae',
+            save_top_k=3,
+            save_last=True,
+            mode='min',
+        ),
+        RichModelSummary(),
+        RichProgressBar(),
+        LearningRateMonitor(logging_interval='step'),
+        GenerateCallback(every_n_epochs=config.get('visualize_freq', 5)),
+    ]
+    if config.get('swa', True):
+        callbacks.append(StochasticWeightAveraging(
+            swa_lrs=config.pipeline.params.lr * 0.1,
+            swa_epoch_start=int(0.75 * config.epochs),
+        ))
+
+    accelerator = config.get('accelerator', 'auto')
+    use_cuda = accelerator in ('auto', 'gpu', 'cuda') and torch.cuda.is_available()
     trainer = L.Trainer(
         logger=logger,
         default_root_dir=os.path.join(config.save_dir, config.experiment),
         max_epochs=config.epochs,
-        # Use bf16 for better numerical stability in Gaussian kernels
-        precision="bf16-mixed" if torch.cuda.is_bf16_supported() else 32,
-        devices=1,
-        # Tighter clipping for Quadratic Transport stability
+        precision="bf16-mixed" if use_cuda and torch.cuda.is_bf16_supported() else 32,
+        accelerator=accelerator,
+        devices=config.get('devices', 1),
         gradient_clip_val=0.5,
-        callbacks=[
-            ModelCheckpoint(
-                filename="{epoch}-{val_mrae:.4f}",
-                monitor='val_mrae',  # NTIRE spectral primary metric
-                save_top_k=3,
-                save_last=True,
-                mode='min',
-            ),
-            RichModelSummary(),
-            RichProgressBar(),
-            LearningRateMonitor(logging_interval='step'),
-            GenerateCallback(every_n_epochs=5),  # Reduce frequency to save IO
-            StochasticWeightAveraging(
-                # SWA LR should be low to smooth the transport manifold
-                swa_lrs=config.pipeline.params.lr * 0.1,
-                swa_epoch_start=int(0.75 * config.epochs),
-            )
-        ],
+        callbacks=callbacks,
     )
 
     ckpt_path = os.path.join(config.save_dir, config.experiment,

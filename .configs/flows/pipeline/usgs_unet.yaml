@@ -1,0 +1,12 @@
+name: usgs_unet
+params:
+  lr: 2e-4
+  weight_decay: 1e-5
+  pretrain_epochs: 5
+  mask_ratio: 0.5
+  mrae_weight: 0.1
+  spectral_weight: 0.1
+  spectral_gradient_weight: 0.1
+  # Supply a calibrated [3, 31] response before enabling the color loss.
+  spectral_response: null
+  color_weight: 0.0

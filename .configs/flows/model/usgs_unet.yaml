@@ -18,6 +18,7 @@ params:
         cm_base_channels: 32
         hyper_channels: 24
         hyper_base_channels: 24
+        hyper_num_blocks: 1
         num_gaussians: 6
         gain_scale: 0.1
         offset_scale: 0.05

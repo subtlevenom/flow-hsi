@@ -5,7 +5,7 @@ from omegaconf import DictConfig
 from flows import main as flows_main
 
 
-@hydra.main(version_base="1.3.2", config_path=".configs/config", config_name="config")
+@hydra.main(version_base="1.3.2", config_path=".configs", config_name="config")
 def main(cfg: DictConfig) -> Optional[float]:
     flows_main(cfg)
 

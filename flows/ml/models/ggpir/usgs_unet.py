@@ -1,8 +1,10 @@
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+from flows.ml.layers.mst import MSAB
 
 
 def group_norm(channels: int) -> nn.GroupNorm:
@@ -44,9 +46,12 @@ class ResidualBlock(nn.Module):
 
 
 class DownBlock(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
+    def __init__(
+        self, in_channels: int, out_channels: int,
+        block: Callable[[int, int], nn.Module] = ResidualBlock,
+    ):
         super().__init__()
-        self.block = ResidualBlock(in_channels, out_channels)
+        self.block = block(in_channels, out_channels)
 
     def forward(self, x):
         x = F.avg_pool2d(x, kernel_size=2, ceil_mode=True)
@@ -59,11 +64,12 @@ class UpBlock(nn.Module):
         in_channels: int,
         skip_channels: int,
         out_channels: int,
+        block: Callable[[int, int], nn.Module] = ResidualBlock,
     ):
         super().__init__()
 
         self.project = nn.Conv2d(in_channels, out_channels, 1)
-        self.fuse = ResidualBlock(
+        self.fuse = block(
             out_channels + skip_channels, out_channels
         )
 
@@ -92,19 +98,33 @@ class UNet(nn.Module):
         out_channels: int,
         base_channels: int = 32,
         zero_output: bool = False,
+        msab_blocks: int = 0,
     ):
         super().__init__()
 
+        if base_channels < 1 or msab_blocks < 0:
+            raise ValueError("base_channels must be positive and msab_blocks nonnegative.")
         b = base_channels
 
-        self.encoder0 = ResidualBlock(in_channels, b)
-        self.encoder1 = DownBlock(b, 2 * b)
-        self.encoder2 = DownBlock(2 * b, 4 * b)
-        self.bottleneck = DownBlock(4 * b, 8 * b)
+        def block(cin: int, cout: int) -> nn.Module:
+            if msab_blocks == 0:
+                return ResidualBlock(cin, cout)
+            return nn.Sequential(
+                nn.Conv2d(cin, cout, 1) if cin != cout else nn.Identity(),
+                MSAB(
+                    dim=cout, dim_head=b, heads=cout // b,
+                    num_blocks=msab_blocks,
+                ),
+            )
 
-        self.decoder2 = UpBlock(8 * b, 4 * b, 4 * b)
-        self.decoder1 = UpBlock(4 * b, 2 * b, 2 * b)
-        self.decoder0 = UpBlock(2 * b, b, b)
+        self.encoder0 = block(in_channels, b)
+        self.encoder1 = DownBlock(b, 2 * b, block)
+        self.encoder2 = DownBlock(2 * b, 4 * b, block)
+        self.bottleneck = DownBlock(4 * b, 8 * b, block)
+
+        self.decoder2 = UpBlock(8 * b, 4 * b, 4 * b, block)
+        self.decoder1 = UpBlock(4 * b, 2 * b, 2 * b, block)
+        self.decoder0 = UpBlock(2 * b, b, b, block)
 
         self.output = nn.Conv2d(b, out_channels, 1)
 
@@ -280,7 +300,7 @@ class ParallelHyperspectralUNets(nn.Module):
     Input:  [B, 31, H, W]
     Output: [B, 31, H, W]
 
-    Unet-H evolves its own feature state independently of the CM state.
+    The MSAB parameter Unet-H evolves independently of the CM state.
     The branches interact through the Gaussian injection heads.
     """
 
@@ -295,11 +315,14 @@ class ParallelHyperspectralUNets(nn.Module):
         wavelengths: Optional[Sequence[float]] = None,
         gain_scale: float = 0.1,
         offset_scale: float = 0.05,
+        hyper_num_blocks: int = 1,
     ):
         super().__init__()
 
         if num_cascades < 1:
             raise ValueError("num_cascades must be positive.")
+        if hyper_num_blocks < 1:
+            raise ValueError("hyper_num_blocks must be positive.")
 
         self.spectral_channels = spectral_channels
 
@@ -323,6 +346,7 @@ class ParallelHyperspectralUNets(nn.Module):
                 out_channels=hyper_channels,
                 base_channels=hyper_base_channels,
                 zero_output=False,
+                msab_blocks=hyper_num_blocks,
             )
             for _ in range(num_cascades)
         ])

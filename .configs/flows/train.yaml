@@ -1,5 +1,5 @@
 task: train
-experiment: hsgaussian.sum.7.cave-hsi.v8
+experiment: usgs-unet.msab.ntire
 save_dir: .experiments
 accelerator: gpu
 devices: [0]
@@ -7,9 +7,10 @@ resume: True
 epochs: 20
 save_freq: 1
 visualize_freq: 1
+swa: false
 
 defaults:
-  - model: usgs_expert
+  - model: usgs_unet
   - data: ntire
-  - pipeline: usgs_expert
+  - pipeline: usgs_unet
   - _self_

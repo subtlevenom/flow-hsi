@@ -1,0 +1,181 @@
+import math
+from typing import Optional, Sequence
+
+import lightning as L
+import torch
+from torch import nn, optim
+import torch.nn.functional as F
+
+
+class USGSUNetPipeline(L.LightningModule):
+    """Masked-channel pretraining followed by paired spectral restoration.
+
+    Model constructors own initialization: in particular, Gaussian amplitudes
+    and CM output heads must keep their identity-preserving zero initialization.
+    """
+
+    def __init__(
+        self,
+        model: nn.Module,
+        lr: float = 2e-4,
+        weight_decay: float = 1e-5,
+        pretrain_epochs: int = 5,
+        mask_ratio: float = 0.5,
+        mrae_weight: float = 0.1,
+        spectral_weight: float = 0.1,
+        spectral_gradient_weight: float = 0.1,
+        color_weight: float = 0.0,
+        spectral_response: Optional[Sequence[Sequence[float]]] = None,
+    ):
+        super().__init__()
+        if pretrain_epochs < 0 or not 0.0 < mask_ratio < 1.0:
+            raise ValueError("Require pretrain_epochs >= 0 and 0 < mask_ratio < 1.")
+        if lr <= 0 or weight_decay < 0:
+            raise ValueError("Require lr > 0 and weight_decay >= 0.")
+        if min(mrae_weight, spectral_weight, spectral_gradient_weight, color_weight) < 0:
+            raise ValueError("Loss weights must be nonnegative.")
+        response = None
+        if spectral_response is not None:
+            response = torch.as_tensor(spectral_response, dtype=torch.float32)
+            if (response.ndim != 2 or response.shape[0] != 3
+                    or response.shape[1] < 2
+                    or not torch.isfinite(response).all()
+                    or (response < 0).any() or (response.sum(dim=1) <= 0).any()):
+                raise ValueError("spectral_response must be a finite nonnegative [3, C] matrix.")
+        if color_weight > 0 and response is None:
+            raise ValueError("color_weight requires a calibrated spectral_response.")
+
+        self.model = model
+        self.lr = lr
+        self.weight_decay = weight_decay
+        self.pretrain_epochs = pretrain_epochs
+        self.mask_ratio = mask_ratio
+        self.mrae_weight = mrae_weight
+        self.spectral_weight = spectral_weight
+        self.spectral_gradient_weight = spectral_gradient_weight
+        self.color_weight = color_weight
+        self.register_buffer("spectral_response", response)
+        self.save_hyperparameters(ignore=["model"])
+
+    def setup(self, stage: str) -> None:
+        if stage == "fit" and self.pretrain_epochs >= self.trainer.max_epochs:
+            raise ValueError("epochs must exceed pretrain_epochs to include paired fine-tuning.")
+
+    @property
+    def pretraining(self) -> bool:
+        return self.current_epoch < self.pretrain_epochs
+
+    def forward(self, x: torch.Tensor, y: Optional[torch.Tensor] = None):
+        return self.model(src=x)["res"]
+
+    def mask_channels(self, target: torch.Tensor, deterministic: bool = False):
+        if target.ndim != 4 or target.shape[1] < 2:
+            raise ValueError("Expected a hyperspectral [B, C, H, W] cube with C >= 2.")
+        batch, channels = target.shape[:2]
+        count = max(1, min(channels - 1, round(channels * self.mask_ratio)))
+        # Local CPU generator makes validation masks repeatable without changing
+        # the training RNG, including when validation runs on a different device.
+        generator = torch.Generator().manual_seed(0) if deterministic else None
+        scores = torch.rand(batch, channels, generator=generator, device="cpu")
+        indices = scores.argsort(dim=1)[:, :count].to(target.device)
+        mask = torch.zeros(batch, channels, device=target.device, dtype=torch.bool)
+        mask.scatter_(1, indices, True)
+        mask = mask[:, :, None, None]
+        return target.masked_fill(mask, 0.0), mask
+
+    @staticmethod
+    def masked_mae(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor):
+        error = (pred.float() - target.float()).abs()
+        return error.masked_select(mask.expand_as(error)).mean()
+
+    @staticmethod
+    def mrae(pred: torch.Tensor, target: torch.Tensor):
+        return ((pred - target).abs() / target.abs().clamp_min(1e-3)).mean()
+
+    def restoration_losses(self, pred: torch.Tensor, target: torch.Tensor):
+        if pred.shape != target.shape:
+            raise ValueError("Prediction and target cubes must have identical shapes.")
+        pred, target = pred.float(), target.float()
+        mae = F.l1_loss(pred, target)
+        relative = self.mrae(pred, target)
+        valid = target.norm(dim=1) > 1e-6
+        cosine = F.cosine_similarity(pred, target, dim=1, eps=1e-6)
+        spectral = ((1.0 - cosine).clamp_min(0) * valid).sum() / valid.sum().clamp_min(1)
+        gradient = F.l1_loss(pred.diff(dim=1), target.diff(dim=1))
+        color = pred.new_zeros(())
+        if self.color_weight:
+            if self.spectral_response.shape[1] != pred.shape[1]:
+                raise ValueError("spectral_response must match the cube's channel count.")
+            color = F.l1_loss(
+                torch.einsum("rc,bchw->brhw", self.spectral_response, pred),
+                torch.einsum("rc,bchw->brhw", self.spectral_response, target),
+            )
+        loss = (mae + self.mrae_weight * relative + self.spectral_weight * spectral
+                + self.spectral_gradient_weight * gradient + self.color_weight * color)
+        return {"loss": loss, "mae": mae, "mrae": relative,
+                "spectral": spectral, "spectral_gradient": gradient, "color": color}
+
+    def training_step(self, batch, batch_idx):
+        src, target = batch
+        if self.pretraining:
+            masked, mask = self.mask_channels(target)
+            loss = self.masked_mae(self(masked), target, mask)
+            self.log("masked_mae", loss, on_epoch=True, batch_size=target.shape[0])
+        else:
+            terms = self.restoration_losses(self(src), target)
+            loss = terms["loss"]
+            for name, value in terms.items():
+                if name != "loss":
+                    self.log(name, value, on_epoch=True, batch_size=target.shape[0])
+        self.log("pretraining", float(self.pretraining), on_epoch=True,
+                 batch_size=target.shape[0])
+        self.log("train_loss", loss, prog_bar=True, batch_size=target.shape[0])
+        return {"loss": loss}
+
+    def _evaluate(self, batch, prefix: str):
+        src, target = batch
+        pred = self(src).float()
+        terms = self.restoration_losses(pred, target)
+        loss = terms["loss"]
+        if prefix == "val" and self.pretraining:
+            masked, mask = self.mask_channels(target, deterministic=True)
+            loss = self.masked_mae(self(masked), target, mask)
+            self.log("val_masked_mae", loss, batch_size=target.shape[0], sync_dist=True)
+        # Always rank checkpoints on the same paired restoration task, even
+        # during pretraining; never compare masked MAE against restoration MRAE.
+        for name, value in terms.items():
+            if name != "loss":
+                self.log(f"{prefix}_{name}", value, prog_bar=name == "mrae",
+                         batch_size=target.shape[0], sync_dist=True)
+        mse = F.mse_loss(pred, target.float())
+        psnr = -10.0 * torch.log10(mse.clamp_min(1e-12))
+        self.log(f"{prefix}_psnr", psnr, batch_size=target.shape[0], sync_dist=True)
+        self.log(f"{prefix}_loss", loss, batch_size=target.shape[0], sync_dist=True)
+        return {"loss": loss}
+
+    def validation_step(self, batch, batch_idx):
+        return self._evaluate(batch, "val")
+
+    def test_step(self, batch, batch_idx):
+        return self._evaluate(batch, "test")
+
+    def predict_step(self, batch, batch_idx):
+        src, _, names = batch
+        return {"image": self(src), "filenames": names}
+
+    def configure_optimizers(self):
+        optimizer = optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
+        total = self.trainer.max_epochs
+
+        def schedule(epoch: int):
+            # Restart decay when switching tasks; Lightning restores last_epoch
+            # from checkpoints so a resumed run stays in the correct phase.
+            if epoch < self.pretrain_epochs:
+                start, duration = 0, self.pretrain_epochs
+            else:
+                start, duration = self.pretrain_epochs, total - self.pretrain_epochs
+            progress = min(1.0, (epoch - start) / max(1, duration))
+            return 0.01 + 0.99 * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+        return {"optimizer": optimizer,
+                "lr_scheduler": optim.lr_scheduler.LambdaLR(optimizer, schedule)}
