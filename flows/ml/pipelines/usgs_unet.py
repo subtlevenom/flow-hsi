@@ -30,12 +30,15 @@ class USGSUNetPipeline(L.LightningModule):
         color_weight: float = 0.0,
         spectral_response: Optional[Sequence[Sequence[float]]] = None,
         perceptual_weight: float = 0.1,
+        masked_val_batches: int = 1,
     ):
         super().__init__()
         if pretrain_epochs < 0 or not 0.0 < mask_ratio < 1.0:
             raise ValueError("Require pretrain_epochs >= 0 and 0 < mask_ratio < 1.")
         if lr <= 0 or weight_decay < 0:
             raise ValueError("Require lr > 0 and weight_decay >= 0.")
+        if masked_val_batches < 0:
+            raise ValueError("masked_val_batches must be nonnegative.")
         if min(mrae_weight, spectral_weight, spectral_gradient_weight,
                color_weight, perceptual_weight) < 0:
             raise ValueError("Loss weights must be nonnegative.")
@@ -60,6 +63,7 @@ class USGSUNetPipeline(L.LightningModule):
         self.spectral_gradient_weight = spectral_gradient_weight
         self.color_weight = color_weight
         self.perceptual_weight = perceptual_weight
+        self.masked_val_batches = masked_val_batches
         self.colorimetry = NTIREColorimetry()
         self.register_buffer("spectral_response", response)
         self.save_hyperparameters(ignore=["model"])
@@ -93,7 +97,7 @@ class USGSUNetPipeline(L.LightningModule):
     @staticmethod
     def masked_mae(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor):
         error = (pred.float() - target.float()).abs()
-        return error.masked_select(mask.expand_as(error)).mean()
+        return (error * mask).sum() / (mask.sum() * target.shape[-2] * target.shape[-1])
 
     @staticmethod
     def mrae(pred: torch.Tensor, target: torch.Tensor):
@@ -166,15 +170,15 @@ class USGSUNetPipeline(L.LightningModule):
         self.log("train_loss", loss, prog_bar=True, batch_size=target.shape[0])
         return {"loss": loss}
 
-    def _evaluate(self, batch, prefix: str):
+    def _evaluate(self, batch, prefix: str, batch_idx: int):
         src, target = batch
         pred = self(src).float()
         terms = self.restoration_losses(pred, target)
         loss = terms["loss"]
-        if prefix == "val" and self.pretraining:
+        if prefix == "val" and self.pretraining and batch_idx < self.masked_val_batches:
             masked, mask = self.mask_channels(target, deterministic=True)
-            loss = self.masked_mae(self(masked), target, mask)
-            self.log("val_masked_mae", loss, batch_size=target.shape[0], sync_dist=True)
+            masked_loss = self.masked_mae(self(masked), target, mask)
+            self.log("val_masked_mae", masked_loss, batch_size=target.shape[0], sync_dist=True)
         # Always rank checkpoints on the same paired restoration task, even
         # during pretraining; never compare masked MAE against restoration MRAE.
         for name, value in terms.items():
@@ -183,13 +187,16 @@ class USGSUNetPipeline(L.LightningModule):
                          batch_size=target.shape[0], sync_dist=True)
         self.log_quality(pred, target, prefix)
         self.log(f"{prefix}_loss", loss, batch_size=target.shape[0], sync_dist=True)
-        return {"loss": loss}
+        result = {"loss": loss}
+        if batch_idx == 0:
+            result["image"] = pred.detach()
+        return result
 
     def validation_step(self, batch, batch_idx):
-        return self._evaluate(batch, "val")
+        return self._evaluate(batch, "val", batch_idx)
 
     def test_step(self, batch, batch_idx):
-        return self._evaluate(batch, "test")
+        return self._evaluate(batch, "test", batch_idx)
 
     def predict_step(self, batch, batch_idx):
         src, _, names = batch

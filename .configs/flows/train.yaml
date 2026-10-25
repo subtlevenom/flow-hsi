@@ -6,7 +6,9 @@ devices: [0]
 resume: True
 epochs: 20
 save_freq: 1
-visualize_freq: 1
+visualize_freq: 5
+preview_size: 256
+val_every_n_epochs: 1
 swa: false
 
 defaults:

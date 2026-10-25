@@ -13,5 +13,8 @@ params:
     source: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/test/source'
     target: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/test/target'
     batch_size: 1
-  num_workers: 12
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 2
+  pin_memory: true
   seed: 43

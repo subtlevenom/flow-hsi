@@ -4,6 +4,8 @@ params:
   weight_decay: 1e-5
   pretrain_epochs: 5
   mask_ratio: 0.5
+  # Diagnostic masked reconstruction on one validation batch, not a second full pass.
+  masked_val_batches: 1
   mrae_weight: 0.1
   spectral_weight: 0.1
   spectral_gradient_weight: 0.1

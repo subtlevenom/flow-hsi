@@ -44,11 +44,15 @@ def train_default(config: DictConfig) -> None:
             save_top_k=3,
             save_last=True,
             mode='min',
+            every_n_epochs=config.get('save_freq', 1),
         ),
         RichModelSummary(),
         RichProgressBar(),
         LearningRateMonitor(logging_interval='step'),
-        GenerateCallback(every_n_epochs=config.get('visualize_freq', 5)),
+        GenerateCallback(
+            every_n_epochs=config.get('visualize_freq', 5),
+            max_size=config.get('preview_size', 256),
+        ),
     ]
     if config.get('swa', True):
         callbacks.append(StochasticWeightAveraging(
@@ -66,6 +70,7 @@ def train_default(config: DictConfig) -> None:
         accelerator=accelerator,
         devices=config.get('devices', 1),
         gradient_clip_val=0.5,
+        check_val_every_n_epoch=config.get('val_every_n_epochs', 1),
         callbacks=callbacks,
     )
 

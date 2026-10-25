@@ -337,6 +337,7 @@ def test_ntire_training_entrypoint_writes_checkpoints_and_previews(tmp_path, use
     cfg.save_dir = str(tmp_path)
     cfg.experiment = "ntire-smoke"
     cfg.resume = False
+    cfg.visualize_freq = 1
     params = cfg.model.params.layers.pyramid.params
     params.num_cascades = 1
     params.cm_base_channels = 4

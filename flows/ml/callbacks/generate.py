@@ -1,23 +1,26 @@
 from typing import Any
+from pathlib import Path
 from lightning.pytorch.callbacks import Callback
 from lightning import LightningModule, Trainer
-import torch.nn.functional as F
 import torch
 import torchvision
-import os
 from flows.tools.files import write
 
 
 class GenerateCallback(Callback):
     def __init__(
             self,
-            every_n_epochs=1
+            every_n_epochs=1,
+            max_images=1,
+            max_size=256,
         ) -> None:
         super().__init__()
+        if every_n_epochs < 0 or max_images < 1 or max_size < 1:
+            raise ValueError("Require every_n_epochs >= 0, max_images >= 1, max_size >= 1.")
         self.every_n_epochs = every_n_epochs
-        self.input_imgs = None
+        self.max_images = max_images
+        self.max_size = max_size
         self.save_dir = None
-        self.target_imgs = None
 
     @staticmethod
     def _to_rgb(imgs: torch.Tensor) -> torch.Tensor:
@@ -34,61 +37,47 @@ class GenerateCallback(Callback):
             imgs = imgs[:, idx]
         return imgs.clamp(0.0, 1.0)
 
-    def on_train_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        dataloader = trainer.val_dataloaders
-        self.input_imgs, self.target_imgs = next(iter(dataloader))
-        self.input_imgs = self.input_imgs.to(pl_module.device)
-        self.target_imgs = self.target_imgs.to(pl_module.device)
-        self.save_dir = os.path.join(trainer.log_dir, 'figures')
+    def _preview(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx, prefix):
+        if (not trainer.is_global_zero or trainer.sanity_checking or batch_idx != 0
+                or dataloader_idx != 0 or not self.every_n_epochs
+                or (trainer.current_epoch != 0
+                    and (trainer.current_epoch + 1) % self.every_n_epochs != 0)):
+            return
+        src, target = batch[:2]
+        h, w = src.shape[-2:]
+        top, left = max(0, (h - self.max_size) // 2), max(0, (w - self.max_size) // 2)
 
-    def on_train_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        if trainer.current_epoch % self.every_n_epochs == 0:
-            # Reconstruct images
-            with torch.no_grad():
-                pl_module.eval()
-                reconst_imgs = pl_module(self.input_imgs)
-                pl_module.train()
+        def patch(images):
+            return images[:self.max_images, :, top:top + self.max_size, left:left + self.max_size]
 
-            # Map to pseudo-RGB so hyperspectral (e.g. 31-band) cubes are
-            # saveable — PIL/torchvision only handle 1- or 3-channel images.
-            input_imgs = self._to_rgb(self.input_imgs)
-            target_imgs = self._to_rgb(self.target_imgs)
-            reconst_imgs = self._to_rgb(reconst_imgs)
-            imgs = torch.stack([input_imgs, reconst_imgs, target_imgs], dim=1).flatten(0, 1)
-            grid = torchvision.utils.make_grid(imgs, nrow=3)
-            # Save image
-            save_path = os.path.join(self.save_dir, f"reconst_{trainer.current_epoch}.png")
-            os.makedirs(self.save_dir, exist_ok=True)
-            torchvision.utils.save_image(grid, save_path)
+        # USGS returns the prediction already computed by validation/test.
+        # Other pipelines retain a bounded-patch fallback without another loader.
+        prediction = outputs.get("image") if isinstance(outputs, dict) else None
+        with torch.no_grad():
+            reconst = patch(prediction) if prediction is not None else pl_module(patch(src))
+            imgs = torch.stack([
+                self._to_rgb(patch(src)), self._to_rgb(reconst),
+                self._to_rgb(patch(target)),
+            ], dim=1).flatten(0, 1).detach().cpu()
+        directory = Path(trainer.log_dir or trainer.default_root_dir) / "figures"
+        directory.mkdir(parents=True, exist_ok=True)
+        torchvision.utils.save_image(
+            torchvision.utils.make_grid(imgs, nrow=3),
+            directory / f"{prefix}_{trainer.current_epoch}.png",
+        )
 
-    def on_test_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        dataloader = trainer.test_dataloaders
-        self.input_imgs, self.target_imgs = next(iter(dataloader))
-        self.input_imgs = self.input_imgs.to(pl_module.device)
-        self.target_imgs = self.target_imgs.to(pl_module.device)
-        self.save_dir = os.path.join(trainer.log_dir, 'figures')
+    def on_validation_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0,
+    ):
+        self._preview(trainer, pl_module, outputs, batch, batch_idx, dataloader_idx, "reconst")
 
-    def on_test_epoch_end(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        if trainer.current_epoch % self.every_n_epochs == 0:
-            # Reconstruct images
-            with torch.no_grad():
-                pl_module.eval()
-                reconst_imgs = pl_module(self.input_imgs)
-                pl_module.train()
-            # Plot and add to tensorboard
-
-            input_imgs = self._to_rgb(self.input_imgs)
-            target_imgs = self._to_rgb(self.target_imgs)
-            reconst_imgs = self._to_rgb(reconst_imgs)
-            imgs = torch.stack([input_imgs, reconst_imgs, target_imgs], dim=1).flatten(0, 1)
-            grid = torchvision.utils.make_grid(imgs, nrow=3)
-            # Save image
-            save_path = os.path.join(self.save_dir, f"test_{trainer.current_epoch}.png")
-            os.makedirs(self.save_dir, exist_ok=True)
-            torchvision.utils.save_image(grid, save_path)
+    def on_test_batch_end(
+        self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0,
+    ):
+        self._preview(trainer, pl_module, outputs, batch, batch_idx, dataloader_idx, "test")
 
     def on_predict_start(self, trainer: Trainer, pl_module: LightningModule) -> None:
-        self.save_dir = torch.Path(trainer.log_dir).joinpath('figures')
+        self.save_dir = Path(trainer.log_dir or trainer.default_root_dir).joinpath('figures')
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
     def on_predict_batch_end(

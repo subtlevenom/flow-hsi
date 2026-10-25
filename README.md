@@ -47,6 +47,46 @@ Training uses aligned 128x128 crops with batch size 4; validation and test
 retain full images with batch size 1 to reduce memory use. Keep validation
 scenes separate from the final test set when selecting loss weights.
 
+### NTIRE loading and avoiding stop-go throughput
+
+The reader memory-maps paired HWC `.npy` files read-only, selects the same crop
+and flips for both cubes, then copies **only that patch** into writable CHW
+tensor storage. It no longer loads and transposes full cubes for 128x128
+training patches. Evaluation crops, when configured, are centered and
+deterministic; with `crop_size: 0`, evaluation retains the original image
+subject to the reader's existing multiple-of-four trimming. Dtype conversion
+and source-only `norm` scaling retain the previous behavior.
+
+Source/target filenames must match exactly, and each pair must have matching
+HWC shapes and 31 bands. Missing, empty, corrupt, or mismatched inputs fail
+explicitly rather than returning `None` or silently pairing different scenes.
+Splits are initialized only when their stage is requested.
+
+Defaults are four persistent workers, two prefetched batches per worker, and
+pinned transfer memory. Tune `data.params.num_workers` and
+`data.params.prefetch_factor` for your storage/RAM; more workers are not always
+faster. `num_workers=0` is supported and automatically omits worker-only options.
+Workers use PyTorch-seeded random crops and augmentations and stay alive across
+epochs. Their startup on Windows no longer triggers circular selector imports.
+
+Previews reuse the first validation prediction without another dataloader
+iterator or full-image model pass. They save one bounded 256x256 pseudo-RGB
+patch every five epochs (including epoch 0), only on rank zero; sanity
+validation never writes a preview. `visualize_freq=0` disables previews.
+Validation still evaluates complete images each epoch, and checkpoints still
+write synchronously: these remain real work, not data-loader stalls.
+
+```powershell
+# Reduce storage contention or prefetch memory.
+python main.py data.params.num_workers=2 data.params.prefetch_factor=1
+# Less frequent validation/checkpoint I/O, keeping their schedules aligned.
+python main.py val_every_n_epochs=5 save_freq=5
+# Disable preview I/O.
+python main.py visualize_freq=0
+```
+
+### Model and training
+
 The default has **three convolutional CM U-Net cascades** (`num_cascades: 3`)
 and **no parameter branch** (`use_hypernet: false`). In this mode no hypernetwork
 stem, parameter U-Nets, or injection heads are constructed or executed: each
@@ -89,8 +129,11 @@ metrics always describe paired source-to-target restoration. Training metrics
 reuse the current prediction and do not require an extra model forward pass.
 
 Validation masking is repeatable. `val_masked_mae` tracks reconstruction during
-pretraining, while `val_mrae` **always** measures paired source-to-target
-restoration, so checkpoint ranking stays comparable across phases. The
+pretraining on the first validation batch by default (`masked_val_batches: 1`),
+avoiding a second full validation pass. Set that count higher for a larger
+diagnostic sample or zero to disable it. `val_mrae` and `val_loss` **always**
+measure paired source-to-target restoration, so checkpoint ranking stays
+comparable across phases. The
 learning-rate cosine schedule restarts for fine-tuning. SWA is disabled to
 avoid overriding that schedule. `last.ckpt` resumes model, optimizer, scheduler,
 and epoch/phase together; use a new experiment name for a fresh run.
