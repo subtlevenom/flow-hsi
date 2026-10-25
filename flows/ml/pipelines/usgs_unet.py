@@ -13,7 +13,7 @@ from flows.ml.metrics.delta_e_2000 import _delta_E_CIE2000
 class USGSUNetPipeline(L.LightningModule):
     """Masked-channel pretraining followed by paired spectral restoration.
 
-    Model constructors own initialization: in particular, FiLM amplitudes
+    Model constructors own initialization: in particular, Gaussian amplitudes
     and CM output heads must keep their identity-preserving zero initialization.
     """
 

@@ -1,5 +1,5 @@
 task: train
-experiment: usgs-unet.film.ntire
+experiment: usgs-unet.cm3.ntire
 save_dir: .experiments
 accelerator: gpu
 devices: [0]

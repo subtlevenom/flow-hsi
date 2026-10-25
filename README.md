@@ -35,7 +35,7 @@ python main.py sample-image-data -i /data/korepanov/color-transfer/huawei/src -o
 $ python main.py
 $ python main.py task=test
 
-## NTIRE: efficient MSAB / spatial FiLM U-Net cascades
+## NTIRE: CM U-Net cascades with an optional Gaussian hypernetwork
 
 `python main.py` now selects the 31-band NTIRE dataset, the `usgs_unet` model,
 and its dedicated training pipeline. The configuration is in
@@ -47,26 +47,27 @@ Training uses aligned 128x128 crops with batch size 4; validation and test
 retain full images with batch size 1 to reduce memory use. Keep validation
 scenes separate from the final test set when selecting loss weights.
 
-The default has **two cascades**, each containing a convolutional CM U-Net and
-a parameter U-Net. The parameter U-Net uses lightweight convolutional residual
-blocks at full resolution, with MST MSAB spectral attention at half/quarter
-resolution and the bottleneck (`hyper_num_blocks: 1` per level). There are
-five MSAB modules per cascade rather than seven. Its feature state predicts
-31 spatially varying gains and 31 offsets through a zero-initialized FiLM head.
-FiLM directly modulates the provisional CM spectrum with
-`spectrum * (1 + 0.1 * tanh(gain)) + 0.05 * tanh(offset)`, eliminating the
-per-pixel Gaussian basis and exponential evaluation.
+The default has **three convolutional CM U-Net cascades** (`num_cascades: 3`)
+and **no parameter branch** (`use_hypernet: false`). In this mode no hypernetwork
+stem, parameter U-Nets, or injection heads are constructed or executed: each
+cascade simply adds its predicted residual to the current 31-band image.
+
+Set `use_hypernet: true` to enable the second branch. Its parameter U-Nets use
+convolutional residual blocks at full resolution and MST MSAB spectral attention
+at half/quarter resolution and the bottleneck (`hyper_num_blocks: 1` per level).
+Each cascade has a separate Gaussian injection head predicting centers, widths,
+gain amplitudes, and offset amplitudes for six Gaussian components per pixel.
+Their wavelength-dependent fields modulate the CM spectrum using
+`spectrum * (1 + gain) + offset`, bounded by `gain_scale` and `offset_scale`.
+Gaussian amplitudes start at zero. FiLM has been removed.
 Odd spatial sizes remain supported by explicit skip-size interpolation.
 Constructor initialization is preserved: every cascade initially maps its
 input to itself.
-Earlier Gaussian / full-resolution-attention checkpoints are not compatible
-with this default. The experiment directory is now `usgs-unet.film.ntire` to
-avoid resuming those weights. For controlled comparisons, Gaussian modulation
-and full-resolution MSAB remain available as model options:
-`modulation=gaussian` and `hyper_full_resolution_msab=true` under
-`model.params.layers.pyramid.params`; `num_cascades=3` restores the old depth.
-Direct FiLM does not enforce smooth correction fields across wavelength.
-These are efficiency changes, not a guarantee of improved task accuracy.
+The experiment directory is now `usgs-unet.cm3.ntire` to avoid resuming
+incompatible FiLM / two-cascade checkpoints. Use a distinct experiment name
+when enabling the hypernetwork or changing cascade count; do not resume a
+checkpoint from a different architecture. `hyper_full_resolution_msab=true`
+restores full-resolution attention when the hypernetwork is enabled.
 
 The default 20-epoch run has two phases using the same model and optimizer:
 
@@ -97,6 +98,10 @@ and epoch/phase together; use a new experiment name for a fresh run.
 ```powershell
 # Defaults: masked-channel pretraining, then paired fine-tuning.
 python main.py
+# Enable the Gaussian parameter branch.
+python main.py model.params.layers.pyramid.params.use_hypernet=true experiment=usgs-unet.gaussian3.ntire
+# Use two CM-only cascades instead of three.
+python main.py model.params.layers.pyramid.params.num_cascades=2 experiment=usgs-unet.cm2.ntire
 # Supervised-only ablation.
 python main.py pipeline.params.pretrain_epochs=0 experiment=usgs-unet.supervised.ntire
 # Longer run with a longer pretraining phase.

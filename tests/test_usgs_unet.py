@@ -13,7 +13,7 @@ from skimage.color import deltaE_ciede2000
 from flows.core.selector import ModelSelector, PipelineSelector
 from flows.ml.layers.mst import MSAB
 from flows.ml.models.ggpir import ParallelHyperspectralUNets
-from flows.ml.models.ggpir.usgs_unet import GaussianInjection, SpatialFiLM
+from flows.ml.models.ggpir.usgs_unet import GaussianInjection
 from flows.ml.layers.spectral_color import NTIREColorimetry
 from flows.ml.models.flow import Flow
 from flows.ml.pipelines.usgs_unet import USGSUNetPipeline
@@ -29,10 +29,11 @@ def small_cpu_workload():
     torch.set_num_threads(threads)
 
 
-def make_model(cascades=2):
+def make_model(cascades=2, use_hypernet=True):
     return ParallelHyperspectralUNets(
         num_cascades=cascades, cm_base_channels=4,
         hyper_channels=4, hyper_base_channels=4, num_gaussians=2,
+        use_hypernet=use_hypernet,
     )
 
 
@@ -58,7 +59,7 @@ def test_msab_parameter_cascades_preserve_shape_and_identity(shape):
         assert not any(isinstance(m, MSAB) for m in stage.encoder0.modules())
         assert not any(isinstance(m, MSAB) for m in stage.decoder0.modules())
         assert any(isinstance(m, MSAB) for m in stage.bottleneck.modules())
-    assert all(isinstance(m, SpatialFiLM) for m in model.injections)
+    assert all(isinstance(m, GaussianInjection) for m in model.injections)
     x = torch.rand(shape)
     y, stages = model(x, return_intermediate=True)
     assert len(stages) == 2
@@ -70,7 +71,7 @@ def test_msab_parameter_cascades_preserve_shape_and_identity(shape):
 def test_gaussian_full_attention_baseline_remains_available():
     model = ParallelHyperspectralUNets(
         num_cascades=3, cm_base_channels=4, hyper_channels=4,
-        hyper_base_channels=4, modulation="gaussian",
+        hyper_base_channels=4, use_hypernet=True,
         hyper_full_resolution_msab=True, num_gaussians=2,
     )
     assert all(isinstance(m, GaussianInjection) for m in model.injections)
@@ -79,29 +80,42 @@ def test_gaussian_full_attention_baseline_remains_available():
     torch.testing.assert_close(model(x), x)
 
 
-def test_spatial_film_bounds_initialization_and_gradients():
-    film = SpatialFiLM(4)
-    features = torch.randn(1, 4, 7, 9, requires_grad=True)
-    spectrum = torch.ones(1, 31, 7, 9)
-    torch.testing.assert_close(film(spectrum, features), spectrum, rtol=0, atol=0)
+@pytest.mark.parametrize("cascades", [1, 3, 4])
+@pytest.mark.parametrize("use_hypernet", [False, True])
+def test_optional_hypernet_and_configurable_cascade_count(cascades, use_hypernet):
+    model = make_model(cascades, use_hypernet)
+    assert len(model.cm_stages) == cascades
+    assert len(model.hyper_stages) == (cascades if use_hypernet else 0)
+    assert len(model.injections) == (cascades if use_hypernet else 0)
+    if not use_hypernet:
+        assert model.hyper_stem is None
+        assert not any("hyper" in key or "injections" in key for key in model.state_dict())
+        assert not any(isinstance(m, MSAB) for m in model.modules())
+    x = torch.rand(1, 31, 9, 11)
+    y, stages = model(x, return_intermediate=True)
+    assert len(stages) == cascades
+    torch.testing.assert_close(y, x)
+    # Verify all CM cascades execute even without a hypernetwork.
     with torch.no_grad():
-        film.parameters_out.weight.normal_(std=0.1)
-        film.parameters_out.bias.fill_(100)
-    upper = film(spectrum, features)
-    torch.testing.assert_close(upper, torch.full_like(upper, 1.15))
-    with torch.no_grad():
-        film.parameters_out.bias.fill_(-100)
-    torch.testing.assert_close(film(spectrum, features), torch.full_like(upper, 0.85))
-    with torch.no_grad():
-        film.parameters_out.bias.zero_()
-    output = film(spectrum, features)
-    output.sum().backward()
-    assert torch.isfinite(features.grad).all()
-    assert features.grad.abs().sum() > 0
-    with pytest.raises(ValueError, match="nonnegative"):
-        SpatialFiLM(4, gain_scale=-1)
-    with pytest.raises(ValueError, match="modulation"):
-        ParallelHyperspectralUNets(modulation="invalid")
+        for stage in model.cm_stages:
+            stage.output.bias.fill_(0.01)
+    y, stages = model(x, return_intermediate=True)
+    for index, stage in enumerate(stages):
+        torch.testing.assert_close(stage, x + 0.01 * (index + 1))
+    (y - x * 0.8).abs().mean().backward()
+    assert all(stage.output.weight.grad is not None for stage in model.cm_stages)
+    assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+
+
+def test_default_constructor_disables_hypernet_and_has_three_cascades():
+    model = ParallelHyperspectralUNets(cm_base_channels=4)
+    assert len(model.cm_stages) == 3
+    assert model.hyper_stem is None
+    assert len(model.hyper_stages) == len(model.injections) == 0
+    with pytest.raises(ValueError, match="num_cascades"):
+        make_model(cascades=0)
+    with pytest.raises(ValueError, match="boolean"):
+        make_model(use_hypernet="false")
 
 
 def test_masking_and_held_out_objective():
@@ -208,8 +222,8 @@ def test_default_configuration_uses_ntire_msab_model_and_pipeline():
     assert cfg.pipeline.name == "usgs_unet"
     assert cfg.pipeline.params.pretrain_epochs < cfg.epochs
     assert not cfg.swa
-    assert cfg.model.params.layers.pyramid.params.num_cascades == 2
-    assert cfg.model.params.layers.pyramid.params.modulation == "film"
+    assert cfg.model.params.layers.pyramid.params.num_cascades == 3
+    assert cfg.model.params.layers.pyramid.params.use_hypernet is False
     assert cfg.pipeline.params.perceptual_weight > 0
     model = ModelSelector.select(cfg.model)
     pipeline = PipelineSelector.select(model, cfg.pipeline)
@@ -247,7 +261,7 @@ def test_training_transitions_and_resumes_with_identity_initialization_intact(tm
     first_phase = RecordPhase(stop=True)
     checkpoint = ModelCheckpoint(monitor="val_mrae", save_last=True)
     first = trainer(tmp_path, [first_phase, checkpoint])
-    # setup must preserve zero FiLM and CM output heads.
+    # setup must preserve zero Gaussian and CM output heads.
     pipeline.trainer = first
     before = {k: v.clone() for k, v in pipeline.state_dict().items()}
     pipeline.setup("fit")
@@ -298,7 +312,8 @@ def test_bfloat16_autocast_has_finite_backward():
     assert all(torch.isfinite(p.grad).all() for p in pipeline.parameters() if p.grad is not None)
 
 
-def test_ntire_training_entrypoint_writes_checkpoints_and_previews(tmp_path):
+@pytest.mark.parametrize("use_hypernet", [False, True])
+def test_ntire_training_entrypoint_writes_checkpoints_and_previews(tmp_path, use_hypernet):
     config_dir = str(Path(__file__).resolve().parents[1] / ".configs")
     with initialize_config_dir(config_dir=config_dir, version_base="1.3"):
         cfg = compose(config_name="config")
@@ -328,6 +343,7 @@ def test_ntire_training_entrypoint_writes_checkpoints_and_previews(tmp_path):
     params.hyper_channels = 4
     params.hyper_base_channels = 4
     params.num_gaussians = 2
+    params.use_hypernet = use_hypernet
     train_default(cfg)
     logs = tmp_path / cfg.experiment / "logs"
     assert (logs / "checkpoints" / "last.ckpt").is_file()
