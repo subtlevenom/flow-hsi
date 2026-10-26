@@ -79,14 +79,16 @@ class USGSUNetPipeline(L.LightningModule):
     def forward(self, x: torch.Tensor, y: Optional[torch.Tensor] = None):
         return self.model(src=x)["res"]
 
-    def mask_channels(self, target: torch.Tensor, deterministic: bool = False):
+    def mask_channels(
+        self, target: torch.Tensor, deterministic: bool = False, seed: int = 0,
+    ):
         if target.ndim != 4 or target.shape[1] < 2:
             raise ValueError("Expected a hyperspectral [B, C, H, W] cube with C >= 2.")
         batch, channels = target.shape[:2]
         count = max(1, min(channels - 1, round(channels * self.mask_ratio)))
         # Local CPU generator makes validation masks repeatable without changing
         # the training RNG, including when validation runs on a different device.
-        generator = torch.Generator().manual_seed(0) if deterministic else None
+        generator = torch.Generator().manual_seed(seed) if deterministic else None
         scores = torch.rand(batch, channels, generator=generator, device="cpu")
         indices = scores.argsort(dim=1)[:, :count].to(target.device)
         mask = torch.zeros(batch, channels, device=target.device, dtype=torch.bool)

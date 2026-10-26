@@ -37,10 +37,11 @@ def train_default(config: DictConfig) -> None:
         version='',
     )
 
+    monitor = getattr(pipeline, 'checkpoint_monitor', 'val_mrae')
     callbacks = [
         ModelCheckpoint(
-            filename="{epoch}-{val_mrae:.4f}",
-            monitor='val_mrae',
+            filename="{epoch}-{" + monitor + ":.4f}",
+            monitor=monitor,
             save_top_k=3,
             save_last=True,
             mode='min',

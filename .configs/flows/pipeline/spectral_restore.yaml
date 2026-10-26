@@ -1,0 +1,17 @@
+name: spectral
+params:
+  phase: restoration
+  lr: 2e-4
+  encoder_lr: 2e-5
+  weight_decay: 1e-5
+  # Encoder-only artifact selected by deterministic masked-reconstruction MAE.
+  encoder_checkpoint: ${save_dir}/spectral.mae.ntire/logs/checkpoints/encoder.pt
+  allow_random_encoder: false
+  # Optimizer updates, capped at the end of the first epoch.
+  freeze_encoder_steps: 500
+  mrae_weight: 0.1
+  spectral_weight: 0.1
+  spectral_gradient_weight: 0.1
+  perceptual_weight: 0.1
+  color_weight: 0.0
+  spectral_response: null

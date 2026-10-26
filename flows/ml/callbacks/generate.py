@@ -44,6 +44,8 @@ class GenerateCallback(Callback):
                     and (trainer.current_epoch + 1) % self.every_n_epochs != 0)):
             return
         src, target = batch[:2]
+        if isinstance(outputs, dict) and "preview_source" in outputs:
+            src = outputs["preview_source"]
         h, w = src.shape[-2:]
         top, left = max(0, (h - self.max_size) // 2), max(0, (w - self.max_size) // 2)
 

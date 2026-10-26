@@ -35,9 +35,114 @@ python main.py sample-image-data -i /data/korepanov/color-transfer/huawei/src -o
 $ python main.py
 $ python main.py task=test
 
-## NTIRE: CM U-Net cascades with an optional Gaussian hypernetwork
+## NTIRE: shared spectral encoder, two independent experiments
 
-`python main.py` now selects the 31-band NTIRE dataset, the `usgs_unet` model,
+The new encoder-decoder baseline is available through two **separate runs**:
+
+```powershell
+# 1. Five epochs of masked-channel encoder pretraining.
+python main.py --config-name pretrain task=train
+# 2. Twenty epochs of paired NTIRE restoration using the exported encoder.
+python main.py --config-name restore task=train
+```
+
+Equivalent flow-group commands are
+`python main.py flows@_global_=pretrain task=train` and
+`python main.py flows@_global_=restore task=train`.
+Both select NTIRE automatically. Set the paired source/target paths in
+`.configs\flows\data\ntire.yaml` for your machine before training. Inputs
+are **31-band HSI**, not three-channel RGB; use consistent source/target
+normalization and the same ordered wavelengths. Training uses 128x128 patches;
+validation uses full images. The default device is GPU 0; append
+`accelerator=cpu devices=1` for CPU execution.
+
+### Encoder and task heads
+
+The shared encoder has widths **32 -> 64 -> 128 -> 192**, at full, half,
+quarter and eighth resolution. A 3x3 stem and a local residual convolutional
+block process full-resolution detail; stride-2 convolutions lead to **1, 2, 2
+MSAB-style blocks**, using **2, 4, 6 attention heads**, at the reduced scales.
+Each attention path is pre-normalized. Feed-forward paths use 1x1 expansion,
+depthwise 3x3 mixing and 1x1 reduction with expansion 2. Per-pixel channel
+LayerNorm replaces spatial GroupNorm. Spectral attention still uses spatial
+statistics: full-image inference and tiled inference need not be identical.
+Explicit target-size interpolation supports odd spatial sizes.
+
+The **pretraining head** reconstructs from the bottleneck only, through
+192 -> 96 -> 48 -> 32 -> 31 convolutional features and bilinear upsampling.
+It has no attention, shallow feature skips or input residual bypass. Training
+alternates source and target cubes between batches, flipping the starting
+domain each epoch so even a single-batch dataset uses both domains over time.
+Each selected cube is its own reconstruction target, not a source-to-target
+translation pair. Training zeroes 16 random whole bands and embeds their explicit
+31-band missingness flags into the encoder stem, distinguishing a hidden band
+from a genuinely dark one. The objective is **hidden-band MAE + 0.1 visible-band
+MAE**. All five epochs do reconstruction; there is no automatic transition to
+paired training. This is dense masked-channel autoencoding, not sparse
+token-dropping ViT MAE.
+
+The **restoration head** uses projected additive encoder skips and 2 MSAB-style
+blocks at quarter resolution, 1 at half resolution, and a local convolutional
+block at full resolution (128 -> 64 -> 32 -> 31). It predicts a residual added
+to the source HSI. Small nonzero output weights initialize it near identity
+without blocking decoder gradients. There are **no Gaussian/hypernetwork
+branches or repeated U-Net cascades** in this baseline.
+
+### Transfer, schedule and resume
+
+Pretraining checkpoints are ranked by deterministic `val_masked_mae`, measured
+over target cubes in the entire validation loader with repeatable,
+batch-index-seeded masks. Validation remains target-only for comparable
+checkpoint selection; training metrics follow the currently selected domain.
+The best encoder is exported atomically, on rank zero, to:
+
+```text
+.experiments\spectral.mae.ntire\logs\checkpoints\encoder.pt
+```
+
+The artifact contains only encoder weights, architecture metadata and selection
+metrics, not decoder weights or optimizer state. Restoration requires this
+artifact and checks its encoder metadata and state dictionary strictly. Change
+`pipeline.params.encoder_checkpoint=...` when pretraining used a different
+experiment/output directory. A missing or incompatible artifact fails
+explicitly. To deliberately train a random-encoder ablation:
+
+```powershell
+python main.py --config-name restore pipeline.params.encoder_checkpoint=null pipeline.params.allow_random_encoder=true experiment=spectral.scratch.ntire
+```
+
+Restoration freezes the encoder for the first **500 optimizer updates, capped
+at the end of epoch 0**, then fine-tunes the complete model. With fewer than
+500 updates per epoch, it unfreezes at epoch 1. Gradient accumulation does not
+count microbatches as separate optimizer updates. Decoder LR starts at **2e-4**;
+encoder LR starts at **2e-5**; both groups are present from the beginning in one
+AdamW optimizer, with epoch-wise cosine decay and no optimizer reset.
+`pipeline.params.freeze_encoder_steps=0` disables the frozen warmup.
+Pretraining uses LR 2e-4 for both encoder and its lightweight head.
+
+Restoration retains all-band MAE, floored MRAE, spectral cosine, adjacent-band
+difference and CIE Lab perceptual losses described below; checkpoints are
+ranked by `val_mrae`. Both experiments show training/validation **PSNR and
+CIEDE2000 (`de`)**. During pretraining both describe masked reconstruction;
+during restoration both describe source-to-target correction. Previews reuse
+the current validation prediction, showing masked input for pretraining.
+
+The runs have separate output directories, `spectral.mae.ntire` and
+`spectral.restore.ntire`. Each resumes its own `last.ckpt` by default, including
+optimizer, scheduler, epoch and update count. Full restoration resume does not
+reload the initial encoder artifact, so that artifact is no longer required.
+Use a new `experiment=...` for a fresh run or architecture change. Existing
+cascade checkpoints cannot initialize this encoder. Masked pretraining is an
+experiment, not a demonstrated accuracy gain; compare against the scratch
+ablation on held-out scenes.
+
+Both experiments inherit the NTIRE loader settings described below. If host
+RAM is tight, append `data.params.num_workers=0 data.params.pin_memory=false`
+to isolate prefetch/worker pressure before tuning workers upward.
+
+## Legacy NTIRE: CM U-Net cascades with an optional Gaussian hypernetwork
+
+`python main.py` without an experiment config still selects the 31-band NTIRE dataset, the `usgs_unet` model,
 and its dedicated training pipeline. The configuration is in
 `.configs\flows\train.yaml`, `.configs\flows\model\usgs_unet.yaml`, and
 `.configs\flows\pipeline\usgs_unet.yaml`. Override the NTIRE source/target paths

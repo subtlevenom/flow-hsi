@@ -1,0 +1,16 @@
+name: flow
+params:
+  metadata:
+    - layer: spectral
+      inputs: [src]
+      outputs: [res]
+  layers:
+    spectral:
+      model: ggpir.SpectralEncoderDecoder
+      params:
+        head: pretrain
+        spectral_channels: 31
+        channels: [32, 64, 128, 192]
+        depths: [1, 2, 2]
+        heads: [2, 4, 6]
+        reconstruction_channels: [96, 48, 32]
