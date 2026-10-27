@@ -142,7 +142,16 @@ class USGSUNetPipeline(L.LightningModule):
         de = _delta_E_CIE2000(
             self.colorimetry(pred), self.colorimetry(target),
         ).mean().float()
-        return {"psnr": psnr, "de": de}
+        pred, target = pred.float(), target.float()
+        pred_norm, target_norm = pred.norm(dim=1), target.norm(dim=1)
+        cosine = (pred * target).sum(dim=1) / (
+            pred_norm * target_norm
+        ).clamp_min(torch.finfo(pred.dtype).tiny)
+        # SAM is undefined at zero: identical zero spectra score 0, while
+        # exactly one zero spectrum scores pi/2 rather than poisoning the mean.
+        cosine = torch.where((pred_norm == 0) & (target_norm == 0), 1.0, cosine)
+        sam = cosine.clamp(-1.0, 1.0).acos().mean()
+        return {"psnr": psnr, "de": de, "sam": sam}
 
     def log_quality(self, pred, target, prefix):
         for name, value in self.quality_metrics(pred, target).items():

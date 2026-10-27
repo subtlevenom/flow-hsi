@@ -400,3 +400,34 @@ def test_quality_metrics_match_independent_ciede2000_and_psnr():
     matched = pipeline.quality_metrics(target, target)
     assert matched["de"] == 0
     assert torch.isfinite(matched["psnr"])
+
+
+def test_sam_matches_spectral_angle_reference():
+    pipeline = make_pipeline()
+    pred, target = torch.rand(2, 31, 4, 5), torch.rand(2, 31, 4, 5)
+    actual = pipeline.quality_metrics(pred, target)["sam"]
+    a, b = pred.numpy().astype(np.float64), target.numpy().astype(np.float64)
+    cosine = (a * b).sum(axis=1) / (
+        np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1)
+    )
+    expected = np.arccos(np.clip(cosine, -1, 1)).mean()
+    assert actual.item() == pytest.approx(expected, rel=1e-5)
+    assert not actual.requires_grad
+
+
+def test_sam_known_angles_and_zero_spectra():
+    pipeline = make_pipeline()
+    target = torch.zeros(1, 31, 1, 6)
+    pred = torch.zeros_like(target)
+    target[:, 0, :, :4] = 1
+    pred[:, 0, :, 0] = 1
+    pred[:, 0, :, 1] = 3
+    pred[:, 1, :, 2] = 1
+    pred[:, 0, :, 3] = -1
+    pred[:, 0, :, 5] = 1
+    # Identical, scaled, orthogonal, opposite, both zero, one zero.
+    expected = (0 + 0 + np.pi / 2 + np.pi + 0 + np.pi / 2) / 6
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        actual = pipeline.quality_metrics(pred.bfloat16(), target.bfloat16())["sam"]
+    assert torch.isfinite(actual)
+    assert actual.item() == pytest.approx(expected, rel=1e-6)

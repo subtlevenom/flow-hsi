@@ -122,9 +122,12 @@ Pretraining uses LR 2e-4 for both encoder and its lightweight head.
 
 Restoration retains all-band MAE, floored MRAE, spectral cosine, adjacent-band
 difference and CIE Lab perceptual losses described below; checkpoints are
-ranked by `val_mrae`. Both experiments show training/validation **PSNR and
-CIEDE2000 (`de`)**. During pretraining both describe masked reconstruction;
-during restoration both describe source-to-target correction. Previews reuse
+ranked by `val_mrae`. Both experiments show training/validation **PSNR,
+CIEDE2000 (`de`) and spectral angle mapper (`sam`)**. SAM averages the
+per-pixel angle across all 31 bands in **radians** (lower is better).
+Identical zero spectra receive angle 0; exactly one zero spectrum receives
+pi/2 to keep dark-pixel metrics finite. During pretraining these describe masked
+self-reconstruction; during restoration they describe source-to-target correction. Previews reuse
 the current validation prediction, showing masked input for pretraining.
 
 The runs have separate output directories, `spectral.mae.ntire` and
@@ -227,7 +230,8 @@ The default 20-epoch run has two phases using the same model and optimizer:
   denominator floor to limit the influence of dark bands; the cosine term
   ignores zero target spectra.
 
-Both training and validation progress bars show PSNR and `de` (CIEDE2000).
+Both training and validation progress bars show PSNR, `de` (CIEDE2000)
+and `sam` (spectral angle in radians, with the zero-spectrum convention above).
 PSNR averages per-image PSNR across all 31 bands with a fixed data range of 1.
 During pretraining, training metrics describe masked reconstruction; validation
 metrics always describe paired source-to-target restoration. Training metrics

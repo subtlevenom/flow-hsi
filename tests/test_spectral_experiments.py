@@ -56,6 +56,7 @@ def export_encoder(tmp_path):
     module = pipeline()
     run = trainer(tmp_path, enable_checkpointing=False)
     run.fit(module, loader(), loader())
+    assert {"train_sam_step", "val_sam"} <= run.progress_bar_metrics.keys()
     return module, tmp_path / "checkpoints" / "encoder.pt"
 
 
@@ -283,7 +284,8 @@ def test_head_only_updates_then_whole_network_and_optimizer_groups(tmp_path):
     assert optimizer.param_groups[0]["initial_lr"] == 2e-5
     assert optimizer.param_groups[1]["initial_lr"] == 2e-4
     assert optimizer.state[module.network.decoder.output.weight]["step"] == 4
-    assert {"train_psnr_step", "train_de_step", "val_psnr", "val_de"} <= run.progress_bar_metrics.keys()
+    assert {"train_psnr_step", "train_de_step", "train_sam_step",
+            "val_psnr", "val_de", "val_sam"} <= run.progress_bar_metrics.keys()
 
 
 def test_freeze_is_capped_at_one_epoch(tmp_path):
