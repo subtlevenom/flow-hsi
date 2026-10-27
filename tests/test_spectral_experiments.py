@@ -467,7 +467,7 @@ def test_restore_without_encoder_does_not_silently_train_random(tmp_path):
 
 
 @pytest.mark.parametrize("phase,epochs", [
-    ("pretrain", 5), ("restore", 20), ("restore_calibrated", 20),
+    ("pretrain", 31), ("restore", 71), ("restore_calibrated", 71),
 ])
 def test_experiment_config_and_factory(phase, epochs):
     with initialize_config_dir(

@@ -40,9 +40,9 @@ $ python main.py task=test
 The new encoder-decoder baseline is available through two **separate runs**:
 
 ```powershell
-# 1. Five epochs of masked-channel encoder pretraining.
+# 1. 31 epochs of masked-channel encoder pretraining.
 python main.py --config-name pretrain task=train
-# 2. Twenty epochs of paired NTIRE restoration using the exported encoder.
+# 2. 71 epochs of paired NTIRE restoration using the exported encoder.
 python main.py --config-name restore task=train
 ```
 
@@ -77,7 +77,7 @@ Each selected cube is its own reconstruction target, not a source-to-target
 translation pair. Training zeroes 16 random whole bands and embeds their explicit
 31-band missingness flags into the encoder stem, distinguishing a hidden band
 from a genuinely dark one. The objective is **hidden-band MAE + 0.1 visible-band
-MAE + 0.15 (1 - SSIM)**. All five epochs do reconstruction; there is no automatic transition to
+MAE + 0.15 (1 - SSIM)**. All pretraining epochs do reconstruction; there is no automatic transition to
 paired training. This is dense masked-channel autoencoding, not sparse
 token-dropping ViT MAE.
 
