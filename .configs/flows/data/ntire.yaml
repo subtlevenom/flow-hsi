@@ -1,17 +1,19 @@
 name: ntire
 params:
   train:
-    source: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/train/source'
-    target: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/train/target'
+    #source: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/train/source'
+    #target: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/train/target'
+    source: '/home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/train/source'
+    target: '/home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/train/target'
     batch_size: 4
     crop_size: 128
   val:
-    source: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/test/source'
-    target: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/test/target'
+    source: '/home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/test/source'
+    target: '/home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/test/target'
     batch_size: 1
   test:
-    source: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/test/source'
-    target: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/test/target'
+    source: '/data/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/test/source'
+    target: '/data/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/test/target'
     batch_size: 1
   num_workers: 4
   persistent_workers: true
