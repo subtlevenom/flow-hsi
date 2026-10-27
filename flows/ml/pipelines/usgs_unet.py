@@ -5,6 +5,7 @@ import lightning as L
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
+from torchmetrics.functional.image import structural_similarity_index_measure
 
 from flows.ml.layers.spectral_color import NTIREColorimetry
 from flows.ml.metrics.delta_e_2000 import _delta_E_CIE2000
@@ -31,6 +32,7 @@ class USGSUNetPipeline(L.LightningModule):
         spectral_response: Optional[Sequence[Sequence[float]]] = None,
         perceptual_weight: float = 0.1,
         masked_val_batches: int = 1,
+        ssim_weight: float = 0.0,
     ):
         super().__init__()
         if pretrain_epochs < 0 or not 0.0 < mask_ratio < 1.0:
@@ -40,7 +42,7 @@ class USGSUNetPipeline(L.LightningModule):
         if masked_val_batches < 0:
             raise ValueError("masked_val_batches must be nonnegative.")
         if min(mrae_weight, spectral_weight, spectral_gradient_weight,
-               color_weight, perceptual_weight) < 0:
+               color_weight, perceptual_weight, ssim_weight) < 0:
             raise ValueError("Loss weights must be nonnegative.")
         response = None
         if spectral_response is not None:
@@ -64,6 +66,7 @@ class USGSUNetPipeline(L.LightningModule):
         self.color_weight = color_weight
         self.perceptual_weight = perceptual_weight
         self.masked_val_batches = masked_val_batches
+        self.ssim_weight = ssim_weight
         self.colorimetry = NTIREColorimetry()
         self.register_buffer("spectral_response", response)
         self.save_hyperparameters(ignore=["model"])
@@ -105,6 +108,15 @@ class USGSUNetPipeline(L.LightningModule):
     def mrae(pred: torch.Tensor, target: torch.Tensor):
         return ((pred - target).abs() / target.abs().clamp_min(1e-3)).mean()
 
+    @staticmethod
+    def ssim_loss(pred: torch.Tensor, target: torch.Tensor):
+        # Standard 11x11 Gaussian SSIM, shrinking only for very small patches.
+        sigma = max(0.1, min(1.5, (min(pred.shape[-2:]) - 1) / 7))
+        with torch.autocast(device_type=pred.device.type, enabled=False):
+            return 1.0 - structural_similarity_index_measure(
+                pred.float(), target.float(), data_range=1.0, sigma=sigma,
+            )
+
     def restoration_losses(self, pred: torch.Tensor, target: torch.Tensor):
         if pred.shape != target.shape:
             raise ValueError("Prediction and target cubes must have identical shapes.")
@@ -126,12 +138,13 @@ class USGSUNetPipeline(L.LightningModule):
         perceptual = pred.new_zeros(())
         if self.perceptual_weight:
             perceptual = F.l1_loss(self.colorimetry(pred), self.colorimetry(target)) / 100.0
+        structural = self.ssim_loss(pred, target) if self.ssim_weight else pred.new_zeros(())
         loss = (mae + self.mrae_weight * relative + self.spectral_weight * spectral
                 + self.spectral_gradient_weight * gradient + self.color_weight * color
-                + self.perceptual_weight * perceptual)
+                + self.perceptual_weight * perceptual + self.ssim_weight * structural)
         return {"loss": loss, "mae": mae, "mrae": relative,
                 "spectral": spectral, "spectral_gradient": gradient, "color": color,
-                "perceptual": perceptual}
+                "perceptual": perceptual, "ssim_loss": structural}
 
     @torch.no_grad()
     def quality_metrics(self, pred: torch.Tensor, target: torch.Tensor):
@@ -150,7 +163,7 @@ class USGSUNetPipeline(L.LightningModule):
         # SAM is undefined at zero: identical zero spectra score 0, while
         # exactly one zero spectrum scores pi/2 rather than poisoning the mean.
         cosine = torch.where((pred_norm == 0) & (target_norm == 0), 1.0, cosine)
-        sam = cosine.clamp(-1.0, 1.0).acos().mean()
+        sam = torch.rad2deg(cosine.clamp(-1.0, 1.0).acos()).mean()
         return {"psnr": psnr, "de": de, "sam": sam}
 
     def log_quality(self, pred, target, prefix):

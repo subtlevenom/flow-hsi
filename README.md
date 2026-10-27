@@ -77,7 +77,7 @@ Each selected cube is its own reconstruction target, not a source-to-target
 translation pair. Training zeroes 16 random whole bands and embeds their explicit
 31-band missingness flags into the encoder stem, distinguishing a hidden band
 from a genuinely dark one. The objective is **hidden-band MAE + 0.1 visible-band
-MAE**. All five epochs do reconstruction; there is no automatic transition to
+MAE + 0.15 (1 - SSIM)**. All five epochs do reconstruction; there is no automatic transition to
 paired training. This is dense masked-channel autoencoding, not sparse
 token-dropping ViT MAE.
 
@@ -121,14 +121,26 @@ AdamW optimizer, with epoch-wise cosine decay and no optimizer reset.
 Pretraining uses LR 2e-4 for both encoder and its lightweight head.
 
 Restoration retains all-band MAE, floored MRAE, spectral cosine, adjacent-band
-difference and CIE Lab perceptual losses described below; checkpoints are
+difference and CIE Lab perceptual losses described below and adds
+**0.15 (1 - SSIM)**; checkpoints are
 ranked by `val_mrae`. Both experiments show training/validation **PSNR,
 CIEDE2000 (`de`) and spectral angle mapper (`sam`)**. SAM averages the
-per-pixel angle across all 31 bands in **radians** (lower is better).
+per-pixel angle across all 31 bands in **degrees** (lower is better).
 Identical zero spectra receive angle 0; exactly one zero spectrum receives
-pi/2 to keep dark-pixel metrics finite. During pretraining these describe masked
+90 degrees to keep dark-pixel metrics finite. During pretraining these describe masked
 self-reconstruction; during restoration they describe source-to-target correction. Previews reuse
 the current validation prediction, showing masked input for pretraining.
+
+SSIM is differentiable spatial SSIM computed independently per spectral band
+and averaged across all 31 bands, not an RGB projection or a spectral-angle
+loss. It uses a Gaussian 11x11 window (sigma 1.5), a smaller window for tiny
+patches, fixed data range 1, float32 arithmetic, and no prediction clipping.
+Both experiments expose `pipeline.params.ssim_weight=0.15`; set it to 0 for
+the previous objective. L1 was already used; no L2 term was replaced.
+`ssim_loss` and `val_ssim_loss` log the unweighted structural term.
+Checkpoint selection remains masked MAE for pretraining and MRAE for restoration.
+SAM logs now use degrees, including CSV logs; do not compare new values
+directly with older radian logs (multiply old values by 180/pi).
 
 The runs have separate output directories, `spectral.mae.ntire` and
 `spectral.restore.ntire`. Each resumes its own `last.ckpt` by default, including
@@ -231,7 +243,7 @@ The default 20-epoch run has two phases using the same model and optimizer:
   ignores zero target spectra.
 
 Both training and validation progress bars show PSNR, `de` (CIEDE2000)
-and `sam` (spectral angle in radians, with the zero-spectrum convention above).
+and `sam` (spectral angle in degrees, with the zero-spectrum convention above).
 PSNR averages per-image PSNR across all 31 bands with a fixed data range of 1.
 During pretraining, training metrics describe masked reconstruction; validation
 metrics always describe paired source-to-target restoration. Training metrics

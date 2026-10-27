@@ -13,5 +13,6 @@ params:
   spectral_weight: 0.1
   spectral_gradient_weight: 0.1
   perceptual_weight: 0.1
+  ssim_weight: 0.15
   color_weight: 0.0
   spectral_response: null

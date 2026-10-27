@@ -112,8 +112,9 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
     def reconstruction_losses(self, pred, target, mask):
         hidden = self.masked_mae(pred, target, mask)
         visible = self.masked_mae(pred, target, ~mask)
-        return {"loss": hidden + self.visible_weight * visible,
-                "masked_mae": hidden, "visible_mae": visible}
+        structural = self.ssim_loss(pred, target) if self.ssim_weight else pred.new_zeros(())
+        return {"loss": hidden + self.visible_weight * visible + self.ssim_weight * structural,
+                "masked_mae": hidden, "visible_mae": visible, "ssim_loss": structural}
 
     def training_step(self, batch, batch_idx):
         if not self.pretraining:
@@ -124,7 +125,7 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
         masked, mask = self.mask_channels(reconstruction)
         pred = self(masked, band_mask=mask)
         terms = self.reconstruction_losses(pred, reconstruction, mask)
-        for name in ("masked_mae", "visible_mae"):
+        for name in ("masked_mae", "visible_mae", "ssim_loss"):
             self.log(name, terms[name], on_step=True, on_epoch=True,
                      batch_size=reconstruction.shape[0])
         self.log("train_loss", terms["loss"], prog_bar=True, batch_size=reconstruction.shape[0])

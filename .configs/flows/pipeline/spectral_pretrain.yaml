@@ -6,6 +6,7 @@ params:
   weight_decay: 1e-5
   mask_ratio: 0.5
   visible_weight: 0.1
+  ssim_weight: 0.15
   encoder_checkpoint: null
   allow_random_encoder: false
   freeze_encoder_steps: 0

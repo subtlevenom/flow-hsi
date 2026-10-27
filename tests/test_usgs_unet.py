@@ -410,7 +410,7 @@ def test_sam_matches_spectral_angle_reference():
     cosine = (a * b).sum(axis=1) / (
         np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1)
     )
-    expected = np.arccos(np.clip(cosine, -1, 1)).mean()
+    expected = np.degrees(np.arccos(np.clip(cosine, -1, 1))).mean()
     assert actual.item() == pytest.approx(expected, rel=1e-5)
     assert not actual.requires_grad
 
@@ -426,7 +426,7 @@ def test_sam_known_angles_and_zero_spectra():
     pred[:, 0, :, 3] = -1
     pred[:, 0, :, 5] = 1
     # Identical, scaled, orthogonal, opposite, both zero, one zero.
-    expected = (0 + 0 + np.pi / 2 + np.pi + 0 + np.pi / 2) / 6
+    expected = (0 + 0 + 90 + 180 + 0 + 90) / 6
     with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
         actual = pipeline.quality_metrics(pred.bfloat16(), target.bfloat16())["sam"]
     assert torch.isfinite(actual)

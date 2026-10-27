@@ -9,6 +9,7 @@ from hydra import compose, initialize_config_dir
 from lightning.pytorch.callbacks import Callback, ModelCheckpoint
 from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+from torchmetrics.functional.image import structural_similarity_index_measure
 
 from flows.core import ModelSelector, PipelineSelector
 from flows.cli.train import train_default
@@ -187,6 +188,36 @@ def test_pretraining_export_and_strict_encoder_only_transfer(tmp_path):
         restore.load_encoder(str(tmp_path / "missing.pt"))
 
 
+@pytest.mark.parametrize("phase", ["pretrain", "restoration"])
+@pytest.mark.parametrize("size", [1, 4, 8, 16])
+def test_ssim_loss_composition_and_mixed_precision_gradients(phase, size):
+    module = pipeline(phase, ssim_weight=0.15)
+    target = torch.rand(1, 31, size, size)
+    pred = (target * 0.8 + 0.05).bfloat16().requires_grad_()
+    mask = torch.zeros(1, 31, 1, 1, dtype=torch.bool)
+    mask[:, ::2] = True
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        if phase == "pretrain":
+            terms = module.reconstruction_losses(pred, target, mask)
+            base = terms["masked_mae"] + module.visible_weight * terms["visible_mae"]
+        else:
+            terms = module.restoration_losses(pred, target)
+            module.ssim_weight = 0
+            base = module.restoration_losses(pred, target)["loss"]
+            module.ssim_weight = 0.15
+    assert terms["ssim_loss"].dtype == torch.float32
+    torch.testing.assert_close(terms["loss"], base + 0.15 * terms["ssim_loss"])
+    terms["loss"].backward()
+    assert torch.isfinite(pred.grad).all()
+    assert pred.grad.abs().sum() > 0
+    torch.testing.assert_close(module.ssim_loss(target, target), torch.tensor(0.0))
+    if size == 16:
+        expected = 1 - structural_similarity_index_measure(
+            pred.detach().float(), target, data_range=1.0,
+        )
+        torch.testing.assert_close(terms["ssim_loss"], expected)
+
+
 def test_best_export_survives_worse_validation_and_resume(tmp_path):
     module = pipeline()
     module._trainer = SimpleNamespace(
@@ -348,6 +379,7 @@ def test_experiment_config_and_factory(phase, epochs):
     ):
         cfg = compose(config_name=phase)
     assert cfg.epochs == epochs
+    assert cfg.pipeline.params.ssim_weight == 0.15
     module = PipelineSelector.select(ModelSelector.select(cfg.model), cfg.pipeline)
     assert isinstance(module, SpectralExperimentPipeline)
     assert module.checkpoint_monitor == ("val_masked_mae" if phase == "pretrain" else "val_mrae")
