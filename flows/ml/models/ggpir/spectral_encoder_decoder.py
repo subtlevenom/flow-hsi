@@ -1,3 +1,4 @@
+import math
 from typing import Optional, Sequence
 
 import torch
@@ -134,38 +135,103 @@ class ReconstructionHead(nn.Module):
 
 
 class RestorationStage(nn.Module):
-    def __init__(self, in_channels: int, channels: int, depth: int, heads: int):
+    def __init__(
+        self, in_channels: int, channels: int, depth: int, heads: int,
+        skip_fusion: str, local_blocks: int = 1,
+    ):
         super().__init__()
+        self.skip_fusion = skip_fusion
         self.project = nn.Conv2d(in_channels, channels, 1)
         self.skip = nn.Conv2d(channels, channels, 1)
+        if skip_fusion == "concat":
+            self.fuse = nn.Conv2d(2 * channels, channels, 1)
         self.blocks = nn.Sequential(
             *[SpectralAttentionBlock(channels, heads) for _ in range(depth)]
-        ) if depth else LocalBlock(channels)
+        ) if depth else (
+            LocalBlock(channels) if local_blocks == 1
+            else nn.Sequential(*[LocalBlock(channels) for _ in range(local_blocks)])
+        )
 
     def forward(self, x, skip):
         x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
-        return self.blocks(self.project(x) + self.skip(skip))
+        x, skip = self.project(x), self.skip(skip)
+        fused = self.fuse(torch.cat((x, skip), dim=1)) if self.skip_fusion == "concat" else x + skip
+        return self.blocks(fused)
+
+
+class SpectralCalibrationHead(nn.Module):
+    """Smooth bounded per-band correction from eighth-resolution features."""
+
+    def __init__(
+        self, in_channels: int, hidden_channels: int, spectral_channels: int,
+        gain_scale: float, offset_scale: float,
+    ):
+        super().__init__()
+        self.gain_scale = gain_scale
+        self.offset_scale = offset_scale
+        self.features = nn.Sequential(
+            nn.Conv2d(in_channels, hidden_channels, 1), nn.GELU(),
+        )
+        self.output = nn.Conv2d(hidden_channels, 2 * spectral_channels, 3, padding=1)
+        nn.init.zeros_(self.output.weight)
+        nn.init.zeros_(self.output.bias)
+
+    def forward(self, bottleneck, size):
+        gain, offset = self.output(self.features(bottleneck)).tanh().chunk(2, dim=1)
+        gain = F.interpolate(gain, size=size, mode="bilinear", align_corners=False)
+        offset = F.interpolate(offset, size=size, mode="bilinear", align_corners=False)
+        return gain * self.gain_scale, offset * self.offset_scale
 
 
 class RestorationHead(nn.Module):
     def __init__(
         self, channels: Sequence[int], heads: Sequence[int],
-        spectral_channels: int,
+        spectral_channels: int, skip_fusion: str = "concat",
+        full_resolution_blocks: int = 3, use_calibration: bool = False,
+        calibration_gain_scale: float = 0.1, calibration_offset_scale: float = 0.1,
     ):
         super().__init__()
-        self.decoder2 = RestorationStage(channels[3], channels[2], 2, heads[1])
-        self.decoder1 = RestorationStage(channels[2], channels[1], 1, heads[0])
-        self.decoder0 = RestorationStage(channels[1], channels[0], 0, 1)
+        if skip_fusion not in ("add", "concat"):
+            raise ValueError("skip_fusion must be 'add' or 'concat'.")
+        if (not isinstance(full_resolution_blocks, int) or isinstance(full_resolution_blocks, bool)
+                or full_resolution_blocks < 1):
+            raise ValueError("full_resolution_blocks must be a positive integer.")
+        if any(not math.isfinite(scale) or scale <= 0
+               for scale in (calibration_gain_scale, calibration_offset_scale)):
+            raise ValueError("Calibration scales must be finite and positive.")
+        self.options = {
+            "skip_fusion": skip_fusion, "full_resolution_blocks": full_resolution_blocks,
+            "use_calibration": use_calibration,
+            "calibration_gain_scale": calibration_gain_scale,
+            "calibration_offset_scale": calibration_offset_scale,
+        }
+        self.decoder2 = RestorationStage(channels[3], channels[2], 2, heads[1], skip_fusion)
+        self.decoder1 = RestorationStage(channels[2], channels[1], 1, heads[0], skip_fusion)
+        self.decoder0 = RestorationStage(
+            channels[1], channels[0], 0, 1, skip_fusion, full_resolution_blocks,
+        )
+        self.calibration = (
+            SpectralCalibrationHead(
+                channels[3], channels[0], spectral_channels,
+                calibration_gain_scale, calibration_offset_scale,
+            ) if use_calibration else None
+        )
         self.output = nn.Conv2d(channels[0], spectral_channels, 3, padding=1)
         # Near identity, but decoder gradients are nonzero from the first update.
         nn.init.normal_(self.output.weight, std=1e-3)
         nn.init.zeros_(self.output.bias)
 
-    def forward(self, pyramid):
+    def forward(self, pyramid, source=None):
         e0, e1, e2, e3 = pyramid
         x = self.decoder2(e3, e2)
         x = self.decoder1(x, e1)
-        return self.output(self.decoder0(x, e0))
+        residual = self.output(self.decoder0(x, e0))
+        if self.calibration is not None:
+            if source is None:
+                raise ValueError("The calibration head requires the source cube.")
+            gain, offset = self.calibration(e3, source.shape[-2:])
+            residual = residual + source * gain + offset
+        return residual
 
 
 class SpectralEncoderDecoder(nn.Module):
@@ -175,18 +241,36 @@ class SpectralEncoderDecoder(nn.Module):
         depths: Sequence[int] = (1, 2, 2),
         heads: Sequence[int] = (2, 4, 6),
         reconstruction_channels: Sequence[int] = (96, 48, 32),
+        skip_fusion: str = "concat",
+        full_resolution_blocks: int = 3,
+        use_calibration: bool = False,
+        calibration_gain_scale: float = 0.1,
+        calibration_offset_scale: float = 0.1,
     ):
         super().__init__()
         if head not in ("pretrain", "restoration"):
             raise ValueError("head must be 'pretrain' or 'restoration'.")
         self.head_type = head
+        self.reconstruction_channels = tuple(reconstruction_channels)
         self.encoder = SpectralEncoder(spectral_channels, channels, depths, heads)
         self.decoder = (
             ReconstructionHead(channels[-1], spectral_channels, reconstruction_channels)
             if head == "pretrain"
-            else RestorationHead(channels, heads, spectral_channels)
+            else RestorationHead(
+                channels, heads, spectral_channels, skip_fusion, full_resolution_blocks,
+                use_calibration, calibration_gain_scale, calibration_offset_scale,
+            )
         )
 
+    def architecture(self) -> dict:
+        return {
+            "encoder": self.encoder.architecture(), "head": self.head_type,
+            "decoder": {"reconstruction_channels": list(self.reconstruction_channels)}
+            if self.head_type == "pretrain" else dict(self.decoder.options),
+        }
+
     def forward(self, x: torch.Tensor, band_mask: Optional[torch.Tensor] = None):
-        result = self.decoder(self.encoder(x, band_mask))
-        return result if self.head_type == "pretrain" else x + result
+        features = self.encoder(x, band_mask)
+        if self.head_type == "pretrain":
+            return self.decoder(features)
+        return x + self.decoder(features, source=x)

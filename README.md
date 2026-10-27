@@ -81,12 +81,38 @@ MAE + 0.15 (1 - SSIM)**. All five epochs do reconstruction; there is no automati
 paired training. This is dense masked-channel autoencoding, not sparse
 token-dropping ViT MAE.
 
-The **restoration head** uses projected additive encoder skips and 2 MSAB-style
-blocks at quarter resolution, 1 at half resolution, and a local convolutional
-block at full resolution (128 -> 64 -> 32 -> 31). It predicts a residual added
+The **restoration head** projects the encoder and decoder features separately,
+concatenates them, then fuses them with a learned 1x1 projection at each skip.
+It uses 2 MSAB-style blocks at quarter resolution, 1 at half resolution, and
+**three local residual convolutional blocks at full resolution**
+(128 -> 64 -> 32 -> 31). It predicts a residual added
 to the source HSI. Small nonzero output weights initialize it near identity
 without blocking decoder gradients. There are **no Gaussian/hypernetwork
 branches or repeated U-Net cascades** in this baseline.
+
+The refined decoder is the default for `restore`. Its encoder and MAE head are
+unchanged: existing pretrained `encoder.pt` artifacts remain usable, without
+repeating pretraining. Full-resolution refinement increases activation memory;
+reduce batch size if needed. No extra full-encoder pass is added.
+
+For a separate coarse-calibration ablation:
+
+```powershell
+python main.py flows@_global_=restore_calibrated task=train
+# Equivalent root config:
+python main.py --config-name restore_calibrated task=train
+```
+
+This adds a small 1x1/GELU/3x3 head on eighth-resolution encoder features.
+It predicts per-band gain and offset fields, bounded by tanh and bilinearly
+upsampled, to produce `source * (1 + gain) + offset + detail_residual`.
+Both corrections start at zero (calibration is identity initially); their
+default magnitude limits are 0.1 each. Configure
+`model.params.layers.spectral.params.calibration_gain_scale` and
+`calibration_offset_scale` for a different bound. No output clipping is used.
+The calibration head belongs to the decoder optimizer group and trains during
+the frozen-encoder warmup. It is absent from the refined baseline, allowing
+the two experiments to isolate its contribution.
 
 ### Transfer, schedule and resume
 
@@ -142,14 +168,26 @@ Checkpoint selection remains masked MAE for pretraining and MRAE for restoration
 SAM logs now use degrees, including CSV logs; do not compare new values
 directly with older radian logs (multiply old values by 180/pi).
 
-The runs have separate output directories, `spectral.mae.ntire` and
-`spectral.restore.ntire`. Each resumes its own `last.ckpt` by default, including
+The runs have separate output directories: `spectral.mae.ntire`,
+`spectral.restore.refined.ntire` and `spectral.restore.calibrated.ntire`.
+Each resumes its own `last.ckpt` by default, including
 optimizer, scheduler, epoch and update count. Full restoration resume does not
 reload the initial encoder artifact, so that artifact is no longer required.
 Use a new `experiment=...` for a fresh run or architecture change. Existing
 cascade checkpoints cannot initialize this encoder. Masked pretraining is an
 experiment, not a demonstrated accuracy gain; compare against the scratch
 ablation on held-out scenes.
+
+The refined/calibrated heads cannot resume the original restoration decoder.
+New full checkpoints validate decoder settings as well as encoder settings.
+To resume an old `spectral.restore.ntire` checkpoint with its original decoder:
+
+```powershell
+python main.py flows@_global_=restore task=train experiment=spectral.restore.ntire model.params.layers.spectral.params.skip_fusion=add model.params.layers.spectral.params.full_resolution_blocks=1
+```
+
+Changing calibration bounds also changes the model's behavior and requires a
+new experiment rather than resuming a checkpoint with different bounds.
 
 Both experiments inherit the NTIRE loader settings described below. If host
 RAM is tight, append `data.params.num_workers=0 data.params.pin_memory=false`

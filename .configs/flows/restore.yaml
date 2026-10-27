@@ -3,5 +3,5 @@ defaults:
   - override model: spectral_restore
   - override pipeline: spectral_restore
   - _self_
-experiment: spectral.restore.ntire
+experiment: spectral.restore.refined.ntire
 epochs: 20

@@ -6,3 +6,8 @@ params:
     spectral:
       params:
         head: restoration
+        skip_fusion: concat
+        full_resolution_blocks: 3
+        use_calibration: false
+        calibration_gain_scale: 0.1
+        calibration_offset_scale: 0.1

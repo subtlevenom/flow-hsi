@@ -28,10 +28,11 @@ def cpu_workload():
     torch.set_num_threads(threads)
 
 
-def network(head="pretrain"):
+def network(head="pretrain", **options):
     return SpectralEncoderDecoder(
         head=head, channels=(4, 8, 16, 24), depths=(1, 1, 1),
         heads=(2, 4, 6), reconstruction_channels=(12, 8, 4),
+        **options,
     )
 
 
@@ -100,6 +101,82 @@ def test_simple_head_is_bottleneck_only_and_restoration_has_attention():
     assert not any(isinstance(m, SpectralAttentionBlock)
                    for m in restoration.decoder.decoder0.modules())
     assert restoration.decoder.output.weight.count_nonzero() > 0
+
+
+def test_refined_decoder_fusion_and_local_depth():
+    model = network("restoration")
+    for stage in (model.decoder.decoder2, model.decoder.decoder1, model.decoder.decoder0):
+        assert stage.skip_fusion == "concat"
+        assert stage.fuse.in_channels == 2 * stage.fuse.out_channels
+    assert len(model.decoder.decoder0.blocks) == 3
+    assert model.decoder.calibration is None
+    legacy = network("restoration", skip_fusion="add", full_resolution_blocks=1)
+    assert not any("fuse" in name for name in legacy.state_dict())
+    assert "decoder.decoder0.blocks.body.0.norm.weight" in legacy.state_dict()
+    assert model.encoder.architecture() == legacy.encoder.architecture()
+
+
+@pytest.mark.parametrize("shape", [(2, 31, 17, 19), (1, 31, 1, 1)])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_calibration_identity_bounds_and_gradients(shape, mixed):
+    baseline = network("restoration")
+    calibrated = network("restoration", use_calibration=True)
+    missing, unexpected = calibrated.load_state_dict(baseline.state_dict(), strict=False)
+    assert missing and all(key.startswith("decoder.calibration.") for key in missing)
+    assert not unexpected
+    x = torch.rand(shape)
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=mixed):
+        torch.testing.assert_close(calibrated(x), baseline(x))
+        loss = (calibrated(x) - x * 0.8).square().mean()
+    loss.backward()
+    head = calibrated.decoder.calibration
+    assert head.output.weight.grad.abs().sum() > 0
+    assert all(p.grad is not None and torch.isfinite(p.grad).all()
+               for p in calibrated.parameters())
+    with torch.no_grad():
+        head.output.weight.zero_()
+        head.output.bias.fill_(100)
+        gain, offset = head(calibrated.encoder(x)[-1], x.shape[-2:])
+        torch.testing.assert_close(gain, torch.full_like(x, 0.1))
+        torch.testing.assert_close(offset, torch.full_like(x, 0.1))
+        # Calibration is a correction to the original source, not to the
+        # predicted residual, and it does not clamp the restored spectrum.
+        torch.testing.assert_close(calibrated(x), baseline(x) + x * 0.1 + 0.1)
+        head.output.bias.fill_(-100)
+        gain, offset = head(calibrated.encoder(x)[-1], x.shape[-2:])
+        torch.testing.assert_close(gain, torch.full_like(x, -0.1))
+        torch.testing.assert_close(offset, torch.full_like(x, -0.1))
+
+
+@pytest.mark.parametrize("options", [
+    {"skip_fusion": "invalid"}, {"full_resolution_blocks": 0},
+    {"full_resolution_blocks": 1.5}, {"calibration_gain_scale": float("nan")},
+    {"calibration_offset_scale": -0.1},
+])
+def test_restoration_options_reject_invalid_values(options):
+    with pytest.raises(ValueError):
+        network("restoration", **options)
+
+
+def test_resume_checks_decoder_and_preserves_legacy_support():
+    module = pipeline("restoration")
+    module._trainer = SimpleNamespace(callback_metrics={})
+    checkpoint = {}
+    module.on_save_checkpoint(checkpoint)
+    calibrated = SpectralExperimentPipeline(
+        network("restoration", use_calibration=True), phase="restoration",
+    )
+    with pytest.raises(ValueError, match="decoder architecture"):
+        calibrated.on_load_checkpoint(checkpoint)
+    del checkpoint["spectral_experiment"]["model_architecture"]
+    with pytest.raises(ValueError, match="Legacy restoration"):
+        module.on_load_checkpoint(checkpoint)
+    legacy = SpectralExperimentPipeline(
+        network("restoration", skip_fusion="add", full_resolution_blocks=1),
+        phase="restoration",
+    )
+    legacy.on_load_checkpoint(checkpoint)
+    assert legacy._resuming
 
 
 def test_mask_embedding_distinguishes_hidden_from_dark_and_all_visible_is_compatible():
@@ -327,6 +404,23 @@ def test_freeze_is_capped_at_one_epoch(tmp_path):
     assert [entry["frozen"] for entry in record.records] == [True, True, False, False]
 
 
+def test_calibration_learns_in_decoder_group_while_encoder_frozen(tmp_path):
+    module = SpectralExperimentPipeline(
+        network("restoration", use_calibration=True),
+        phase="restoration", allow_random_encoder=True, freeze_encoder_steps=500,
+    )
+    before = module.network.encoder.stem.weight.detach().clone()
+    run = trainer(tmp_path, enable_checkpointing=False, max_steps=1)
+    run.fit(module, loader(), loader())
+    torch.testing.assert_close(module.network.encoder.stem.weight, before)
+    head = module.network.decoder.calibration
+    assert head.output.weight.count_nonzero() > 0
+    optimizer = run.optimizers[0]
+    decoder_ids = {id(p) for p in optimizer.param_groups[1]["params"]}
+    assert all(id(p) in decoder_ids for p in head.parameters())
+    assert optimizer.state[head.output.weight]["step"] == 1
+
+
 def test_freeze_counts_optimizer_updates_with_accumulation(tmp_path):
     module = pipeline("restoration", allow_random_encoder=True, freeze_encoder_steps=1)
     record = FreezeRecord()
@@ -372,7 +466,9 @@ def test_restore_without_encoder_does_not_silently_train_random(tmp_path):
         trainer(tmp_path, enable_checkpointing=False).fit(module, loader())
 
 
-@pytest.mark.parametrize("phase,epochs", [("pretrain", 5), ("restore", 20)])
+@pytest.mark.parametrize("phase,epochs", [
+    ("pretrain", 5), ("restore", 20), ("restore_calibrated", 20),
+])
 def test_experiment_config_and_factory(phase, epochs):
     with initialize_config_dir(
         config_dir=str(Path(__file__).resolve().parents[1] / ".configs"), version_base="1.3",
@@ -387,6 +483,10 @@ def test_experiment_config_and_factory(phase, epochs):
     x = torch.rand(1, 31, 17, 19)
     assert module(x).shape == x.shape
     assert module.model(src=x)["res"].shape == x.shape
+    if phase != "pretrain":
+        assert len(module.network.decoder.decoder0.blocks) == 3
+        assert (module.network.decoder.calibration is not None) == (phase == "restore_calibrated")
+        assert cfg.experiment != "spectral.restore.ntire"
 
 
 def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
@@ -397,7 +497,7 @@ def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
     np.save(source / "sample.npy", cube)
     np.save(target / "sample.npy", cube * 0.8)
     configs = {}
-    for phase in ("pretrain", "restore"):
+    for phase in ("pretrain", "restore", "restore_calibrated"):
         with initialize_config_dir(
             config_dir=str(Path(__file__).resolve().parents[1] / ".configs"), version_base="1.3",
         ):

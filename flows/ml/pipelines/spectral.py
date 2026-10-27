@@ -187,6 +187,7 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
         metric = self.trainer.callback_metrics.get("val_masked_mae") if self.pretraining else None
         checkpoint["spectral_experiment"] = {
             "phase": self.phase, "architecture": self.network.encoder.architecture(),
+            "model_architecture": self.network.architecture(),
             "best_masked_mae": min(self._best_masked_mae, float(metric))
             if metric is not None else self._best_masked_mae,
             "freeze_encoder_steps": self.freeze_encoder_steps,
@@ -194,6 +195,20 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
 
     def on_load_checkpoint(self, checkpoint) -> None:
         metadata = checkpoint.get("spectral_experiment", {})
+        model_architecture = metadata.get("model_architecture")
+        if model_architecture is not None:
+            if model_architecture != self.network.architecture():
+                raise ValueError("Resume requires matching spectral encoder and decoder architecture.")
+        elif not self.pretraining and (
+            self.network.decoder.options["skip_fusion"] != "add"
+            or self.network.decoder.options["full_resolution_blocks"] != 1
+            or self.network.decoder.options["use_calibration"]
+        ):
+            raise ValueError(
+                "Legacy restoration checkpoints require skip_fusion=add, "
+                "full_resolution_blocks=1, use_calibration=false. "
+                "Use a new experiment with the pretrained encoder for the refined decoder."
+            )
         if (metadata.get("phase") != self.phase
                 or metadata.get("architecture") != self.network.encoder.architecture()
                 or metadata.get("freeze_encoder_steps") != self.freeze_encoder_steps):

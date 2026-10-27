@@ -1,0 +1,10 @@
+defaults:
+  - restore
+  - _self_
+experiment: spectral.restore.calibrated.ntire
+model:
+  params:
+    layers:
+      spectral:
+        params:
+          use_calibration: true
