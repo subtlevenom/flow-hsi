@@ -167,7 +167,7 @@ Pretraining uses LR 2e-4 for both encoder and its lightweight head.
 
 Fine-tuning retains all-band MAE, floored MRAE, spectral cosine, adjacent-band
 difference and CIE Lab perceptual losses described below and adds
-**0.15 (1 - SSIM)**; checkpoints are
+**0.15 (1 - SSIM)** plus a strong spatial sharpness term; checkpoints are
 ranked by `val_mrae`. Both experiments show training/validation **PSNR,
 CIEDE2000 (`de`) and spectral angle mapper (`sam`)**. SAM averages the
 per-pixel angle across all 31 bands in **degrees** (lower is better).
@@ -183,6 +183,12 @@ patches, fixed data range 1, float32 arithmetic, and no prediction clipping.
 Both experiments expose `pipeline.params.ssim_weight=0.15`; set it to 0 for
 the previous objective. L1 was already used; no L2 term was replaced.
 `ssim_loss` and `val_ssim_loss` log the unweighted structural term.
+Fine-tuning also uses `pipeline.params.sharpness_weight=1.0` to match
+horizontal and vertical finite differences across all 31 bands. This
+high-frequency edge loss complements SSIM and is distinct from
+`spectral_gradient_weight`, which compares adjacent wavelengths at each pixel.
+It is logged as `sharpness_loss` / `val_sharpness_loss`; set its weight to 0
+to disable it. Pretraining is unchanged.
 Checkpoint selection remains masked MAE for pretraining and MRAE for restoration.
 SAM logs now use degrees, including CSV logs; do not compare new values
 directly with older radian logs (multiply old values by 180/pi).

@@ -358,6 +358,36 @@ def test_ssim_loss_composition_and_mixed_precision_gradients(phase, size):
         torch.testing.assert_close(terms["ssim_loss"], expected)
 
 
+def test_finetune_sharpness_loss_matches_spatial_edges_and_is_weighted():
+    module = pipeline("finetune", sharpness_weight=1.0, ssim_weight=0)
+    target = torch.zeros(1, 31, 8, 8)
+    target[..., 2:6, 2:6] = 1
+    blurred = torch.nn.functional.avg_pool2d(target, kernel_size=3, stride=1, padding=1)
+    sharp_terms = module.restoration_losses(target, target)
+    blurred_terms = module.restoration_losses(blurred.requires_grad_(), target)
+    torch.testing.assert_close(sharp_terms["sharpness_loss"], torch.tensor(0.0))
+    assert blurred_terms["sharpness_loss"] > 0
+    module.sharpness_weight = 0
+    base = module.restoration_losses(blurred.detach(), target)["loss"]
+    module.sharpness_weight = 1.0
+    torch.testing.assert_close(
+        blurred_terms["loss"], base + blurred_terms["sharpness_loss"],
+    )
+    blurred_terms["sharpness_loss"].backward()
+    assert torch.isfinite(blurred.grad).all()
+    assert blurred.grad.abs().sum() > 0
+
+
+@pytest.mark.parametrize("size", [(1, 1), (1, 4), (4, 1)])
+def test_sharpness_loss_is_finite_for_degenerate_spatial_sizes(size):
+    pred = torch.rand(1, 31, *size, requires_grad=True)
+    target = torch.rand_like(pred)
+    loss = pipeline("finetune").sharpness_loss(pred, target)
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert torch.isfinite(pred.grad).all()
+
+
 def test_best_export_survives_worse_validation_and_resume(tmp_path):
     module = pipeline()
     module._trainer = SimpleNamespace(
@@ -542,6 +572,9 @@ def test_experiment_config_and_factory(phase, epochs):
         cfg = compose(config_name=phase)
     assert cfg.epochs == epochs
     assert cfg.pipeline.params.ssim_weight == 0.15
+    assert cfg.pipeline.params.get("sharpness_weight", 0.0) == (
+        1.0 if phase == "finetune" else 0.0
+    )
     module = PipelineSelector.select(ModelSelector.select(cfg.model), cfg.pipeline)
     assert isinstance(module, SpectralExperimentPipeline)
     assert module.checkpoint_monitor == ("val_masked_mae" if phase == "pretrain" else "val_mrae")

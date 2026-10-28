@@ -33,6 +33,7 @@ class USGSUNetPipeline(L.LightningModule):
         perceptual_weight: float = 0.1,
         masked_val_batches: int = 1,
         ssim_weight: float = 0.0,
+        sharpness_weight: float = 0.0,
     ):
         super().__init__()
         if pretrain_epochs < 0 or not 0.0 < mask_ratio < 1.0:
@@ -42,7 +43,7 @@ class USGSUNetPipeline(L.LightningModule):
         if masked_val_batches < 0:
             raise ValueError("masked_val_batches must be nonnegative.")
         if min(mrae_weight, spectral_weight, spectral_gradient_weight,
-               color_weight, perceptual_weight, ssim_weight) < 0:
+               color_weight, perceptual_weight, ssim_weight, sharpness_weight) < 0:
             raise ValueError("Loss weights must be nonnegative.")
         response = None
         if spectral_response is not None:
@@ -67,6 +68,7 @@ class USGSUNetPipeline(L.LightningModule):
         self.perceptual_weight = perceptual_weight
         self.masked_val_batches = masked_val_batches
         self.ssim_weight = ssim_weight
+        self.sharpness_weight = sharpness_weight
         self.colorimetry = NTIREColorimetry()
         self.register_buffer("spectral_response", response)
         self.save_hyperparameters(ignore=["model"])
@@ -126,6 +128,20 @@ class USGSUNetPipeline(L.LightningModule):
                 pred.float(), target.float(), data_range=1.0, sigma=sigma,
             )
 
+    @staticmethod
+    def sharpness_loss(pred: torch.Tensor, target: torch.Tensor):
+        """Match horizontal and vertical spatial gradients to preserve sharp edges."""
+        zero = pred.sum() * 0.0
+        horizontal = zero
+        vertical = zero
+        if pred.shape[-1] > 1:
+            horizontal = F.l1_loss(pred[..., 1:] - pred[..., :-1],
+                                   target[..., 1:] - target[..., :-1])
+        if pred.shape[-2] > 1:
+            vertical = F.l1_loss(pred[..., 1:, :] - pred[..., :-1, :],
+                                 target[..., 1:, :] - target[..., :-1, :])
+        return horizontal + vertical
+
     def restoration_losses(self, pred: torch.Tensor, target: torch.Tensor):
         if pred.shape != target.shape:
             raise ValueError("Prediction and target cubes must have identical shapes.")
@@ -148,12 +164,16 @@ class USGSUNetPipeline(L.LightningModule):
         if self.perceptual_weight:
             perceptual = F.l1_loss(self.colorimetry(pred), self.colorimetry(target)) / 100.0
         structural = self.ssim_loss(pred, target) if self.ssim_weight else pred.new_zeros(())
+        sharpness = (self.sharpness_loss(pred, target) if self.sharpness_weight
+                     else pred.new_zeros(()))
         loss = (mae + self.mrae_weight * relative + self.spectral_weight * spectral
                 + self.spectral_gradient_weight * gradient + self.color_weight * color
-                + self.perceptual_weight * perceptual + self.ssim_weight * structural)
+                + self.perceptual_weight * perceptual + self.ssim_weight * structural
+                + self.sharpness_weight * sharpness)
         return {"loss": loss, "mae": mae, "mrae": relative,
                 "spectral": spectral, "spectral_gradient": gradient, "color": color,
-                "perceptual": perceptual, "ssim_loss": structural}
+                "perceptual": perceptual, "ssim_loss": structural,
+                "sharpness_loss": sharpness}
 
     @torch.no_grad()
     def quality_metrics(self, pred: torch.Tensor, target: torch.Tensor):
