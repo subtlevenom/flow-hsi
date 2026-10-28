@@ -11,8 +11,12 @@ params:
         head: pretrain
         spectral_channels: 31
         channels: 64
-        branch_depths: [3, 3, 4]
-        branch_channels: [48, 96, 192]
+        branch_dilations:
+          - [1]
+          - [1, 2]
+          - [1, 2, 3]
+          - [1, 2, 3, 4]
+        branch_channels: [64, 64, 64, 64]
         detail_depth: 2
         fusion_depth: 2
         heads: 4

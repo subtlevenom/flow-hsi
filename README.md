@@ -61,30 +61,32 @@ come from `data.params.train`; validation uses full images. The default device i
 The model uses a **GazeTR-inspired, per-pixel receptive-field token transformer**,
 not the original image-level gaze regressor. The existing
 `ggpir.SpectralEncoderDecoder` factory entrypoint now constructs this model.
-The encoder has three true spatial scales:
+The encoder has four **full-resolution** receptive-field branches:
 
-| Stream | Resolution | Channels | Residual blocks |
-|---|---|---|---|
-| Fine | Full | 48 | 3 |
-| Medium | Half | 96 | 3 |
-| Broad | Quarter | 192 | 4 |
-| Independent detail | Full | 48 | 2 |
+| Branch | Residual-block dilations | Width |
+|---|---|---|
+| Small | `[1]` | 64 |
+| Medium | `[1, 2]` | 64 |
+| Large | `[1, 2, 3]` | 64 |
+| Extra-large | `[1, 2, 3, 4]` | 64 |
+| Independent detail | two dilation-1 blocks | 64 |
 
-A stride-1 3x3 stem feeds every stream directly. Fixed-grid average pooling
-and pointwise projections create the half/quarter-resolution inputs.
-Fine features also feed medium and broad; medium features feed broad.
-Each connection projects the source and computes a spatial/channel sigmoid
-gate from both source and receiving features. Gates start with bias -3,
-so cross-scale contributions are initially small but trainable.
-The independent detail path receives no cross-scale connections.
+A stride-1 3x3 stem feeds all branches. Each residual block has two dense
+3x3 convolutions at its listed dilation, GELU between them and a residual
+scale of 0.1. Every feature remains on the original pixel grid; larger
+receptive fields come from block depth and dilation, not downsampling.
+Learned spatial/channel sigmoid gates connect small→medium, small→large,
+medium→large, and small/medium/large→extra-large. Gates start with bias -3,
+so cross-branch contributions are initially small but trainable. The
+independent detail path receives no cross-branch connections.
 
 Encoder residual blocks have two dense 3x3 convolutions with GELU between
 them and a residual scale of 0.1. Unlike stock ResNet-18, there is no
 max-pooling, aggressive input stride, BatchNorm or image-wide normalization.
-Pointwise projections align each stream to 64 token channels, with fixed-factor
-bilinear upsampling for medium and broad. A separate 31 -> 64 pixel projection
-preserves the current spectrum. The five signals at each pixel become tokens,
-with learned branch-identity embeddings.
+Pointwise projections align all branch features to 64 token channels. A
+separate 31 -> 64 pixel projection preserves the current spectrum. The pixel,
+four branch, and detail signals at each location become six tokens, with
+learned branch-identity embeddings.
 Two four-head query-transformer blocks fuse these tokens independently at
 every pixel. The initial query combines the pixel token and detail token;
 attention weights therefore depend on the current spectrum and neighborhood.
@@ -94,13 +96,14 @@ The branch feature vectors are not compressed into candidate output spectra.
 Both task heads use two full-resolution gated local blocks and a 64 -> 31
 projection. There is **no mandatory spatial bottleneck, absolute coordinate
 embedding, Gaussian coefficient head, or output clipping**.
-Right/bottom replicate padding to a multiple of four keeps all pooling and
-upsampling ratios fixed; padding is removed before the task head.
-Arbitrary positive sizes are supported. For the default depths, use a
-conservative 64-pixel input halo and crop origins aligned to multiples of four
-when comparing tiled/full predictions away from true borders. Unaligned
-origins change the pooling phase and need not give identical predictions.
-This controls resizing geometry; it does not guarantee learned accuracy.
+No pooling, resizing, or multiple-of-four padding is used; arbitrary positive
+spatial sizes are supported. The largest isolated branch has a nominal
+43-pixel receptive field through its four blocks. Hierarchical cross-branch
+gates and the two-block task head increase the maximum nominal receptive field
+to 87 pixels, so use a conservative 44-pixel input halo when comparing tiled
+and full predictions away from true borders. Crop origins need no stride
+alignment. This controls convolutional context; it does not guarantee learned
+accuracy.
 
 The **pretraining head** predicts all 31 channels directly, without adding the
 input to the output. Full-resolution features see only visible values and explicit
@@ -139,7 +142,7 @@ checkpoint selection; training metrics follow the currently selected domain.
 The best encoder is exported atomically, on rank zero, to:
 
 ```text
-.experiments\spectral.pretrain.gazetr.multiscale.ntire\logs\checkpoints\encoder.pt
+.experiments\spectral.pretrain.gazetr.fullrf.ntire\logs\checkpoints\encoder.pt
 ```
 
 The artifact contains only encoder weights, architecture metadata and selection
@@ -184,8 +187,8 @@ Checkpoint selection remains masked MAE for pretraining and MRAE for restoration
 SAM logs now use degrees, including CSV logs; do not compare new values
 directly with older radian logs (multiply old values by 180/pi).
 
-The runs have separate output directories: `spectral.pretrain.gazetr.multiscale.ntire` and
-`spectral.finetune.gazetr.multiscale.ntire`.
+The runs have separate output directories: `spectral.pretrain.gazetr.fullrf.ntire` and
+`spectral.finetune.gazetr.fullrf.ntire`.
 Each resumes its own `last.ckpt` by default, including
 optimizer, scheduler, epoch and update count. Full fine-tuning resume does not
 reload the initial encoder artifact, so that artifact is no longer required.
@@ -195,7 +198,7 @@ experiment, not a demonstrated accuracy gain; compare against the scratch
 ablation on held-out scenes.
 
 **Restart both pretraining and fine-tuning for this model.** Encoder metadata
-is now version 4 and identifies the connected multiscale query transformer; older encoder artifacts and
+is now version 5 and identifies the full-resolution dilated query transformer; older encoder artifacts and
 full checkpoints are rejected explicitly. Historical experiment files are not
 renamed or deleted, and the new directories avoid accidental old-checkpoint
 resume. The public model head and pipeline phase are now `finetune`, and all

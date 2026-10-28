@@ -5,7 +5,7 @@ params:
   encoder_lr: 2e-5
   weight_decay: 1e-5
   # Encoder-only artifact selected by deterministic masked-reconstruction MAE.
-  encoder_checkpoint: ${save_dir}/spectral.pretrain.gazetr.multiscale.ntire/logs/checkpoints/encoder.pt
+  encoder_checkpoint: ${save_dir}/spectral.pretrain.gazetr.fullrf.ntire/logs/checkpoints/encoder.pt
   allow_random_encoder: false
   # Optimizer updates, capped at the end of the first epoch.
   freeze_encoder_steps: 500

@@ -29,8 +29,11 @@ def cpu_workload():
 
 
 def network(head="pretrain", **options):
-    params = dict(channels=8, branch_depths=(1, 2, 3),
-                  branch_channels=(4, 8, 16), heads=2, pixel_chunk_size=128)
+    params = dict(
+        channels=8,
+        branch_dilations=((1,), (1, 2), (1, 2, 3), (1, 2, 3, 4)),
+        branch_channels=(8, 8, 8, 8), heads=2, pixel_chunk_size=128,
+    )
     params.update(options)
     return SpectralEncoderDecoder(head=head, **params)
 
@@ -98,11 +101,12 @@ def test_full_resolution_branches_and_pixel_query_fusion():
     for handle in handles:
         handle.remove()
     assert features.shape == (1, 8, 17, 19)
-    assert observed == [(1, 4, 20, 20), (1, 8, 10, 10),
-                        (1, 16, 5, 5), (1, 4, 20, 20)]
-    assert [len(path) for path in model.encoder.branches] == [1, 2, 3]
+    assert observed == [(1, 8, 17, 19)] * 5
+    assert [len(path) for path in model.encoder.branches] == [1, 2, 3, 4]
+    assert [[block.body[0].dilation[0] for block in path]
+            for path in model.encoder.branches] == [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4]]
     assert all(isinstance(path[0], ResidualConvBlock) for path in model.encoder.branches)
-    assert model.encoder.branch_embedding.shape == (5, 8)
+    assert model.encoder.branch_embedding.shape == (6, 8)
     assert len(model.encoder.fusion) == 2
     assert all(isinstance(block, PixelQueryBlock) for block in model.encoder.fusion)
     assert all(isinstance(block, LocalBlock) for block in model.decoder.blocks)
@@ -112,7 +116,7 @@ def test_full_resolution_branches_and_pixel_query_fusion():
 def test_pixel_query_attention_does_not_mix_pixels_and_uses_context():
     block = PixelQueryBlock(8, 2).eval()
     query = torch.rand(3, 8)
-    tokens = torch.rand(3, 5, 8)
+    tokens = torch.rand(3, 6, 8)
     expected = block(query, tokens)
     changed = tokens.clone()
     changed[1, 2] += torch.arange(8).float()
@@ -123,16 +127,15 @@ def test_pixel_query_attention_does_not_mix_pixels_and_uses_context():
 
 
 @pytest.mark.parametrize("head", ["pretrain", "finetune"])
-def test_common_pixels_are_invariant_for_aligned_crops_and_other_images(head):
+def test_common_pixels_are_invariant_for_unaligned_crops_and_other_images(head):
     model = network(head).eval()
-    x = torch.rand(1, 31, 160, 164)
+    x = torch.rand(1, 31, 192, 196)
     with torch.no_grad():
         full = model(x)
-        patch = model(x[..., 8:152, 8:156])
+        patch = model(x[..., 7:183, 7:187])
         batched = model(torch.cat([x, torch.rand_like(x)]))
-    # Multiscale sampling requires origins aligned to four and a sufficient halo.
     torch.testing.assert_close(patch[..., 48:-48, 48:-48],
-                               full[..., 56:104, 56:108], atol=2e-6, rtol=2e-5)
+                               full[..., 55:135, 55:139], atol=2e-6, rtol=2e-5)
     torch.testing.assert_close(batched[:1], full, atol=2e-6, rtol=2e-5)
 
 
@@ -158,9 +161,9 @@ def test_training_crop_196_matches_full_256_common_center(head):
     x = torch.rand(1, 31, 256, 256)
     with torch.no_grad():
         full = model(x)
-        patch = model(x[..., 28:224, 28:224])
-    torch.testing.assert_close(patch[..., 48:148, 48:148],
-                               full[..., 76:176, 76:176], atol=2e-6, rtol=2e-5)
+        patch = model(x[..., 27:223, 27:223])
+    torch.testing.assert_close(patch[..., 64:132, 64:132],
+                               full[..., 91:159, 91:159], atol=2e-6, rtol=2e-5)
 
 
 def test_output_uses_neighbor_spectra_but_has_bounded_spatial_receptive_field():
@@ -185,8 +188,11 @@ def test_finetune_head_is_identity_residual_and_pretrain_has_no_input_bypass():
 
 @pytest.mark.parametrize("options", [
     {"head_depth": 0}, {"head_depth": 1.5}, {"detail_depth": 0},
-    {"fusion_depth": 0}, {"branch_depths": []}, {"branch_channels": [1]},
-    {"branch_channels": [1, 0, 3]}, {"checkpoint_blocks": 1},
+    {"fusion_depth": 0}, {"branch_dilations": []},
+    {"branch_dilations": [[1], [0], [1], [1]]},
+    {"branch_dilations": [[1], [1], [1]]},
+    {"branch_channels": [1]}, {"branch_channels": [8, 8, 7, 8]},
+    {"checkpoint_blocks": 1},
     {"channels": 0}, {"channels": 7}, {"heads": 0},
     {"pixel_chunk_size": 0}, {"spectral_channels": 1},
 ])
@@ -233,7 +239,7 @@ def test_model_masks_every_path_without_hidden_target_bypass(head):
     torch.testing.assert_close(
         model(x, mask), model(other, mask),
     )
-    assert model.encoder.architecture()["version"] == 4
+    assert model.encoder.architecture()["version"] == 5
 
 
 def test_mask_embedding_distinguishes_hidden_from_dark_and_all_visible_is_compatible():
@@ -539,15 +545,15 @@ def test_experiment_config_and_factory(phase, epochs):
     module = PipelineSelector.select(ModelSelector.select(cfg.model), cfg.pipeline)
     assert isinstance(module, SpectralExperimentPipeline)
     assert module.checkpoint_monitor == ("val_masked_mae" if phase == "pretrain" else "val_mrae")
-    assert len(module.network.encoder.branches) == 3
+    assert len(module.network.encoder.branches) == 4
     assert module.network.encoder.channels == 64
-    assert module.network.encoder.architecture()["version"] == 4
+    assert module.network.encoder.architecture()["version"] == 5
     x = torch.rand(1, 31, 17, 19)
     assert module(x).shape == x.shape
     assert module.model(src=x)["res"].shape == x.shape
     if phase != "pretrain":
         assert len(module.network.decoder.blocks) == 2
-        assert cfg.experiment == "spectral.finetune.gazetr.multiscale.ntire"
+        assert cfg.experiment == "spectral.finetune.gazetr.fullrf.ntire"
 
 
 def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
@@ -577,8 +583,8 @@ def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
         cfg.data.params.train.crop_size = 8
         params = cfg.model.params.layers.spectral.params
         params.channels = 8
-        params.branch_depths = [1, 1, 1]
-        params.branch_channels = [4, 8, 16]
+        params.branch_dilations = [[1], [1], [1], [1]]
+        params.branch_channels = [8, 8, 8, 8]
         params.heads = 2
         train_default(cfg)
         logs = tmp_path / cfg.experiment / "logs"

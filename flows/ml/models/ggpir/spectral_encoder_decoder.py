@@ -71,11 +71,11 @@ class PixelQueryBlock(nn.Module):
 class ResidualConvBlock(nn.Module):
     """ResNet-style spatial features without batch or image-wide normalization."""
 
-    def __init__(self, channels: int):
+    def __init__(self, channels: int, dilation: int = 1):
         super().__init__()
         self.body = nn.Sequential(
-            nn.Conv2d(channels, channels, 3, padding=1), nn.GELU(),
-            nn.Conv2d(channels, channels, 3, padding=1),
+            nn.Conv2d(channels, channels, 3, padding=dilation, dilation=dilation), nn.GELU(),
+            nn.Conv2d(channels, channels, 3, padding=dilation, dilation=dilation),
         )
 
     def forward(self, x):
@@ -97,12 +97,14 @@ class GatedScaleConnection(nn.Module):
 
 
 class SpectralEncoder(nn.Module):
-    """Connected full/half/quarter residual streams and per-pixel token fusion."""
+    """Full-resolution dilated residual streams with per-pixel token fusion."""
 
     def __init__(
         self, spectral_channels: int = 31, channels: int = 64,
-        branch_depths: Sequence[int] = (3, 3, 4),
-        branch_channels: Sequence[int] = (48, 96, 192),
+        branch_dilations: Sequence[Sequence[int]] = (
+            (1,), (1, 2), (1, 2, 3), (1, 2, 3, 4),
+        ),
+        branch_channels: Sequence[int] = (48, 48, 48, 48),
         detail_depth: int = 2, fusion_depth: int = 2, heads: int = 4,
         pixel_chunk_size: int = 4096, checkpoint_blocks: bool = True,
     ):
@@ -111,46 +113,52 @@ class SpectralEncoder(nn.Module):
                 or not all(_positive_integer(v) for v in (
                     channels, detail_depth, fusion_depth, heads, pixel_chunk_size))
                 or channels % heads
-                or len(branch_depths) != 3 or len(branch_channels) != 3
-                or not all(_positive_integer(v) for v in (*branch_depths, *branch_channels))
+                or len(branch_dilations) != 4 or len(branch_channels) != 4
+                or not all(len(branch) > 0 and all(_positive_integer(d) for d in branch)
+                           for branch in branch_dilations)
+                or not all(_positive_integer(v) for v in branch_channels)
                 or not isinstance(checkpoint_blocks, bool)):
             raise ValueError(
-                "Require C >= 2, three positive integer branch widths/depths, "
+                "Require C >= 2, four branches with positive dilation schedules, "
                 "positive widths/depths/chunk size, heads dividing channels, "
                 "and boolean checkpoint_blocks."
             )
         self.spectral_channels = spectral_channels
         self.channels = channels
-        self.branch_depths = tuple(branch_depths)
+        self.branch_dilations = tuple(tuple(dilations) for dilations in branch_dilations)
         self.branch_channels = tuple(branch_channels)
         self.detail_depth = detail_depth
         self.fusion_depth = fusion_depth
         self.heads = heads
         self.pixel_chunk_size = pixel_chunk_size
         self.checkpoint_blocks = checkpoint_blocks
-        self.stem = nn.Conv2d(spectral_channels, branch_channels[0], 3, padding=1)
+        if len(set(branch_channels)) != 1:
+            raise ValueError("Full-resolution branch channels must be equal.")
+        branch_width = branch_channels[0]
+        self.stem = nn.Conv2d(spectral_channels, branch_width, 3, padding=1)
         self.pixel_projection = nn.Conv2d(spectral_channels, channels, 1)
-        self.mask_embedding = nn.Conv2d(spectral_channels, branch_channels[0], 1, bias=False)
-        self.mask_projection = nn.Conv2d(branch_channels[0], channels, 1, bias=False)
-        self.scale_inputs = nn.ModuleList([
-            nn.Identity(),
-            nn.Conv2d(branch_channels[0], branch_channels[1], 1),
-            nn.Conv2d(branch_channels[0], branch_channels[2], 1),
-        ])
+        self.mask_embedding = nn.Conv2d(spectral_channels, branch_width, 1, bias=False)
+        self.mask_projection = nn.Conv2d(branch_width, channels, 1, bias=False)
         self.branches = nn.ModuleList([
-            nn.Sequential(*[ResidualConvBlock(width) for _ in range(depth)])
-            for depth, width in zip(branch_depths, branch_channels)
+            nn.Sequential(*[
+                ResidualConvBlock(width, dilation)
+                for dilation in dilations
+            ])
+            for dilations, width in zip(self.branch_dilations, branch_channels)
         ])
-        self.fine_to_medium = GatedScaleConnection(branch_channels[0], branch_channels[1])
-        self.fine_to_broad = GatedScaleConnection(branch_channels[0], branch_channels[2])
-        self.medium_to_broad = GatedScaleConnection(branch_channels[1], branch_channels[2])
+        self.small_to_medium = GatedScaleConnection(branch_width, branch_width)
+        self.small_to_large = GatedScaleConnection(branch_width, branch_width)
+        self.medium_to_large = GatedScaleConnection(branch_width, branch_width)
+        self.small_to_extra_large = GatedScaleConnection(branch_width, branch_width)
+        self.medium_to_extra_large = GatedScaleConnection(branch_width, branch_width)
+        self.large_to_extra_large = GatedScaleConnection(branch_width, branch_width)
         self.detail = nn.Sequential(*[
-            ResidualConvBlock(branch_channels[0]) for _ in range(detail_depth)
+            ResidualConvBlock(branch_width) for _ in range(detail_depth)
         ])
         self.token_projections = nn.ModuleList([
-            nn.Conv2d(width, channels, 1) for width in (*branch_channels, branch_channels[0])
+            nn.Conv2d(branch_width, channels, 1) for _ in range(5)
         ])
-        self.branch_embedding = nn.Parameter(torch.empty(5, channels))
+        self.branch_embedding = nn.Parameter(torch.empty(6, channels))
         nn.init.normal_(self.branch_embedding, std=0.02)
         self.fusion = nn.ModuleList([
             PixelQueryBlock(channels, heads) for _ in range(fusion_depth)
@@ -159,15 +167,19 @@ class SpectralEncoder(nn.Module):
 
     def architecture(self) -> dict:
         return {
-            "version": 4, "type": "connected_multiscale_query_transformer",
+            "version": 5, "type": "full_resolution_dilated_query_transformer",
             "spectral_channels": self.spectral_channels, "channels": self.channels,
-            "branch_depths": list(self.branch_depths),
+            "branch_dilations": [list(branch) for branch in self.branch_dilations],
             "branch_channels": list(self.branch_channels),
-            "scales": [1, 2, 4], "connections": "gated_fine_to_medium_and_broad_medium_to_broad",
+            "scales": "full_resolution_receptive_field",
+            "connections": [
+                "small_to_medium", "small_to_large", "medium_to_large",
+                "small_to_extra_large", "medium_to_extra_large", "large_to_extra_large",
+            ],
             "detail_depth": self.detail_depth, "fusion_depth": self.fusion_depth,
             "heads": self.heads, "ffn_expansion": 2,
             "normalization": "none_in_residual_encoders_per_pixel_in_fusion",
-            "downsampling": "average_pool_fixed_grid", "padding": "replicate_right_bottom_to_4",
+            "downsampling": "none", "padding": "convolution_same",
             "residual_scale": 0.1,
         }
 
@@ -197,33 +209,28 @@ class SpectralEncoder(nn.Module):
             mask_features = band_mask.to(x.dtype)
         else:
             mask_features = x.new_zeros((*x.shape[:2], 1, 1))
-        height, width = x.shape[-2:]
-        x = F.pad(x, (0, (-width) % 4, 0, (-height) % 4), mode="replicate")
         missing = self.mask_embedding(mask_features)
         stem = self.stem(x) + missing
         pixel = self.pixel_projection(x) + self.mask_projection(missing)
-        fine = self._local_path(self.branches[0], stem)
-        medium_input = self.scale_inputs[1](F.avg_pool2d(stem, 2))
-        medium_input = self.fine_to_medium(medium_input, F.avg_pool2d(fine, 2))
+        small = self._local_path(self.branches[0], stem)
+        medium_input = self.small_to_medium(stem, small)
         medium = self._local_path(self.branches[1], medium_input)
-        broad_input = self.scale_inputs[2](F.avg_pool2d(stem, 4))
-        broad_input = self.fine_to_broad(broad_input, F.avg_pool2d(fine, 4))
-        broad_input = self.medium_to_broad(broad_input, F.avg_pool2d(medium, 2))
-        broad = self._local_path(self.branches[2], broad_input)
+        large_input = self.small_to_large(stem, small)
+        large_input = self.medium_to_large(large_input, medium)
+        large = self._local_path(self.branches[2], large_input)
+        extra_large_input = self.small_to_extra_large(stem, small)
+        extra_large_input = self.medium_to_extra_large(extra_large_input, medium)
+        extra_large_input = self.large_to_extra_large(extra_large_input, large)
+        extra_large = self._local_path(self.branches[3], extra_large_input)
         detail = self._local_path(self.detail, stem)
         projected = [project(feature) for project, feature in
-                     zip(self.token_projections, (fine, medium, broad, detail))]
-        features = [
-            pixel, projected[0],
-            F.interpolate(projected[1], scale_factor=2, mode="bilinear", align_corners=False),
-            F.interpolate(projected[2], scale_factor=4, mode="bilinear", align_corners=False),
-            projected[3],
-        ]
-        batch, channels, padded_height, padded_width = pixel.shape
+                     zip(self.token_projections, (small, medium, large, extra_large, detail))]
+        features = [pixel, *projected]
+        batch, channels, height, width = pixel.shape
         # Chunk only the independent per-pixel regression, never the convolutional context.
         flattened = [feature.movedim(1, -1).reshape(-1, channels) for feature in features]
         outputs = []
-        for start in range(0, batch * padded_height * padded_width, self.pixel_chunk_size):
+        for start in range(0, batch * height * width, self.pixel_chunk_size):
             tokens = torch.stack(
                 [feature[start:start + self.pixel_chunk_size] for feature in flattened], dim=1,
             )
@@ -232,8 +239,8 @@ class SpectralEncoder(nn.Module):
             ) else self._fuse(tokens)
             outputs.append(fused)
         return torch.cat(outputs).reshape(
-            batch, padded_height, padded_width, channels,
-        ).movedim(-1, 1)[..., :height, :width]
+            batch, height, width, channels,
+        ).movedim(-1, 1)
 
 
 class SpectralHead(nn.Module):
@@ -254,8 +261,10 @@ class SpectralEncoderDecoder(nn.Module):
 
     def __init__(
         self, head: str = "finetune", spectral_channels: int = 31, channels: int = 64,
-        branch_depths: Sequence[int] = (3, 3, 4),
-        branch_channels: Sequence[int] = (48, 96, 192),
+        branch_dilations: Sequence[Sequence[int]] = (
+            (1,), (1, 2), (1, 2, 3), (1, 2, 3, 4),
+        ),
+        branch_channels: Sequence[int] = (48, 48, 48, 48),
         detail_depth: int = 2, fusion_depth: int = 2, heads: int = 4,
         head_depth: int = 2, pixel_chunk_size: int = 4096,
         checkpoint_blocks: bool = True,
@@ -266,7 +275,7 @@ class SpectralEncoderDecoder(nn.Module):
         self.head_type = head
         self.head_depth = head_depth
         self.encoder = SpectralEncoder(
-            spectral_channels, channels, branch_depths, branch_channels,
+            spectral_channels, channels, branch_dilations, branch_channels,
             detail_depth, fusion_depth, heads, pixel_chunk_size, checkpoint_blocks,
         )
         self.decoder = SpectralHead(channels, spectral_channels, head_depth, head == "finetune")

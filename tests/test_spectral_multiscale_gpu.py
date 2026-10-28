@@ -54,7 +54,12 @@ def test_configured_gpu_batch_and_all_scale_gradients(phase, mixed):
     assert all(p.grad is not None and torch.isfinite(p.grad).all()
                for p in module.parameters())
     encoder = module.network.encoder
-    for connection in (encoder.fine_to_medium, encoder.fine_to_broad, encoder.medium_to_broad):
+    connections = (
+        encoder.small_to_medium, encoder.small_to_large, encoder.medium_to_large,
+        encoder.small_to_extra_large, encoder.medium_to_extra_large,
+        encoder.large_to_extra_large,
+    )
+    for connection in connections:
         assert connection.gate.weight.grad.abs().sum() > 0
         assert connection.project.weight.grad.abs().sum() > 0
     for branch in encoder.branches:
@@ -63,7 +68,7 @@ def test_configured_gpu_batch_and_all_scale_gradients(phase, mixed):
 
 
 @pytest.mark.parametrize("phase", ["pretrain", "finetune"])
-def test_gpu_alignment_shapes_masking_and_execution_equivalence(phase, exact_cuda_math):
+def test_gpu_full_resolution_shapes_masking_and_execution_equivalence(phase, exact_cuda_math):
     model = SpectralEncoderDecoder(head=phase, checkpoint_blocks=False).cuda().eval()
     sizes = []
     handles = [
@@ -73,8 +78,7 @@ def test_gpu_alignment_shapes_masking_and_execution_equivalence(phase, exact_cud
     x = torch.rand(1, 31, 197, 199, device="cuda")
     with torch.no_grad():
         assert model(x).shape == x.shape
-    assert sizes == [(1, 48, 200, 200), (1, 96, 100, 100),
-                     (1, 192, 50, 50), (1, 48, 200, 200)]
+    assert sizes == [(1, 48, 197, 199)] * 5
     for handle in handles:
         handle.remove()
     with torch.no_grad():
@@ -83,9 +87,9 @@ def test_gpu_alignment_shapes_masking_and_execution_equivalence(phase, exact_cud
             assert model(tiny).shape == tiny.shape
         full = torch.rand(1, 31, 256, 256, device="cuda")
         expected = model(full)
-        patch = model(full[..., 28:224, 28:224])
+        patch = model(full[..., 27:223, 27:223])
         torch.testing.assert_close(
-            patch[..., 64:132, 64:132], expected[..., 92:160, 92:160],
+            patch[..., 64:132, 64:132], expected[..., 91:159, 91:159],
             atol=2e-5, rtol=2e-4,
         )
         mask = torch.zeros(1, 31, 1, 1, dtype=torch.bool, device="cuda")
@@ -100,8 +104,8 @@ def test_gpu_alignment_shapes_masking_and_execution_equivalence(phase, exact_cud
 def test_gpu_export_transfer_freeze_and_resume(tmp_path):
     def network(head):
         return SpectralEncoderDecoder(
-            head=head, channels=8, branch_channels=(4, 8, 16),
-            branch_depths=(1, 1, 1), heads=2,
+            head=head, channels=8, branch_channels=(8, 8, 8, 8),
+            branch_dilations=((1,), (1,), (1,), (1,)), heads=2,
         )
 
     def trainer(root, epochs=1):
@@ -125,7 +129,7 @@ def test_gpu_export_transfer_freeze_and_resume(tmp_path):
     run = trainer(tmp_path / "finetune")
     run.fit(finetune, loader, loader)
     run.save_checkpoint(tmp_path / "full.ckpt")
-    gate = finetune.network.encoder.fine_to_broad.gate.weight
+    gate = finetune.network.encoder.large_to_extra_large.gate.weight
     assert run.optimizers[0].state[gate]["step"] == 1
     artifact.unlink()
     resumed = SpectralExperimentPipeline(
@@ -146,8 +150,10 @@ def test_gpu_export_transfer_freeze_and_resume(tmp_path):
 
 
 def test_gpu_checkpointed_gradients_and_cross_scale_conditioning(exact_cuda_math):
-    kwargs = dict(channels=8, branch_channels=(4, 8, 16),
-                  branch_depths=(1, 1, 1), heads=2)
+    kwargs = dict(
+        channels=8, branch_channels=(8, 8, 8, 8),
+        branch_dilations=((1,), (1,), (1,), (1,)), heads=2,
+    )
     checkpointed = SpectralEncoderDecoder(head="pretrain", **kwargs).cuda().train()
     plain = SpectralEncoderDecoder(
         head="pretrain", checkpoint_blocks=False, **kwargs,
@@ -160,9 +166,9 @@ def test_gpu_checkpointed_gradients_and_cross_scale_conditioning(exact_cuda_math
     second.square().mean().backward()
     for p, q in zip(checkpointed.parameters(), plain.parameters()):
         torch.testing.assert_close(p.grad, q.grad, atol=1e-6, rtol=1e-4)
-    connection = checkpointed.encoder.fine_to_medium
+    connection = checkpointed.encoder.small_to_medium
     target = torch.rand(1, 8, 8, 8, device="cuda")
-    donor = torch.rand(1, 4, 8, 8, device="cuda")
+    donor = torch.rand(1, 8, 8, 8, device="cuda")
     assert not torch.allclose(connection(target, donor), connection(target, donor + 1))
     with torch.no_grad():
         connection.gate.weight.zero_()
