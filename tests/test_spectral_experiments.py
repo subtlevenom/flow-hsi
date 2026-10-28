@@ -14,7 +14,7 @@ from torchmetrics.functional.image import structural_similarity_index_measure
 from flows.core import ModelSelector, PipelineSelector
 from flows.cli.train import train_default
 from flows.ml.models.ggpir.spectral_encoder_decoder import (
-    ChannelLayerNorm, ReconstructionHead, SpectralAttentionBlock, SpectralEncoderDecoder,
+    ChannelLayerNorm, LocalBlock, PixelQueryBlock, ResidualConvBlock, SpectralEncoderDecoder,
 )
 from flows.ml.pipelines.spectral import SpectralExperimentPipeline
 
@@ -29,11 +29,10 @@ def cpu_workload():
 
 
 def network(head="pretrain", **options):
-    return SpectralEncoderDecoder(
-        head=head, channels=(4, 8, 16, 24), depths=(1, 1, 1),
-        heads=(2, 4, 6), reconstruction_channels=(12, 8, 4),
-        **options,
-    )
+    params = dict(channels=8, branch_depths=(1, 2, 3),
+                  branch_channels=(4, 8, 16), heads=2, pixel_chunk_size=128)
+    params.update(options)
+    return SpectralEncoderDecoder(head=head, **params)
 
 
 def pipeline(phase="pretrain", **kwargs):
@@ -62,7 +61,7 @@ def export_encoder(tmp_path):
     return module, tmp_path / "checkpoints" / "encoder.pt"
 
 
-@pytest.mark.parametrize("head", ["pretrain", "restoration"])
+@pytest.mark.parametrize("head", ["pretrain", "finetune"])
 @pytest.mark.parametrize("shape", [(2, 31, 17, 19), (1, 31, 8, 8), (1, 31, 1, 1)])
 def test_encoder_heads_shape_and_finite_backward(head, shape):
     model = network(head)
@@ -87,96 +86,154 @@ def test_per_pixel_layernorm_is_independent_of_other_pixels():
     torch.testing.assert_close(norm(x)[..., 0, 0], norm(changed)[..., 0, 0])
 
 
-def test_simple_head_is_bottleneck_only_and_restoration_has_attention():
+def test_full_resolution_branches_and_pixel_query_fusion():
     model = network()
-    features = model.encoder(torch.rand(1, 31, 17, 19))
-    expected = model.decoder(features)
-    changed = [torch.randn_like(tensor) for tensor in features[:-1]] + features[-1:]
-    torch.testing.assert_close(model.decoder(changed), expected)
-    assert isinstance(model.decoder, ReconstructionHead)
-    assert not any(isinstance(m, SpectralAttentionBlock) for m in model.decoder.modules())
-    restoration = network("restoration")
-    assert sum(isinstance(m, SpectralAttentionBlock)
-               for m in restoration.decoder.modules()) == 3
-    assert not any(isinstance(m, SpectralAttentionBlock)
-                   for m in restoration.decoder.decoder0.modules())
-    assert restoration.decoder.output.weight.count_nonzero() > 0
+    x = torch.rand(1, 31, 17, 19)
+    observed = []
+    handles = [
+        path[-1].register_forward_hook(lambda module, inputs, output: observed.append(output.shape))
+        for path in [*model.encoder.branches, model.encoder.detail]
+    ]
+    features = model.encoder(x)
+    for handle in handles:
+        handle.remove()
+    assert features.shape == (1, 8, 17, 19)
+    assert observed == [(1, 4, 20, 20), (1, 8, 10, 10),
+                        (1, 16, 5, 5), (1, 4, 20, 20)]
+    assert [len(path) for path in model.encoder.branches] == [1, 2, 3]
+    assert all(isinstance(path[0], ResidualConvBlock) for path in model.encoder.branches)
+    assert model.encoder.branch_embedding.shape == (5, 8)
+    assert len(model.encoder.fusion) == 2
+    assert all(isinstance(block, PixelQueryBlock) for block in model.encoder.fusion)
+    assert all(isinstance(block, LocalBlock) for block in model.decoder.blocks)
+    assert network("finetune").decoder.output.weight.count_nonzero() > 0
 
 
-def test_refined_decoder_fusion_and_local_depth():
-    model = network("restoration")
-    for stage in (model.decoder.decoder2, model.decoder.decoder1, model.decoder.decoder0):
-        assert stage.skip_fusion == "concat"
-        assert stage.fuse.in_channels == 2 * stage.fuse.out_channels
-    assert len(model.decoder.decoder0.blocks) == 3
-    assert model.decoder.calibration is None
-    legacy = network("restoration", skip_fusion="add", full_resolution_blocks=1)
-    assert not any("fuse" in name for name in legacy.state_dict())
-    assert "decoder.decoder0.blocks.body.0.norm.weight" in legacy.state_dict()
-    assert model.encoder.architecture() == legacy.encoder.architecture()
+def test_pixel_query_attention_does_not_mix_pixels_and_uses_context():
+    block = PixelQueryBlock(8, 2).eval()
+    query = torch.rand(3, 8)
+    tokens = torch.rand(3, 5, 8)
+    expected = block(query, tokens)
+    changed = tokens.clone()
+    changed[1, 2] += torch.arange(8).float()
+    actual = block(query, changed)
+    torch.testing.assert_close(actual[[0, 2]], expected[[0, 2]])
+    assert not torch.allclose(actual[1], expected[1])
+    assert not torch.allclose(block(query + torch.arange(8), tokens), expected)
 
 
-@pytest.mark.parametrize("shape", [(2, 31, 17, 19), (1, 31, 1, 1)])
-@pytest.mark.parametrize("mixed", [False, True])
-def test_calibration_identity_bounds_and_gradients(shape, mixed):
-    baseline = network("restoration")
-    calibrated = network("restoration", use_calibration=True)
-    missing, unexpected = calibrated.load_state_dict(baseline.state_dict(), strict=False)
-    assert missing and all(key.startswith("decoder.calibration.") for key in missing)
-    assert not unexpected
-    x = torch.rand(shape)
-    with torch.autocast(device_type="cpu", dtype=torch.bfloat16, enabled=mixed):
-        torch.testing.assert_close(calibrated(x), baseline(x))
-        loss = (calibrated(x) - x * 0.8).square().mean()
-    loss.backward()
-    head = calibrated.decoder.calibration
-    assert head.output.weight.grad.abs().sum() > 0
-    assert all(p.grad is not None and torch.isfinite(p.grad).all()
-               for p in calibrated.parameters())
+@pytest.mark.parametrize("head", ["pretrain", "finetune"])
+def test_common_pixels_are_invariant_for_aligned_crops_and_other_images(head):
+    model = network(head).eval()
+    x = torch.rand(1, 31, 160, 164)
     with torch.no_grad():
-        head.output.weight.zero_()
-        head.output.bias.fill_(100)
-        gain, offset = head(calibrated.encoder(x)[-1], x.shape[-2:])
-        torch.testing.assert_close(gain, torch.full_like(x, 0.1))
-        torch.testing.assert_close(offset, torch.full_like(x, 0.1))
-        # Calibration is a correction to the original source, not to the
-        # predicted residual, and it does not clamp the restored spectrum.
-        torch.testing.assert_close(calibrated(x), baseline(x) + x * 0.1 + 0.1)
-        head.output.bias.fill_(-100)
-        gain, offset = head(calibrated.encoder(x)[-1], x.shape[-2:])
-        torch.testing.assert_close(gain, torch.full_like(x, -0.1))
-        torch.testing.assert_close(offset, torch.full_like(x, -0.1))
+        full = model(x)
+        patch = model(x[..., 8:152, 8:156])
+        batched = model(torch.cat([x, torch.rand_like(x)]))
+    # Multiscale sampling requires origins aligned to four and a sufficient halo.
+    torch.testing.assert_close(patch[..., 48:-48, 48:-48],
+                               full[..., 56:104, 56:108], atol=2e-6, rtol=2e-5)
+    torch.testing.assert_close(batched[:1], full, atol=2e-6, rtol=2e-5)
+
+
+def test_chunking_and_checkpointing_preserve_predictions_and_gradients():
+    model = network().train()
+    plain = network(checkpoint_blocks=False).train()
+    plain.load_state_dict(model.state_dict())
+    plain.encoder.pixel_chunk_size = 10000
+    x = torch.rand(2, 31, 13, 15)
+    expected = plain(x)
+    actual = model(x)
+    torch.testing.assert_close(actual, expected)
+    actual.square().mean().backward()
+    expected.square().mean().backward()
+    for (name, p), (other_name, other) in zip(model.named_parameters(), plain.named_parameters()):
+        assert name == other_name
+        torch.testing.assert_close(p.grad, other.grad, atol=1e-6, rtol=1e-4)
+
+
+@pytest.mark.parametrize("head", ["pretrain", "finetune"])
+def test_training_crop_196_matches_full_256_common_center(head):
+    model = network(head).eval()
+    x = torch.rand(1, 31, 256, 256)
+    with torch.no_grad():
+        full = model(x)
+        patch = model(x[..., 28:224, 28:224])
+    torch.testing.assert_close(patch[..., 48:148, 48:148],
+                               full[..., 76:176, 76:176], atol=2e-6, rtol=2e-5)
+
+
+def test_output_uses_neighbor_spectra_but_has_bounded_spatial_receptive_field():
+    model = network().eval()
+    x = torch.rand(1, 31, 128, 128, requires_grad=True)
+    model(x)[0, 0, 64, 64].backward()
+    assert x.grad[0, 1:, 64, 64].abs().sum() > 0
+    assert x.grad[..., 64, 65].abs().sum() > 0
+    assert x.grad[..., :16, :].count_nonzero() == 0
+    assert x.grad[..., 112:, :].count_nonzero() == 0
+
+
+def test_finetune_head_is_identity_residual_and_pretrain_has_no_input_bypass():
+    x = torch.rand(1, 31, 9, 11)
+    for head in ("pretrain", "finetune"):
+        model = network(head)
+        with torch.no_grad():
+            model.decoder.output.weight.zero_()
+            model.decoder.output.bias.zero_()
+        torch.testing.assert_close(model(x), x if head == "finetune" else torch.zeros_like(x))
 
 
 @pytest.mark.parametrize("options", [
-    {"skip_fusion": "invalid"}, {"full_resolution_blocks": 0},
-    {"full_resolution_blocks": 1.5}, {"calibration_gain_scale": float("nan")},
-    {"calibration_offset_scale": -0.1},
+    {"head_depth": 0}, {"head_depth": 1.5}, {"detail_depth": 0},
+    {"fusion_depth": 0}, {"branch_depths": []}, {"branch_channels": [1]},
+    {"branch_channels": [1, 0, 3]}, {"checkpoint_blocks": 1},
+    {"channels": 0}, {"channels": 7}, {"heads": 0},
+    {"pixel_chunk_size": 0}, {"spectral_channels": 1},
 ])
-def test_restoration_options_reject_invalid_values(options):
+def test_model_options_reject_invalid_values(options):
     with pytest.raises(ValueError):
-        network("restoration", **options)
+        network("finetune", **options)
 
 
-def test_resume_checks_decoder_and_preserves_legacy_support():
-    module = pipeline("restoration")
+def test_resume_checks_decoder_and_rejects_legacy_architecture():
+    module = pipeline("finetune")
     module._trainer = SimpleNamespace(callback_metrics={})
     checkpoint = {}
     module.on_save_checkpoint(checkpoint)
-    calibrated = SpectralExperimentPipeline(
-        network("restoration", use_calibration=True), phase="restoration",
+    different = SpectralExperimentPipeline(
+        network("finetune", head_depth=1), phase="finetune",
     )
     with pytest.raises(ValueError, match="decoder architecture"):
-        calibrated.on_load_checkpoint(checkpoint)
+        different.on_load_checkpoint(checkpoint)
     del checkpoint["spectral_experiment"]["model_architecture"]
-    with pytest.raises(ValueError, match="Legacy restoration"):
+    with pytest.raises(ValueError, match="Legacy checkpoints"):
         module.on_load_checkpoint(checkpoint)
-    legacy = SpectralExperimentPipeline(
-        network("restoration", skip_fusion="add", full_resolution_blocks=1),
-        phase="restoration",
+
+
+def test_previous_unet_encoder_artifacts_are_rejected(tmp_path):
+    module = pipeline("finetune")
+    path = tmp_path / "old.pt"
+    torch.save({
+        "format": "flow-hsi.spectral-encoder.v1",
+        "architecture": {"version": 2, "calibration": {"type": "residual_pointwise_mlp"}},
+        "encoder_state_dict": {},
+    }, path)
+    with pytest.raises(ValueError, match="requires new pretraining"):
+        module.load_encoder(str(path))
+
+
+@pytest.mark.parametrize("head", ["pretrain", "finetune"])
+def test_model_masks_every_path_without_hidden_target_bypass(head):
+    model = network(head)
+    x = torch.rand(1, 31, 8, 8)
+    mask = torch.zeros(1, 31, 1, 1, dtype=torch.bool)
+    mask[:, ::2] = True
+    other = x.clone()
+    other[:, ::2] = 999
+    torch.testing.assert_close(
+        model(x, mask), model(other, mask),
     )
-    legacy.on_load_checkpoint(checkpoint)
-    assert legacy._resuming
+    assert model.encoder.architecture()["version"] == 4
 
 
 def test_mask_embedding_distinguishes_hidden_from_dark_and_all_visible_is_compatible():
@@ -191,7 +248,7 @@ def test_mask_embedding_distinguishes_hidden_from_dark_and_all_visible_is_compat
         model(x, hidden.float())
 
 
-@pytest.mark.parametrize("head", ["pretrain", "restoration"])
+@pytest.mark.parametrize("head", ["pretrain", "finetune"])
 def test_cpu_bfloat16_mixed_precision_backward(head):
     model = network(head)
     target = torch.rand(1, 31, 12, 16)
@@ -250,22 +307,22 @@ def test_pretraining_export_and_strict_encoder_only_transfer(tmp_path):
     assert artifact["format"] == "flow-hsi.spectral-encoder.v1"
     assert artifact["architecture"] == pretrained.network.encoder.architecture()
     assert not any("decoder" in key for key in artifact["encoder_state_dict"])
-    restore = pipeline("restoration", encoder_checkpoint=str(path))
-    before = {key: value.clone() for key, value in restore.network.decoder.state_dict().items()}
-    restore.load_encoder(str(path))
-    for key, value in restore.network.encoder.state_dict().items():
+    finetune = pipeline("finetune", encoder_checkpoint=str(path))
+    before = {key: value.clone() for key, value in finetune.network.decoder.state_dict().items()}
+    finetune.load_encoder(str(path))
+    for key, value in finetune.network.encoder.state_dict().items():
         torch.testing.assert_close(value, artifact["encoder_state_dict"][key])
-    for key, value in restore.network.decoder.state_dict().items():
+    for key, value in finetune.network.decoder.state_dict().items():
         torch.testing.assert_close(value, before[key])
-    artifact["architecture"]["channels"][0] = 999
+    artifact["architecture"]["channels"] = 999
     torch.save(artifact, tmp_path / "wrong.pt")
     with pytest.raises(ValueError, match="Incompatible"):
-        restore.load_encoder(str(tmp_path / "wrong.pt"))
+        finetune.load_encoder(str(tmp_path / "wrong.pt"))
     with pytest.raises(FileNotFoundError):
-        restore.load_encoder(str(tmp_path / "missing.pt"))
+        finetune.load_encoder(str(tmp_path / "missing.pt"))
 
 
-@pytest.mark.parametrize("phase", ["pretrain", "restoration"])
+@pytest.mark.parametrize("phase", ["pretrain", "finetune"])
 @pytest.mark.parametrize("size", [1, 4, 8, 16])
 def test_ssim_loss_composition_and_mixed_precision_gradients(phase, size):
     module = pipeline(phase, ssim_weight=0.15)
@@ -348,7 +405,7 @@ def test_resume_rejects_mismatched_phase_or_freeze_schedule(tmp_path):
     checkpoint = {}
     module.on_save_checkpoint(checkpoint)
     with pytest.raises(ValueError, match="matching spectral"):
-        pipeline("restoration").on_load_checkpoint(checkpoint)
+        pipeline("finetune").on_load_checkpoint(checkpoint)
     with pytest.raises(ValueError, match="matching spectral"):
         pipeline(freeze_encoder_steps=1).on_load_checkpoint(checkpoint)
 
@@ -379,9 +436,9 @@ class FreezeRecord(Callback):
 
 def test_head_only_updates_then_whole_network_and_optimizer_groups(tmp_path):
     pretrained, path = export_encoder(tmp_path / "pretrain")
-    module = pipeline("restoration", encoder_checkpoint=str(path), freeze_encoder_steps=1)
+    module = pipeline("finetune", encoder_checkpoint=str(path), freeze_encoder_steps=1)
     record = FreezeRecord()
-    run = trainer(tmp_path / "restore", callbacks=[record], enable_checkpointing=False)
+    run = trainer(tmp_path / "finetune", callbacks=[record], enable_checkpointing=False)
     run.fit(module, loader(), loader())
     first, second = record.records[:2]
     assert first["frozen"] and not first["encoder_changed"]
@@ -397,32 +454,35 @@ def test_head_only_updates_then_whole_network_and_optimizer_groups(tmp_path):
 
 
 def test_freeze_is_capped_at_one_epoch(tmp_path):
-    module = pipeline("restoration", allow_random_encoder=True, freeze_encoder_steps=500)
+    module = pipeline("finetune", allow_random_encoder=True, freeze_encoder_steps=500)
     record = FreezeRecord()
     run = trainer(tmp_path, callbacks=[record], enable_checkpointing=False)
     run.fit(module, loader(), loader())
     assert [entry["frozen"] for entry in record.records] == [True, True, False, False]
 
 
-def test_calibration_learns_in_decoder_group_while_encoder_frozen(tmp_path):
-    module = SpectralExperimentPipeline(
-        network("restoration", use_calibration=True),
-        phase="restoration", allow_random_encoder=True, freeze_encoder_steps=500,
-    )
-    before = module.network.encoder.stem.weight.detach().clone()
-    run = trainer(tmp_path, enable_checkpointing=False, max_steps=1)
+def test_query_fusion_follows_encoder_freeze_and_unfreeze(tmp_path):
+    module = pipeline("finetune", allow_random_encoder=True, freeze_encoder_steps=1)
+    head = module.network.encoder.fusion[0]
+    before = head.query.weight.detach().clone()
+
+    class RecordFusion(Callback):
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            if trainer.global_step == 1:
+                torch.testing.assert_close(head.query.weight, before)
+                assert head.query.weight.grad is None
+
+    run = trainer(tmp_path, callbacks=[RecordFusion()], enable_checkpointing=False)
     run.fit(module, loader(), loader())
-    torch.testing.assert_close(module.network.encoder.stem.weight, before)
-    head = module.network.decoder.calibration
-    assert head.output.weight.count_nonzero() > 0
+    assert not torch.equal(head.query.weight, before)
     optimizer = run.optimizers[0]
-    decoder_ids = {id(p) for p in optimizer.param_groups[1]["params"]}
-    assert all(id(p) in decoder_ids for p in head.parameters())
-    assert optimizer.state[head.output.weight]["step"] == 1
+    encoder_ids = {id(p) for p in optimizer.param_groups[0]["params"]}
+    assert all(id(p) in encoder_ids for p in head.parameters())
+    assert optimizer.state[head.query.weight]["step"] == 3
 
 
 def test_freeze_counts_optimizer_updates_with_accumulation(tmp_path):
-    module = pipeline("restoration", allow_random_encoder=True, freeze_encoder_steps=1)
+    module = pipeline("finetune", allow_random_encoder=True, freeze_encoder_steps=1)
     record = FreezeRecord()
     run = trainer(tmp_path, callbacks=[record], enable_checkpointing=False,
                   accumulate_grad_batches=2)
@@ -434,7 +494,7 @@ def test_freeze_counts_optimizer_updates_with_accumulation(tmp_path):
 def test_resume_restores_frozen_phase_and_does_not_reload_encoder_artifact(tmp_path):
     _, path = export_encoder(tmp_path / "pretrain")
     artifact = str(path)
-    module = pipeline("restoration", encoder_checkpoint=artifact, freeze_encoder_steps=2)
+    module = pipeline("finetune", encoder_checkpoint=artifact, freeze_encoder_steps=2)
     checkpoint = ModelCheckpoint(monitor="val_mrae", save_last=True)
     record = FreezeRecord()
 
@@ -442,15 +502,15 @@ def test_resume_restores_frozen_phase_and_does_not_reload_encoder_artifact(tmp_p
         def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
             trainer.save_checkpoint(tmp_path / "mid_epoch.ckpt")
 
-    first = trainer(tmp_path / "restore", callbacks=[
+    first = trainer(tmp_path / "finetune", callbacks=[
         checkpoint, record, SaveMidEpoch(),
     ], max_steps=1)
     first.fit(module, loader(), loader())
     assert record.records[0]["frozen"]
     path.unlink()
-    resumed = pipeline("restoration", encoder_checkpoint=artifact, freeze_encoder_steps=2)
+    resumed = pipeline("finetune", encoder_checkpoint=artifact, freeze_encoder_steps=2)
     resumed_record = FreezeRecord()
-    second = trainer(tmp_path / "restore", callbacks=[
+    second = trainer(tmp_path / "finetune", callbacks=[
         resumed_record, ModelCheckpoint(monitor="val_mrae", save_last=True),
     ])
     second.fit(resumed, loader(), loader(), ckpt_path=tmp_path / "mid_epoch.ckpt")
@@ -461,13 +521,13 @@ def test_resume_restores_frozen_phase_and_does_not_reload_encoder_artifact(tmp_p
 
 
 def test_restore_without_encoder_does_not_silently_train_random(tmp_path):
-    module = pipeline("restoration")
+    module = pipeline("finetune")
     with pytest.raises(ValueError, match="requires encoder_checkpoint"):
         trainer(tmp_path, enable_checkpointing=False).fit(module, loader())
 
 
 @pytest.mark.parametrize("phase,epochs", [
-    ("pretrain", 31), ("restore", 71), ("restore_calibrated", 71),
+    ("pretrain", 31), ("finetune", 71),
 ])
 def test_experiment_config_and_factory(phase, epochs):
     with initialize_config_dir(
@@ -479,14 +539,15 @@ def test_experiment_config_and_factory(phase, epochs):
     module = PipelineSelector.select(ModelSelector.select(cfg.model), cfg.pipeline)
     assert isinstance(module, SpectralExperimentPipeline)
     assert module.checkpoint_monitor == ("val_masked_mae" if phase == "pretrain" else "val_mrae")
-    assert len(module.network.encoder.stages) == 3
+    assert len(module.network.encoder.branches) == 3
+    assert module.network.encoder.channels == 64
+    assert module.network.encoder.architecture()["version"] == 4
     x = torch.rand(1, 31, 17, 19)
     assert module(x).shape == x.shape
     assert module.model(src=x)["res"].shape == x.shape
     if phase != "pretrain":
-        assert len(module.network.decoder.decoder0.blocks) == 3
-        assert (module.network.decoder.calibration is not None) == (phase == "restore_calibrated")
-        assert cfg.experiment != "spectral.restore.ntire"
+        assert len(module.network.decoder.blocks) == 2
+        assert cfg.experiment == "spectral.finetune.gazetr.multiscale.ntire"
 
 
 def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
@@ -497,7 +558,7 @@ def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
     np.save(source / "sample.npy", cube)
     np.save(target / "sample.npy", cube * 0.8)
     configs = {}
-    for phase in ("pretrain", "restore", "restore_calibrated"):
+    for phase in ("pretrain", "finetune"):
         with initialize_config_dir(
             config_dir=str(Path(__file__).resolve().parents[1] / ".configs"), version_base="1.3",
         ):
@@ -515,9 +576,10 @@ def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
             cfg.data.params[split].batch_size = 1
         cfg.data.params.train.crop_size = 8
         params = cfg.model.params.layers.spectral.params
-        params.channels = [4, 8, 16, 24]
-        params.depths = [1, 1, 1]
-        params.reconstruction_channels = [12, 8, 4]
+        params.channels = 8
+        params.branch_depths = [1, 1, 1]
+        params.branch_channels = [4, 8, 16]
+        params.heads = 2
         train_default(cfg)
         logs = tmp_path / cfg.experiment / "logs"
         assert (logs / "checkpoints" / "last.ckpt").is_file()
@@ -529,11 +591,11 @@ def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
     assert artifact.is_file()
     # Full restoration resume remains possible when the transfer artifact is gone.
     artifact.unlink()
-    configs["restore"].resume = True
-    configs["restore"].epochs = 3
-    train_default(configs["restore"])
+    configs["finetune"].resume = True
+    configs["finetune"].epochs = 3
+    train_default(configs["finetune"])
     ckpt = torch.load(
-        tmp_path / configs["restore"].experiment / "logs" / "checkpoints" / "last.ckpt",
+        tmp_path / configs["finetune"].experiment / "logs" / "checkpoints" / "last.ckpt",
         weights_only=False,
     )
     assert ckpt["global_step"] == 3

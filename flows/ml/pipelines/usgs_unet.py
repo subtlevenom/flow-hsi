@@ -113,6 +113,15 @@ class USGSUNetPipeline(L.LightningModule):
         # Standard 11x11 Gaussian SSIM, shrinking only for very small patches.
         sigma = max(0.1, min(1.5, (min(pred.shape[-2:]) - 1) / 7))
         with torch.autocast(device_type=pred.device.type, enabled=False):
+            # Older TorchMetrics crops away the Gaussian border even when
+            # that leaves an empty image for tiny patches.
+            padding = int(3.5 * sigma + 0.5)
+            if min(pred.shape[-2:]) <= 2 * padding or padding == 0:
+                _, image = structural_similarity_index_measure(
+                    pred.float(), target.float(), data_range=1.0, sigma=sigma,
+                    return_full_image=True,
+                )
+                return 1.0 - image.mean()
             return 1.0 - structural_similarity_index_measure(
                 pred.float(), target.float(), data_range=1.0, sigma=sigma,
             )

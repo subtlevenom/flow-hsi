@@ -5,8 +5,8 @@ params:
     #target: '/data/korepanov/datasets/Hydra.DS/NTIRE/v8.251224/dataset/train/target'
     source: '/home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/train/source'
     target: '/home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/train/target'
-    batch_size: 4
-    crop_size: 128
+    batch_size: 8
+    crop_size: 196
   val:
     source: '/home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/test/source'
     target: '/home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset/test/target'

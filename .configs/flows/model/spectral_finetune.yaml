@@ -1,0 +1,8 @@
+defaults:
+  - spectral_pretrain
+  - _self_
+params:
+  layers:
+    spectral:
+      params:
+        head: finetune

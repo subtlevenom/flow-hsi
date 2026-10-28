@@ -12,10 +12,10 @@ from . import usgs_unet
 
 
 class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
-    """Independent masked reconstruction or transferred-encoder restoration."""
+    """Independent masked reconstruction or transferred-encoder fine-tuning."""
 
     def __init__(
-        self, model: nn.Module, phase: str = "restoration",
+        self, model: nn.Module, phase: str = "finetune",
         encoder_checkpoint: Optional[str] = None,
         allow_random_encoder: bool = False,
         encoder_lr: float = 2e-5,
@@ -24,8 +24,8 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
         **loss_params,
     ):
         super().__init__(model, pretrain_epochs=0, **loss_params)
-        if phase not in ("pretrain", "restoration"):
-            raise ValueError("phase must be 'pretrain' or 'restoration'.")
+        if phase not in ("pretrain", "finetune"):
+            raise ValueError("phase must be 'pretrain' or 'finetune'.")
         if encoder_lr <= 0 or freeze_encoder_steps < 0 or visible_weight < 0:
             raise ValueError("Require encoder_lr > 0, freeze_encoder_steps >= 0, visible_weight >= 0.")
         if phase == "pretrain" and encoder_checkpoint is not None:
@@ -83,7 +83,10 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
         if (not isinstance(artifact, dict)
                 or artifact.get("format") != "flow-hsi.spectral-encoder.v1"
                 or artifact.get("architecture") != self.network.encoder.architecture()):
-            raise ValueError(f"Incompatible encoder artifact: {path}.")
+            raise ValueError(
+                f"Incompatible encoder artifact: {path}. "
+                "The receptive-field query transformer requires new pretraining."
+            )
         self.network.encoder.load_state_dict(artifact["encoder_state_dict"], strict=True)
         Logger.info(f"Loaded pretrained spectral encoder from {path}.")
 
@@ -93,11 +96,11 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
                 self.load_encoder(self.encoder_checkpoint)
             elif not self.allow_random_encoder:
                 raise ValueError(
-                    "Restoration requires encoder_checkpoint from pretraining. "
+                    "Fine-tuning requires encoder_checkpoint from pretraining. "
                     "Set allow_random_encoder=true only for a scratch-training ablation."
                 )
             else:
-                Logger.info("Training restoration with an explicitly requested random encoder.")
+                Logger.info("Fine-tuning with an explicitly requested random encoder.")
         self._set_encoder_state()
 
     def _set_encoder_state(self) -> None:
@@ -199,15 +202,10 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
         if model_architecture is not None:
             if model_architecture != self.network.architecture():
                 raise ValueError("Resume requires matching spectral encoder and decoder architecture.")
-        elif not self.pretraining and (
-            self.network.decoder.options["skip_fusion"] != "add"
-            or self.network.decoder.options["full_resolution_blocks"] != 1
-            or self.network.decoder.options["use_calibration"]
-        ):
+        else:
             raise ValueError(
-                "Legacy restoration checkpoints require skip_fusion=add, "
-                "full_resolution_blocks=1, use_calibration=false. "
-                "Use a new experiment with the pretrained encoder for the refined decoder."
+                "Legacy checkpoints cannot resume the receptive-field query transformer. "
+                "Restart pretraining and fine-tuning in the new experiment directories."
             )
         if (metadata.get("phase") != self.phase
                 or metadata.get("architecture") != self.network.encoder.architecture()

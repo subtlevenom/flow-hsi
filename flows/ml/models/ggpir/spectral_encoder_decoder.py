@@ -1,15 +1,17 @@
-import math
 from typing import Optional, Sequence
 
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
-from flows.ml.layers.mst.MST_Plus_Plus import MS_MSA
+
+def _positive_integer(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 class ChannelLayerNorm(nn.Module):
-    """Normalize channels at each pixel, without image-wide spatial statistics."""
+    """Normalize channels at each pixel, without image-wide statistics."""
 
     def __init__(self, channels: int):
         super().__init__()
@@ -20,257 +22,264 @@ class ChannelLayerNorm(nn.Module):
 
 
 class LocalBlock(nn.Module):
-    def __init__(self, channels: int, expansion: int = 2):
+    """Local spatial mixing and content-gated cross-channel transformation."""
+
+    def __init__(self, channels: int, dilation: int = 1):
         super().__init__()
-        hidden = channels * expansion
-        self.body = nn.Sequential(
-            ChannelLayerNorm(channels),
-            nn.Conv2d(channels, hidden, 1),
-            nn.GELU(),
-            nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden),
-            nn.GELU(),
-            nn.Conv2d(hidden, channels, 1),
+        self.norm = ChannelLayerNorm(channels)
+        self.expand = nn.Conv2d(channels, channels * 2, 1)
+        self.spatial = nn.Conv2d(
+            channels * 2, channels * 2, 3, padding=dilation,
+            dilation=dilation, groups=channels * 2,
         )
+        self.project = nn.Conv2d(channels, channels, 1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.body(x)
+        signal, gate = self.spatial(self.expand(self.norm(x))).chunk(2, dim=1)
+        return x + self.project(F.gelu(signal) * gate)
 
 
-class SpectralAttentionBlock(nn.Module):
-    """MST spectral attention with pre-norm on both residual paths and FFN x2."""
+class PixelQueryBlock(nn.Module):
+    """One pixel-conditioned query attends only to that pixel's RF tokens."""
 
     def __init__(self, channels: int, heads: int):
         super().__init__()
-        if heads < 1 or channels % heads:
-            raise ValueError("Attention channels must be divisible by positive heads.")
-        self.norm = nn.LayerNorm(channels)
-        self.attention = MS_MSA(dim=channels, dim_head=channels // heads, heads=heads)
-        self.feed_forward = LocalBlock(channels)
+        self.heads = heads
+        self.query_norm = nn.LayerNorm(channels)
+        self.token_norm = nn.LayerNorm(channels)
+        self.query = nn.Linear(channels, channels)
+        self.key_value = nn.Linear(channels, channels * 2)
+        self.project = nn.Linear(channels, channels)
+        self.ffn_norm = nn.LayerNorm(channels)
+        self.ffn = nn.Sequential(
+            nn.Linear(channels, channels * 2), nn.GELU(),
+            nn.Linear(channels * 2, channels),
+        )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        features = x.movedim(1, -1)
-        features = features + self.attention(self.norm(features))
-        return self.feed_forward(features.movedim(-1, 1))
+    def forward(self, query: torch.Tensor, tokens: torch.Tensor) -> torch.Tensor:
+        count, token_count, channels = tokens.shape
+        head_dim = channels // self.heads
+        q = self.query(self.query_norm(query)).reshape(count, self.heads, 1, head_dim)
+        kv = self.key_value(self.token_norm(tokens))
+        k, v = kv.reshape(count, token_count, 2, self.heads, head_dim).unbind(2)
+        k, v = k.transpose(1, 2), v.transpose(1, 2)
+        attended = F.scaled_dot_product_attention(q, k, v, dropout_p=0.0)
+        query = query + self.project(attended.reshape(count, channels))
+        return query + self.ffn(self.ffn_norm(query))
+
+
+class ResidualConvBlock(nn.Module):
+    """ResNet-style spatial features without batch or image-wide normalization."""
+
+    def __init__(self, channels: int):
+        super().__init__()
+        self.body = nn.Sequential(
+            nn.Conv2d(channels, channels, 3, padding=1), nn.GELU(),
+            nn.Conv2d(channels, channels, 3, padding=1),
+        )
+
+    def forward(self, x):
+        return x + 0.1 * self.body(x)
+
+
+class GatedScaleConnection(nn.Module):
+    def __init__(self, source_channels: int, target_channels: int):
+        super().__init__()
+        self.project = nn.Conv2d(source_channels, target_channels, 1)
+        self.gate = nn.Conv2d(2 * target_channels, target_channels, 1)
+        nn.init.normal_(self.gate.weight, std=1e-3)
+        nn.init.constant_(self.gate.bias, -3.0)
+
+    def forward(self, target, source):
+        source = self.project(source)
+        gate = torch.sigmoid(self.gate(torch.cat((target, source), dim=1)))
+        return target + gate * source
 
 
 class SpectralEncoder(nn.Module):
+    """Connected full/half/quarter residual streams and per-pixel token fusion."""
+
     def __init__(
-        self, spectral_channels: int = 31,
-        channels: Sequence[int] = (32, 64, 128, 192),
-        depths: Sequence[int] = (1, 2, 2),
-        heads: Sequence[int] = (2, 4, 6),
+        self, spectral_channels: int = 31, channels: int = 64,
+        branch_depths: Sequence[int] = (3, 3, 4),
+        branch_channels: Sequence[int] = (48, 96, 192),
+        detail_depth: int = 2, fusion_depth: int = 2, heads: int = 4,
+        pixel_chunk_size: int = 4096, checkpoint_blocks: bool = True,
     ):
         super().__init__()
-        if (spectral_channels < 2 or len(channels) != 4 or len(depths) != 3
-                or len(heads) != 3 or min(channels) < 1 or min(depths) < 1):
-            raise ValueError("Require C >= 2, four positive widths and three positive depths/heads.")
-        self.spectral_channels = spectral_channels
-        self.channels = tuple(channels)
-        self.depths = tuple(depths)
-        self.heads = tuple(heads)
-        self.stem = nn.Conv2d(spectral_channels, channels[0], 3, padding=1)
-        self.mask_embedding = nn.Conv2d(spectral_channels, channels[0], 1, bias=False)
-        self.local = LocalBlock(channels[0])
-        self.stages = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(channels[i], channels[i + 1], 3, stride=2, padding=1),
-                *[SpectralAttentionBlock(channels[i + 1], heads[i])
-                  for _ in range(depths[i])],
+        if (not _positive_integer(spectral_channels) or spectral_channels < 2
+                or not all(_positive_integer(v) for v in (
+                    channels, detail_depth, fusion_depth, heads, pixel_chunk_size))
+                or channels % heads
+                or len(branch_depths) != 3 or len(branch_channels) != 3
+                or not all(_positive_integer(v) for v in (*branch_depths, *branch_channels))
+                or not isinstance(checkpoint_blocks, bool)):
+            raise ValueError(
+                "Require C >= 2, three positive integer branch widths/depths, "
+                "positive widths/depths/chunk size, heads dividing channels, "
+                "and boolean checkpoint_blocks."
             )
-            for i in range(3)
+        self.spectral_channels = spectral_channels
+        self.channels = channels
+        self.branch_depths = tuple(branch_depths)
+        self.branch_channels = tuple(branch_channels)
+        self.detail_depth = detail_depth
+        self.fusion_depth = fusion_depth
+        self.heads = heads
+        self.pixel_chunk_size = pixel_chunk_size
+        self.checkpoint_blocks = checkpoint_blocks
+        self.stem = nn.Conv2d(spectral_channels, branch_channels[0], 3, padding=1)
+        self.pixel_projection = nn.Conv2d(spectral_channels, channels, 1)
+        self.mask_embedding = nn.Conv2d(spectral_channels, branch_channels[0], 1, bias=False)
+        self.mask_projection = nn.Conv2d(branch_channels[0], channels, 1, bias=False)
+        self.scale_inputs = nn.ModuleList([
+            nn.Identity(),
+            nn.Conv2d(branch_channels[0], branch_channels[1], 1),
+            nn.Conv2d(branch_channels[0], branch_channels[2], 1),
         ])
+        self.branches = nn.ModuleList([
+            nn.Sequential(*[ResidualConvBlock(width) for _ in range(depth)])
+            for depth, width in zip(branch_depths, branch_channels)
+        ])
+        self.fine_to_medium = GatedScaleConnection(branch_channels[0], branch_channels[1])
+        self.fine_to_broad = GatedScaleConnection(branch_channels[0], branch_channels[2])
+        self.medium_to_broad = GatedScaleConnection(branch_channels[1], branch_channels[2])
+        self.detail = nn.Sequential(*[
+            ResidualConvBlock(branch_channels[0]) for _ in range(detail_depth)
+        ])
+        self.token_projections = nn.ModuleList([
+            nn.Conv2d(width, channels, 1) for width in (*branch_channels, branch_channels[0])
+        ])
+        self.branch_embedding = nn.Parameter(torch.empty(5, channels))
+        nn.init.normal_(self.branch_embedding, std=0.02)
+        self.fusion = nn.ModuleList([
+            PixelQueryBlock(channels, heads) for _ in range(fusion_depth)
+        ])
+        self.output_norm = nn.LayerNorm(channels)
 
     def architecture(self) -> dict:
         return {
-            "version": 1, "spectral_channels": self.spectral_channels,
-            "channels": list(self.channels), "depths": list(self.depths),
-            "heads": list(self.heads), "ffn_expansion": 2,
-            "normalization": "per_pixel_channel_layernorm",
+            "version": 4, "type": "connected_multiscale_query_transformer",
+            "spectral_channels": self.spectral_channels, "channels": self.channels,
+            "branch_depths": list(self.branch_depths),
+            "branch_channels": list(self.branch_channels),
+            "scales": [1, 2, 4], "connections": "gated_fine_to_medium_and_broad_medium_to_broad",
+            "detail_depth": self.detail_depth, "fusion_depth": self.fusion_depth,
+            "heads": self.heads, "ffn_expansion": 2,
+            "normalization": "none_in_residual_encoders_per_pixel_in_fusion",
+            "downsampling": "average_pool_fixed_grid", "padding": "replicate_right_bottom_to_4",
+            "residual_scale": 0.1,
         }
 
-    def forward(
-        self, x: torch.Tensor, band_mask: Optional[torch.Tensor] = None,
-    ):
-        if x.ndim != 4 or x.shape[1] != self.spectral_channels or min(x.shape[-2:]) < 1:
+    def _local_path(self, path, x):
+        for block in path:
+            x = checkpoint(block, x, use_reentrant=False) if (
+                self.checkpoint_blocks and self.training and torch.is_grad_enabled()
+            ) else block(x)
+        return x
+
+    def _fuse(self, tokens):
+        tokens = tokens + self.branch_embedding
+        query = tokens[:, 0] + tokens[:, -1]
+        for block in self.fusion:
+            query = block(query, tokens)
+        return self.output_norm(query)
+
+    def forward(self, x: torch.Tensor, band_mask: Optional[torch.Tensor] = None):
+        if (x.ndim != 4 or x.shape[1] != self.spectral_channels
+                or min(x.shape[0], *x.shape[-2:]) < 1):
             raise ValueError("Expected a nonempty [B, spectral_channels, H, W] cube.")
-        features = self.stem(x)
         if band_mask is not None:
             if band_mask.dtype != torch.bool or band_mask.shape != (*x.shape[:2], 1, 1):
                 raise ValueError("band_mask must be boolean [B, spectral_channels, 1, 1].")
+            # Mask here as well as in the pipeline: hidden values never reach any path.
+            x = x.masked_fill(band_mask, 0)
             mask_features = band_mask.to(x.dtype)
         else:
             mask_features = x.new_zeros((*x.shape[:2], 1, 1))
-        features = features + self.mask_embedding(mask_features)
-        features = self.local(features)
-        pyramid = [features]
-        for stage in self.stages:
-            features = stage(features)
-            pyramid.append(features)
-        return pyramid
+        height, width = x.shape[-2:]
+        x = F.pad(x, (0, (-width) % 4, 0, (-height) % 4), mode="replicate")
+        missing = self.mask_embedding(mask_features)
+        stem = self.stem(x) + missing
+        pixel = self.pixel_projection(x) + self.mask_projection(missing)
+        fine = self._local_path(self.branches[0], stem)
+        medium_input = self.scale_inputs[1](F.avg_pool2d(stem, 2))
+        medium_input = self.fine_to_medium(medium_input, F.avg_pool2d(fine, 2))
+        medium = self._local_path(self.branches[1], medium_input)
+        broad_input = self.scale_inputs[2](F.avg_pool2d(stem, 4))
+        broad_input = self.fine_to_broad(broad_input, F.avg_pool2d(fine, 4))
+        broad_input = self.medium_to_broad(broad_input, F.avg_pool2d(medium, 2))
+        broad = self._local_path(self.branches[2], broad_input)
+        detail = self._local_path(self.detail, stem)
+        projected = [project(feature) for project, feature in
+                     zip(self.token_projections, (fine, medium, broad, detail))]
+        features = [
+            pixel, projected[0],
+            F.interpolate(projected[1], scale_factor=2, mode="bilinear", align_corners=False),
+            F.interpolate(projected[2], scale_factor=4, mode="bilinear", align_corners=False),
+            projected[3],
+        ]
+        batch, channels, padded_height, padded_width = pixel.shape
+        # Chunk only the independent per-pixel regression, never the convolutional context.
+        flattened = [feature.movedim(1, -1).reshape(-1, channels) for feature in features]
+        outputs = []
+        for start in range(0, batch * padded_height * padded_width, self.pixel_chunk_size):
+            tokens = torch.stack(
+                [feature[start:start + self.pixel_chunk_size] for feature in flattened], dim=1,
+            )
+            fused = checkpoint(self._fuse, tokens, use_reentrant=False) if (
+                self.checkpoint_blocks and self.training and torch.is_grad_enabled()
+            ) else self._fuse(tokens)
+            outputs.append(fused)
+        return torch.cat(outputs).reshape(
+            batch, padded_height, padded_width, channels,
+        ).movedim(-1, 1)[..., :height, :width]
 
 
-class ReconstructionHead(nn.Module):
-    """Bottleneck-only convolutional decoder: no shallow skips or source bypass."""
-
-    def __init__(
-        self, in_channels: int, spectral_channels: int,
-        channels: Sequence[int] = (96, 48, 32),
-    ):
+class SpectralHead(nn.Module):
+    def __init__(self, channels: int, spectral_channels: int, depth: int, residual: bool):
         super().__init__()
-        if len(channels) != 3 or min(channels) < 1:
-            raise ValueError("Reconstruction head requires three positive widths.")
-        widths = (in_channels, *channels)
-        self.stages = nn.ModuleList([
-            nn.Sequential(nn.Conv2d(widths[i], widths[i + 1], 1), LocalBlock(widths[i + 1]))
-            for i in range(3)
-        ])
-        self.output = nn.Conv2d(channels[-1], spectral_channels, 3, padding=1)
+        self.blocks = nn.Sequential(*[LocalBlock(channels) for _ in range(depth)])
+        self.output = nn.Conv2d(channels, spectral_channels, 1)
+        if residual:
+            nn.init.normal_(self.output.weight, std=1e-3)
+            nn.init.zeros_(self.output.bias)
 
-    def forward(self, pyramid):
-        x = pyramid[-1]
-        for stage, reference in zip(self.stages, reversed(pyramid[:-1])):
-            x = stage(F.interpolate(x, size=reference.shape[-2:],
-                                    mode="bilinear", align_corners=False))
-        return self.output(x)
-
-
-class RestorationStage(nn.Module):
-    def __init__(
-        self, in_channels: int, channels: int, depth: int, heads: int,
-        skip_fusion: str, local_blocks: int = 1,
-    ):
-        super().__init__()
-        self.skip_fusion = skip_fusion
-        self.project = nn.Conv2d(in_channels, channels, 1)
-        self.skip = nn.Conv2d(channels, channels, 1)
-        if skip_fusion == "concat":
-            self.fuse = nn.Conv2d(2 * channels, channels, 1)
-        self.blocks = nn.Sequential(
-            *[SpectralAttentionBlock(channels, heads) for _ in range(depth)]
-        ) if depth else (
-            LocalBlock(channels) if local_blocks == 1
-            else nn.Sequential(*[LocalBlock(channels) for _ in range(local_blocks)])
-        )
-
-    def forward(self, x, skip):
-        x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
-        x, skip = self.project(x), self.skip(skip)
-        fused = self.fuse(torch.cat((x, skip), dim=1)) if self.skip_fusion == "concat" else x + skip
-        return self.blocks(fused)
-
-
-class SpectralCalibrationHead(nn.Module):
-    """Smooth bounded per-band correction from eighth-resolution features."""
-
-    def __init__(
-        self, in_channels: int, hidden_channels: int, spectral_channels: int,
-        gain_scale: float, offset_scale: float,
-    ):
-        super().__init__()
-        self.gain_scale = gain_scale
-        self.offset_scale = offset_scale
-        self.features = nn.Sequential(
-            nn.Conv2d(in_channels, hidden_channels, 1), nn.GELU(),
-        )
-        self.output = nn.Conv2d(hidden_channels, 2 * spectral_channels, 3, padding=1)
-        nn.init.zeros_(self.output.weight)
-        nn.init.zeros_(self.output.bias)
-
-    def forward(self, bottleneck, size):
-        gain, offset = self.output(self.features(bottleneck)).tanh().chunk(2, dim=1)
-        gain = F.interpolate(gain, size=size, mode="bilinear", align_corners=False)
-        offset = F.interpolate(offset, size=size, mode="bilinear", align_corners=False)
-        return gain * self.gain_scale, offset * self.offset_scale
-
-
-class RestorationHead(nn.Module):
-    def __init__(
-        self, channels: Sequence[int], heads: Sequence[int],
-        spectral_channels: int, skip_fusion: str = "concat",
-        full_resolution_blocks: int = 3, use_calibration: bool = False,
-        calibration_gain_scale: float = 0.1, calibration_offset_scale: float = 0.1,
-    ):
-        super().__init__()
-        if skip_fusion not in ("add", "concat"):
-            raise ValueError("skip_fusion must be 'add' or 'concat'.")
-        if (not isinstance(full_resolution_blocks, int) or isinstance(full_resolution_blocks, bool)
-                or full_resolution_blocks < 1):
-            raise ValueError("full_resolution_blocks must be a positive integer.")
-        if any(not math.isfinite(scale) or scale <= 0
-               for scale in (calibration_gain_scale, calibration_offset_scale)):
-            raise ValueError("Calibration scales must be finite and positive.")
-        self.options = {
-            "skip_fusion": skip_fusion, "full_resolution_blocks": full_resolution_blocks,
-            "use_calibration": use_calibration,
-            "calibration_gain_scale": calibration_gain_scale,
-            "calibration_offset_scale": calibration_offset_scale,
-        }
-        self.decoder2 = RestorationStage(channels[3], channels[2], 2, heads[1], skip_fusion)
-        self.decoder1 = RestorationStage(channels[2], channels[1], 1, heads[0], skip_fusion)
-        self.decoder0 = RestorationStage(
-            channels[1], channels[0], 0, 1, skip_fusion, full_resolution_blocks,
-        )
-        self.calibration = (
-            SpectralCalibrationHead(
-                channels[3], channels[0], spectral_channels,
-                calibration_gain_scale, calibration_offset_scale,
-            ) if use_calibration else None
-        )
-        self.output = nn.Conv2d(channels[0], spectral_channels, 3, padding=1)
-        # Near identity, but decoder gradients are nonzero from the first update.
-        nn.init.normal_(self.output.weight, std=1e-3)
-        nn.init.zeros_(self.output.bias)
-
-    def forward(self, pyramid, source=None):
-        e0, e1, e2, e3 = pyramid
-        x = self.decoder2(e3, e2)
-        x = self.decoder1(x, e1)
-        residual = self.output(self.decoder0(x, e0))
-        if self.calibration is not None:
-            if source is None:
-                raise ValueError("The calibration head requires the source cube.")
-            gain, offset = self.calibration(e3, source.shape[-2:])
-            residual = residual + source * gain + offset
-        return residual
+    def forward(self, features):
+        return self.output(self.blocks(features))
 
 
 class SpectralEncoderDecoder(nn.Module):
+    """Keep the existing factory entrypoint; both task heads now run at full resolution."""
+
     def __init__(
-        self, head: str = "restoration", spectral_channels: int = 31,
-        channels: Sequence[int] = (32, 64, 128, 192),
-        depths: Sequence[int] = (1, 2, 2),
-        heads: Sequence[int] = (2, 4, 6),
-        reconstruction_channels: Sequence[int] = (96, 48, 32),
-        skip_fusion: str = "concat",
-        full_resolution_blocks: int = 3,
-        use_calibration: bool = False,
-        calibration_gain_scale: float = 0.1,
-        calibration_offset_scale: float = 0.1,
+        self, head: str = "finetune", spectral_channels: int = 31, channels: int = 64,
+        branch_depths: Sequence[int] = (3, 3, 4),
+        branch_channels: Sequence[int] = (48, 96, 192),
+        detail_depth: int = 2, fusion_depth: int = 2, heads: int = 4,
+        head_depth: int = 2, pixel_chunk_size: int = 4096,
+        checkpoint_blocks: bool = True,
     ):
         super().__init__()
-        if head not in ("pretrain", "restoration"):
-            raise ValueError("head must be 'pretrain' or 'restoration'.")
+        if head not in ("pretrain", "finetune") or not _positive_integer(head_depth):
+            raise ValueError("Require head pretrain/finetune and a positive integer head_depth.")
         self.head_type = head
-        self.reconstruction_channels = tuple(reconstruction_channels)
-        self.encoder = SpectralEncoder(spectral_channels, channels, depths, heads)
-        self.decoder = (
-            ReconstructionHead(channels[-1], spectral_channels, reconstruction_channels)
-            if head == "pretrain"
-            else RestorationHead(
-                channels, heads, spectral_channels, skip_fusion, full_resolution_blocks,
-                use_calibration, calibration_gain_scale, calibration_offset_scale,
-            )
+        self.head_depth = head_depth
+        self.encoder = SpectralEncoder(
+            spectral_channels, channels, branch_depths, branch_channels,
+            detail_depth, fusion_depth, heads, pixel_chunk_size, checkpoint_blocks,
         )
+        self.decoder = SpectralHead(channels, spectral_channels, head_depth, head == "finetune")
 
     def architecture(self) -> dict:
         return {
             "encoder": self.encoder.architecture(), "head": self.head_type,
-            "decoder": {"reconstruction_channels": list(self.reconstruction_channels)}
-            if self.head_type == "pretrain" else dict(self.decoder.options),
+            "decoder": {"type": "full_resolution", "head_depth": self.head_depth},
         }
 
     def forward(self, x: torch.Tensor, band_mask: Optional[torch.Tensor] = None):
         features = self.encoder(x, band_mask)
         if self.head_type == "pretrain":
             return self.decoder(features)
-        return x + self.decoder(features, source=x)
+        baseline = x.masked_fill(band_mask, 0) if band_mask is not None else x
+        return baseline + self.decoder(features)

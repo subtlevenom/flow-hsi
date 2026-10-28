@@ -1,7 +1,0 @@
-defaults:
-  - train
-  - override model: spectral_restore
-  - override pipeline: spectral_restore
-  - _self_
-experiment: spectral.restore.refined.ntire
-epochs: 71

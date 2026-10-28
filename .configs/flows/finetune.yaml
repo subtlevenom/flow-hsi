@@ -1,0 +1,7 @@
+defaults:
+  - train
+  - override model: spectral_finetune
+  - override pipeline: spectral_finetune
+  - _self_
+experiment: spectral.finetune.gazetr.multiscale.ntire
+epochs: 71
