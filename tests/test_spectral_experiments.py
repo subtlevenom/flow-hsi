@@ -32,7 +32,7 @@ def network(head="pretrain", **options):
     params = dict(
         channels=8,
         branch_dilations=((1,), (1, 2), (1, 2, 3), (1, 2, 3, 4)),
-        branch_channels=(8, 8, 8, 8), heads=2, pixel_chunk_size=128,
+        branch_channels=(8, 12, 16, 20), heads=2, pixel_chunk_size=128,
     )
     params.update(options)
     return SpectralEncoderDecoder(head=head, **params)
@@ -101,7 +101,10 @@ def test_full_resolution_branches_and_pixel_query_fusion():
     for handle in handles:
         handle.remove()
     assert features.shape == (1, 8, 17, 19)
-    assert observed == [(1, 8, 17, 19)] * 5
+    assert observed == [
+        (1, 8, 17, 19), (1, 12, 17, 19), (1, 16, 17, 19),
+        (1, 20, 17, 19), (1, 8, 17, 19),
+    ]
     assert [len(path) for path in model.encoder.branches] == [1, 2, 3, 4]
     assert [[block.body[0].dilation[0] for block in path]
             for path in model.encoder.branches] == [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4]]
@@ -191,7 +194,8 @@ def test_finetune_head_is_identity_residual_and_pretrain_has_no_input_bypass():
     {"fusion_depth": 0}, {"branch_dilations": []},
     {"branch_dilations": [[1], [0], [1], [1]]},
     {"branch_dilations": [[1], [1], [1]]},
-    {"branch_channels": [1]}, {"branch_channels": [8, 8, 7, 8]},
+    {"branch_channels": [1]}, {"branch_channels": [8, 0, 8, 8]},
+    {"branch_channels": [8, 8, 8]},
     {"checkpoint_blocks": 1},
     {"channels": 0}, {"channels": 7}, {"heads": 0},
     {"pixel_chunk_size": 0}, {"spectral_channels": 1},
@@ -239,7 +243,7 @@ def test_model_masks_every_path_without_hidden_target_bypass(head):
     torch.testing.assert_close(
         model(x, mask), model(other, mask),
     )
-    assert model.encoder.architecture()["version"] == 5
+    assert model.encoder.architecture()["version"] == 6
 
 
 def test_mask_embedding_distinguishes_hidden_from_dark_and_all_visible_is_compatible():
@@ -580,13 +584,14 @@ def test_experiment_config_and_factory(phase, epochs):
     assert module.checkpoint_monitor == ("val_masked_mae" if phase == "pretrain" else "val_mrae")
     assert len(module.network.encoder.branches) == 4
     assert module.network.encoder.channels == 64
-    assert module.network.encoder.architecture()["version"] == 5
+    assert module.network.encoder.branch_channels == (48, 96, 128, 160)
+    assert module.network.encoder.architecture()["version"] == 6
     x = torch.rand(1, 31, 17, 19)
     assert module(x).shape == x.shape
     assert module.model(src=x)["res"].shape == x.shape
     if phase != "pretrain":
         assert len(module.network.decoder.blocks) == 2
-        assert cfg.experiment == "spectral.finetune.gazetr.fullrf.ntire"
+        assert cfg.experiment == "spectral.finetune.gazetr.fullrf.wide.ntire"
 
 
 def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
@@ -617,7 +622,7 @@ def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
         params = cfg.model.params.layers.spectral.params
         params.channels = 8
         params.branch_dilations = [[1], [1], [1], [1]]
-        params.branch_channels = [8, 8, 8, 8]
+        params.branch_channels = [8, 12, 16, 20]
         params.heads = 2
         train_default(cfg)
         logs = tmp_path / cfg.experiment / "logs"

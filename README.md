@@ -65,11 +65,11 @@ The encoder has four **full-resolution** receptive-field branches:
 
 | Branch | Residual-block dilations | Width |
 |---|---|---|
-| Small | `[1]` | 64 |
-| Medium | `[1, 2]` | 64 |
-| Large | `[1, 2, 3]` | 64 |
-| Extra-large | `[1, 2, 3, 4]` | 64 |
-| Independent detail | two dilation-1 blocks | 64 |
+| Small | `[1]` | 48 |
+| Medium | `[1, 2]` | 96 |
+| Large | `[1, 2, 3]` | 128 |
+| Extra-large | `[1, 2, 3, 4]` | 160 |
+| Independent detail | two dilation-1 blocks | 48 |
 
 A stride-1 3x3 stem feeds all branches. Each residual block has two dense
 3x3 convolutions at its listed dilation, GELU between them and a residual
@@ -83,7 +83,9 @@ independent detail path receives no cross-branch connections.
 Encoder residual blocks have two dense 3x3 convolutions with GELU between
 them and a residual scale of 0.1. Unlike stock ResNet-18, there is no
 max-pooling, aggressive input stride, BatchNorm or image-wide normalization.
-Pointwise projections align all branch features to 64 token channels. A
+Learned pointwise projections adapt the shared stem to each branch width and
+adapt gated connections between unequal widths. Pointwise token projections
+then align all branch features to 64 token channels. A
 separate 31 -> 64 pixel projection preserves the current spectrum. The pixel,
 four branch, and detail signals at each location become six tokens, with
 learned branch-identity embeddings.
@@ -142,7 +144,7 @@ checkpoint selection; training metrics follow the currently selected domain.
 The best encoder is exported atomically, on rank zero, to:
 
 ```text
-.experiments\spectral.pretrain.gazetr.fullrf.ntire\logs\checkpoints\encoder.pt
+.experiments\spectral.pretrain.gazetr.fullrf.wide.ntire\logs\checkpoints\encoder.pt
 ```
 
 The artifact contains only encoder weights, architecture metadata and selection
@@ -193,8 +195,8 @@ Checkpoint selection remains masked MAE for pretraining and MRAE for restoration
 SAM logs now use degrees, including CSV logs; do not compare new values
 directly with older radian logs (multiply old values by 180/pi).
 
-The runs have separate output directories: `spectral.pretrain.gazetr.fullrf.ntire` and
-`spectral.finetune.gazetr.fullrf.ntire`.
+The runs have separate output directories: `spectral.pretrain.gazetr.fullrf.wide.ntire` and
+`spectral.finetune.gazetr.fullrf.wide.ntire`.
 Each resumes its own `last.ckpt` by default, including
 optimizer, scheduler, epoch and update count. Full fine-tuning resume does not
 reload the initial encoder artifact, so that artifact is no longer required.
@@ -204,7 +206,7 @@ experiment, not a demonstrated accuracy gain; compare against the scratch
 ablation on held-out scenes.
 
 **Restart both pretraining and fine-tuning for this model.** Encoder metadata
-is now version 5 and identifies the full-resolution dilated query transformer; older encoder artifacts and
+is now version 6 and identifies the full-resolution dilated query transformer; older encoder artifacts and
 full checkpoints are rejected explicitly. Historical experiment files are not
 renamed or deleted, and the new directories avoid accidental old-checkpoint
 resume. The public model head and pipeline phase are now `finetune`, and all

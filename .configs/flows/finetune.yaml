@@ -3,5 +3,5 @@ defaults:
   - override model: spectral_finetune
   - override pipeline: spectral_finetune
   - _self_
-experiment: spectral.finetune.gazetr.fullrf.ntire
+experiment: spectral.finetune.gazetr.fullrf.wide.ntire
 epochs: 71

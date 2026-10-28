@@ -104,7 +104,7 @@ class SpectralEncoder(nn.Module):
         branch_dilations: Sequence[Sequence[int]] = (
             (1,), (1, 2), (1, 2, 3), (1, 2, 3, 4),
         ),
-        branch_channels: Sequence[int] = (48, 48, 48, 48),
+        branch_channels: Sequence[int] = (48, 96, 128, 160),
         detail_depth: int = 2, fusion_depth: int = 2, heads: int = 4,
         pixel_chunk_size: int = 4096, checkpoint_blocks: bool = True,
     ):
@@ -132,13 +132,15 @@ class SpectralEncoder(nn.Module):
         self.heads = heads
         self.pixel_chunk_size = pixel_chunk_size
         self.checkpoint_blocks = checkpoint_blocks
-        if len(set(branch_channels)) != 1:
-            raise ValueError("Full-resolution branch channels must be equal.")
         branch_width = branch_channels[0]
         self.stem = nn.Conv2d(spectral_channels, branch_width, 3, padding=1)
         self.pixel_projection = nn.Conv2d(spectral_channels, channels, 1)
         self.mask_embedding = nn.Conv2d(spectral_channels, branch_width, 1, bias=False)
         self.mask_projection = nn.Conv2d(branch_width, channels, 1, bias=False)
+        self.branch_inputs = nn.ModuleList([
+            nn.Identity() if width == branch_width else nn.Conv2d(branch_width, width, 1)
+            for width in branch_channels
+        ])
         self.branches = nn.ModuleList([
             nn.Sequential(*[
                 ResidualConvBlock(width, dilation)
@@ -146,17 +148,18 @@ class SpectralEncoder(nn.Module):
             ])
             for dilations, width in zip(self.branch_dilations, branch_channels)
         ])
-        self.small_to_medium = GatedScaleConnection(branch_width, branch_width)
-        self.small_to_large = GatedScaleConnection(branch_width, branch_width)
-        self.medium_to_large = GatedScaleConnection(branch_width, branch_width)
-        self.small_to_extra_large = GatedScaleConnection(branch_width, branch_width)
-        self.medium_to_extra_large = GatedScaleConnection(branch_width, branch_width)
-        self.large_to_extra_large = GatedScaleConnection(branch_width, branch_width)
+        self.small_to_medium = GatedScaleConnection(branch_channels[0], branch_channels[1])
+        self.small_to_large = GatedScaleConnection(branch_channels[0], branch_channels[2])
+        self.medium_to_large = GatedScaleConnection(branch_channels[1], branch_channels[2])
+        self.small_to_extra_large = GatedScaleConnection(branch_channels[0], branch_channels[3])
+        self.medium_to_extra_large = GatedScaleConnection(branch_channels[1], branch_channels[3])
+        self.large_to_extra_large = GatedScaleConnection(branch_channels[2], branch_channels[3])
         self.detail = nn.Sequential(*[
             ResidualConvBlock(branch_width) for _ in range(detail_depth)
         ])
         self.token_projections = nn.ModuleList([
-            nn.Conv2d(branch_width, channels, 1) for _ in range(5)
+            nn.Conv2d(width, channels, 1)
+            for width in (*branch_channels, branch_width)
         ])
         self.branch_embedding = nn.Parameter(torch.empty(6, channels))
         nn.init.normal_(self.branch_embedding, std=0.02)
@@ -167,7 +170,7 @@ class SpectralEncoder(nn.Module):
 
     def architecture(self) -> dict:
         return {
-            "version": 5, "type": "full_resolution_dilated_query_transformer",
+            "version": 6, "type": "full_resolution_dilated_query_transformer",
             "spectral_channels": self.spectral_channels, "channels": self.channels,
             "branch_dilations": [list(branch) for branch in self.branch_dilations],
             "branch_channels": list(self.branch_channels),
@@ -212,13 +215,13 @@ class SpectralEncoder(nn.Module):
         missing = self.mask_embedding(mask_features)
         stem = self.stem(x) + missing
         pixel = self.pixel_projection(x) + self.mask_projection(missing)
-        small = self._local_path(self.branches[0], stem)
-        medium_input = self.small_to_medium(stem, small)
+        small = self._local_path(self.branches[0], self.branch_inputs[0](stem))
+        medium_input = self.small_to_medium(self.branch_inputs[1](stem), small)
         medium = self._local_path(self.branches[1], medium_input)
-        large_input = self.small_to_large(stem, small)
+        large_input = self.small_to_large(self.branch_inputs[2](stem), small)
         large_input = self.medium_to_large(large_input, medium)
         large = self._local_path(self.branches[2], large_input)
-        extra_large_input = self.small_to_extra_large(stem, small)
+        extra_large_input = self.small_to_extra_large(self.branch_inputs[3](stem), small)
         extra_large_input = self.medium_to_extra_large(extra_large_input, medium)
         extra_large_input = self.large_to_extra_large(extra_large_input, large)
         extra_large = self._local_path(self.branches[3], extra_large_input)
@@ -264,7 +267,7 @@ class SpectralEncoderDecoder(nn.Module):
         branch_dilations: Sequence[Sequence[int]] = (
             (1,), (1, 2), (1, 2, 3), (1, 2, 3, 4),
         ),
-        branch_channels: Sequence[int] = (48, 48, 48, 48),
+        branch_channels: Sequence[int] = (48, 96, 128, 160),
         detail_depth: int = 2, fusion_depth: int = 2, heads: int = 4,
         head_depth: int = 2, pixel_chunk_size: int = 4096,
         checkpoint_blocks: bool = True,

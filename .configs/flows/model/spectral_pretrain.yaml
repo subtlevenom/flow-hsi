@@ -16,7 +16,7 @@ params:
           - [1, 2]
           - [1, 2, 3]
           - [1, 2, 3, 4]
-        branch_channels: [64, 64, 64, 64]
+        branch_channels: [48, 96, 128, 160]
         detail_depth: 2
         fusion_depth: 2
         heads: 4

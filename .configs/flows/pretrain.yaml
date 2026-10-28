@@ -3,5 +3,5 @@ defaults:
   - override model: spectral_pretrain
   - override pipeline: spectral_pretrain
   - _self_
-experiment: spectral.pretrain.gazetr.fullrf.ntire
+experiment: spectral.pretrain.gazetr.fullrf.wide.ntire
 epochs: 31

@@ -78,7 +78,10 @@ def test_gpu_full_resolution_shapes_masking_and_execution_equivalence(phase, exa
     x = torch.rand(1, 31, 197, 199, device="cuda")
     with torch.no_grad():
         assert model(x).shape == x.shape
-    assert sizes == [(1, 48, 197, 199)] * 5
+    assert sizes == [
+        (1, 48, 197, 199), (1, 96, 197, 199), (1, 128, 197, 199),
+        (1, 160, 197, 199), (1, 48, 197, 199),
+    ]
     for handle in handles:
         handle.remove()
     with torch.no_grad():
@@ -104,7 +107,7 @@ def test_gpu_full_resolution_shapes_masking_and_execution_equivalence(phase, exa
 def test_gpu_export_transfer_freeze_and_resume(tmp_path):
     def network(head):
         return SpectralEncoderDecoder(
-            head=head, channels=8, branch_channels=(8, 8, 8, 8),
+            head=head, channels=8, branch_channels=(8, 12, 16, 20),
             branch_dilations=((1,), (1,), (1,), (1,)), heads=2,
         )
 
@@ -151,7 +154,7 @@ def test_gpu_export_transfer_freeze_and_resume(tmp_path):
 
 def test_gpu_checkpointed_gradients_and_cross_scale_conditioning(exact_cuda_math):
     kwargs = dict(
-        channels=8, branch_channels=(8, 8, 8, 8),
+        channels=8, branch_channels=(8, 12, 16, 20),
         branch_dilations=((1,), (1,), (1,), (1,)), heads=2,
     )
     checkpointed = SpectralEncoderDecoder(head="pretrain", **kwargs).cuda().train()
@@ -167,7 +170,7 @@ def test_gpu_checkpointed_gradients_and_cross_scale_conditioning(exact_cuda_math
     for p, q in zip(checkpointed.parameters(), plain.parameters()):
         torch.testing.assert_close(p.grad, q.grad, atol=1e-6, rtol=1e-4)
     connection = checkpointed.encoder.small_to_medium
-    target = torch.rand(1, 8, 8, 8, device="cuda")
+    target = torch.rand(1, 12, 8, 8, device="cuda")
     donor = torch.rand(1, 8, 8, 8, device="cuda")
     assert not torch.allclose(connection(target, donor), connection(target, donor + 1))
     with torch.no_grad():
