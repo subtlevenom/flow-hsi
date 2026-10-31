@@ -11,7 +11,7 @@ preview_size: 128
 val_every_n_epochs: 1
 swa: false
 spectral_channels: 31
-dataset_root: ???
+dataset_root: /home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset
 
 defaults:
   - model: shared_cmkan

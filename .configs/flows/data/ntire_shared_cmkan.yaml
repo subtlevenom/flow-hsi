@@ -1,4 +1,7 @@
-name: ntire
+defaults:
+  - ntire
+  - _self_
+
 params:
   spectral_channels: ${spectral_channels}
   train:
@@ -15,8 +18,3 @@ params:
     source: ${dataset_root}/test/source
     target: ${dataset_root}/test/target
     batch_size: 1
-  num_workers: 4
-  persistent_workers: true
-  prefetch_factor: 2
-  pin_memory: true
-  seed: 43

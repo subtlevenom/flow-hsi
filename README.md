@@ -95,12 +95,17 @@ guess an NTIRE challenge edition or convert raw challenge files.
 After installing the repository dependencies, start training with:
 
 ```powershell
-python main.py --config-name shared_cmkan task=train "dataset_root=C:\path\to\NTIRE\dataset"
+python main.py --config-name shared_cmkan task=train
 ```
 
-**Replace `C:\path\to\NTIRE\dataset` with your actual prepared dataset root.**
-`dataset_root` is required; there is no machine-specific fallback path.
-For Linux use `dataset_root=/your/actual/NTIRE/dataset`. Defaults are GPU 0,
+The shared cmKAN data config inherits `.configs\flows\data\ntire.yaml`,
+including its loader defaults, and uses that config's existing train/validation
+dataset root: `/home/korepanov/work/flow-hsi/.data/NTIRE/v8.251224/dataset`.
+All shared cmKAN splits use this root. It must exist on the training machine.
+To use another location, append `"dataset_root=C:\path\to\NTIRE\dataset"`
+(replace the placeholder), or `dataset_root=/your/actual/NTIRE/dataset` on Linux.
+Individual `data.params.<split>.source`/`target` overrides remain available.
+Defaults are GPU 0,
 71 epochs, AdamW at 2e-4 with cosine decay, and paired MAE + floored MRAE +
 spectral cosine + adjacent-band gradient + integrated CIE Lab + 0.15 SSIM
 loss. Metrics include all-band PSNR/SAM and integrated CIEDE2000.

@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
 
 from flows.cli.train import train_default
 from flows.core import DataSelector, ModelSelector, PipelineSelector
@@ -28,6 +29,24 @@ def configuration(**values):
     ):
         return compose(config_name="shared_cmkan",
                        overrides=[f"{k}={v}" for k, v in values.items()])
+
+
+def test_default_ntire_paths_and_optional_root_override():
+    config = configuration()
+    resolved = OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
+    existing = OmegaConf.load(
+        Path(__file__).resolve().parents[1] / ".configs" / "flows" / "data" / "ntire.yaml",
+    )
+    assert resolved["data"]["name"] == existing.name
+    for split in ("train", "val"):
+        for domain in ("source", "target"):
+            assert resolved["data"]["params"][split][domain] == existing.params[split][domain]
+    for setting in ("num_workers", "persistent_workers", "prefetch_factor", "pin_memory", "seed"):
+        assert resolved["data"]["params"][setting] == existing.params[setting]
+    overridden = configuration(dataset_root="/custom/NTIRE/dataset")
+    for split, folder in (("train", "train"), ("val", "test"), ("test", "test")):
+        for domain in ("source", "target"):
+            assert overridden.data.params[split][domain] == f"/custom/NTIRE/dataset/{folder}/{domain}"
 
 
 def test_neuron_matches_explicit_shift_before_spline_weighted_sum():
