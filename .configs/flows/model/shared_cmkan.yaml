@@ -13,7 +13,7 @@ params:
         hidden_channels:
           - 48
           - 48
-        grid_size: 5
+        grid_size: 7
         spline_order: 3
         grid_range: [0.0, 1.0]
         # mst: MST++ backbone + per-layer parameter heads; light/full: cmKAN encoders.

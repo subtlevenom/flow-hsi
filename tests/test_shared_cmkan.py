@@ -146,7 +146,7 @@ def test_generator_shapes_composition_and_backward(channels, out_channels, encod
                         pixel_chunk_size=19)
     x = torch.rand(1, channels, 9, 11, requires_grad=True)
     parameters = model.generate_parameters(x)
-    expected_size = sum(8 + i * o + 2 * o
+    expected_size = sum(10 + i * o + 2 * o
                         for i, o in [(channels, channels), (channels, out_channels)])
     assert parameters.shape == (1, expected_size, 9, 11)
     assert not parameters.count_nonzero()
@@ -167,8 +167,8 @@ def test_generator_shapes_composition_and_backward(channels, out_channels, encod
 
 
 @pytest.mark.parametrize("hidden,sizes", [
-    (None, (1592, 2408, 1558)),
-    ("[48,64,48,32]", (1592, 3208, 3176, 1608, 1062)),
+    (None, (1594, 2410, 1560)),
+    ("[48,64,48,32]", (1594, 3210, 3178, 1610, 1064)),
 ])
 @pytest.mark.parametrize("encoder_type", [None, "light", "full"])
 def test_configured_depth_generator_shapes_and_backward(hidden, sizes, encoder_type):
@@ -237,13 +237,13 @@ def test_mst_feature_and_parameter_shapes_with_default_widths():
     model = SharedCmKAN(31, 31, hidden_channels=[48, 48], encoder_type="mst")
     generator = model.encoder
     assert len(generator.heads) == 3
-    assert [h.out_channels for h in generator.heads] == [1592, 2408, 1558]
+    assert [h.out_channels for h in generator.heads] == [1594, 2410, 1560]
     assert not hasattr(model, "conditioning_projection")
     x = torch.rand(1, 31, 9, 11)
     features = generator.features(x)
     assert features.shape == (1, 32, 9, 11)
     parameters = model.generate_parameters(x)
-    assert parameters.shape == (1, 5558, 9, 11)
+    assert parameters.shape == (1, 5564, 9, 11)
     assert not parameters.count_nonzero()
     torch.testing.assert_close(model.apply_parameters(x, parameters), x)
 
@@ -255,7 +255,7 @@ def test_mst_gradients_reach_backbone_heads_and_splines(channels, out_channels, 
     x = torch.rand(1, channels, *hw)
     parameters = model.generate_parameters(x)
     assert parameters.shape == (1, model.size, *hw)
-    assert model.size == sum(8 + i * o + 2 * o
+    assert model.size == sum(10 + i * o + 2 * o
                              for i, o in [(channels, 6), (6, out_channels)])
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
     for _ in range(2):
@@ -272,6 +272,32 @@ def test_mst_gradients_reach_backbone_heads_and_splines(channels, out_channels, 
     for layer in model.spline_layers:
         assert layer.base_parameters.grad[:layer.coef_size].abs().sum() > 0
     assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+
+
+def test_mst_one_untied_generated_curve_per_layer():
+    config = configuration()
+    params = config.model.params.layers.cmkan.params
+    assert (params.grid_size, params.spline_order) == (7, 3)
+    model = ModelSelector.select(config.model).layers.cmkan
+    assert [layer.coef_size for layer in model.spline_layers] == [10, 10, 10]
+    assert model.parameter_sizes == (1594, 2410, 1560) and model.size == 5564
+    x = torch.rand(1, 31, 5, 6)
+    parameters = model.generate_parameters(x).requires_grad_()
+    parameters.retain_grad()
+    (model.apply_parameters(x, parameters) - 0.3).square().mean().backward()
+    slices = parameters.grad.split(model.parameter_sizes, dim=1)
+    for layer, head, grad in zip(model.spline_layers, model.encoder.heads, slices):
+        assert grad[:, :layer.coef_size].abs().sum() > 0
+        assert head.weight.grad[:layer.coef_size].abs().sum() > 0
+    # Each head only drives its own layer's slice, so curves are never tied.
+    with torch.no_grad():
+        model.encoder.heads[1].bias[:10] = 0.05
+    shifted = model.generate_parameters(x).split(model.parameter_sizes, dim=1)
+    assert not shifted[0].count_nonzero() and not shifted[2].count_nonzero()
+    assert torch.allclose(shifted[1][:, :10], torch.full_like(shifted[1][:, :10], 0.05))
+    assert not shifted[1][:, 10:].count_nonzero()
+    coefficients = [layer.base_parameters[:layer.coef_size] for layer in model.spline_layers]
+    assert len({c.data_ptr() for c in coefficients}) == 3
 
 
 def test_mst_cached_predictor_and_chunk_equivalence():

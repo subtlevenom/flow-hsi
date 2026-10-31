@@ -46,16 +46,36 @@ residual, activation after the weighted sum, or output clipping. Successive
 layers supply the outer nonlinear transformations. The spline uses the
 existing cmKAN knot construction and Cox-de Boor recurrence.
 
-The original illumination/wavelet/attention and learned-basis conditioning
-generator is retained. Its output is now a concatenation of **spline
+The conditioning generator emits a concatenation of **spline
 coefficients, W, b, c for every layer**. A layer with dimensions I -> O
 generates `grid_size + spline_order + O*I + 2*O` values per pixel, rather
-than independent edge splines. A learned base parameter vector plus
+than independent edge splines. Every layer has its **own generated curve**
+(its own coefficient slice and its own base coefficients), shared by all of
+that layer's neurons/edges; curves are not tied across layers. Defaults are
+`grid_size=7`, `spline_order=3` (cubic) on `grid_range=[0,1]`: 10
+coefficients per layer. A learned base parameter vector plus
 generated offsets defines each local mapping. Thus a curve is shared within
 each layer **at a conditioned pixel**, not forced to be identical across
 all image locations. `predictor(context)` caches the local parameter field
 for applying the same mapping to another signal on the same batch/spatial
 grid, preserving existing cmKAN conditioning semantics.
+
+The default generator (`encoder_type=mst`) adapts **MST++** (Cai et al.,
+"MST++: Multi-stage Spectral-wise Transformer for Efficient Spectral
+Reconstruction", CVPRW 2022, https://github.com/caiyuanhao1998/MST-plus-plus,
+MIT License), reusing this repository's `flows/ml/layers/mst/MST_Plus_Plus.py`
+blocks. Instead of the original RGB(3) -> 31-band reconstruction, a 3x3 stem
+maps the raw `spectral_channels` input to `mst_features` (32) channels,
+`mst_stages` (3) cascaded U-shaped spectral-wise-attention MST blocks with a
+global residual form a feature backbone, and a shared 1x1 head
+(`mst_head_channels`, 64, GELU) feeds **one zero-initialized 1x1 head per
+layer** emitting that layer's full vector. The thousands of generated values
+are therefore never MST attention channels. Inputs are replicate-padded to
+multiples of four and cropped back, so odd sizes (including 1x1) work. The
+previous cmKAN generators remain selectable with `encoder_type=light` (single
+wavelet scale) or `encoder_type=full` (two scales); these project the
+spectrum to `conditioning_channels` (8) context features, which never replace
+the raw neuron inputs.
 
 The default uses three shared-neuron transformations,
 `spectral_channels -> 48 -> 48 -> spectral_channels` (31 -> 48 -> 48 -> 31
@@ -63,24 +83,22 @@ for NTIRE). This is a cost-conscious engineering starting point, not a
 benchmark-validated optimum: the learned splines and conditioning generator
 already provide substantial capacity, while every extra or wider layer adds
 generated per-pixel dense weights. Per pixel the generator emits
-1,592 + 2,408 + 1,558 = **5,558** values (previous 31 -> 31 -> 31: 2,062).
+1,594 + 2,410 + 1,560 = **5,564** values.
 This float32 parameter field is about 22 MiB for a 32x32 training patch,
-347 MiB for a 128x128 validation crop and 5.1 GiB for a full 482x512 cube,
-before activations. Learned weights: about 0.28M (light generator) or 1.41M
-(full generator). Five transformations remain selectable, for example
+348 MiB for a 128x128 validation crop and 5.1 GiB for a full 482x512 cube,
+before activations. Learned weights: about 2.09M with `mst` (1.72M backbone +
+0.36M heads), 0.28M with `light` or 1.41M with `full`. MST++ attention adds
+activation memory and is markedly slower on CPU than `light`. Five
+transformations remain selectable, for example
 31 -> 48 -> 64 -> 48 -> 32 -> 31 with
 `"model.params.layers.cmkan.params.hidden_channels=[48,64,48,32]"`; that emits
-10,646 values per pixel (~42 MiB at 32x32, 665 MiB at 128x128, 9.8 GiB at
-482x512) and has 0.49M/2.27M learned weights. Reduce widths or
-validation/test crops if memory is tight.
+10,656 values per pixel (~42 MiB at 32x32, 666 MiB at 128x128, 9.8 GiB at
+482x512). Reduce widths or validation/test crops if memory is tight.
 
 The network initializes to identity on [0, 1] using Greville spline
 coefficients, rectangular identity W (extra hidden units start at zero), zero
-b/c and a zero-offset generator head. All parameters train from scratch; **no Huawei/RGB checkpoint
-is loaded or frozen**. The generator projects the spectrum to eight context
-features to limit its width; this projection never replaces the raw neuron
-inputs. `encoder_type=light` uses the existing single-wavelet-scale generator;
-`full` selects its two-scale counterpart. Padding/cropping handles arbitrary
+b/c and zero-offset generator heads. All parameters train from scratch; **no Huawei/RGB/MST++ checkpoint
+is loaded or frozen**. Padding/cropping handles arbitrary
 positive image sizes. Pixel chunking and spline activation checkpointing bound
 individual basis evaluations and reduce saved training activations; the full
 generated parameter map still costs memory.
@@ -139,6 +157,7 @@ grid, explicitly disable the NTIRE-specific color terms with
 The standalone model also accepts unequal input/output dimensions and custom
 `hidden_channels`, but the paired NTIRE pipeline requires equal cube shapes.
 Configure architecture under `model.params.layers.cmkan.params`, including
+`encoder_type`, `mst_features`, `mst_stages`, `mst_head_channels`,
 `conditioning_channels`, `grid_size`, `spline_order`, `grid_range`,
 `pixel_chunk_size`, and `checkpoint_splines`. B-splines have compact support:
 values shifted beyond the extended knot support yield zero spline activation,

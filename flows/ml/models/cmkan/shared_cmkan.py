@@ -15,7 +15,7 @@ class SharedCmKAN(nn.Module):
 
     def __init__(
         self, in_channels: int, out_channels: int,
-        hidden_channels: Sequence[int] = (), grid_size: int = 5,
+        hidden_channels: Sequence[int] = (), grid_size: int = 7,
         spline_order: int = 3, grid_range: Sequence[float] = (0, 1),
         conditioning_channels: int = 8, encoder_type: str = "light",
         pixel_chunk_size: int = 1024, checkpoint_splines: bool = True,
