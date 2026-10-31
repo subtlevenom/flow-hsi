@@ -16,7 +16,12 @@ params:
         grid_size: 5
         spline_order: 3
         grid_range: [0.0, 1.0]
+        # mst: MST++ backbone + per-layer parameter heads; light/full: cmKAN encoders.
+        encoder_type: mst
+        mst_features: 32
+        mst_stages: 3
+        mst_head_channels: 64
+        # Only used by encoder_type light/full.
         conditioning_channels: 8
-        encoder_type: light
         pixel_chunk_size: 1024
         checkpoint_splines: true

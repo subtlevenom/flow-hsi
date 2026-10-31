@@ -13,6 +13,7 @@ from flows.cli.train import train_default
 from flows.core import DataSelector, ModelSelector, PipelineSelector
 from flows.ml.layers.kan.bspline import compute_bspline
 from flows.ml.layers.kan.shared_spline import SharedSplineLayer
+from flows.ml.layers.mst import MSTParameterGenerator
 from flows.ml.models.cmkan import SharedCmKAN
 from flows.ml.pipelines.shared_cmkan import SharedCmKANPipeline
 from flows.ml.datasets.ntire import datamodule as ntire_datamodule
@@ -169,13 +170,17 @@ def test_generator_shapes_composition_and_backward(channels, out_channels, encod
     (None, (1592, 2408, 1558)),
     ("[48,64,48,32]", (1592, 3208, 3176, 1608, 1062)),
 ])
-@pytest.mark.parametrize("encoder_type", ["light", "full"])
+@pytest.mark.parametrize("encoder_type", [None, "light", "full"])
 def test_configured_depth_generator_shapes_and_backward(hidden, sizes, encoder_type):
-    options = {"model.params.layers.cmkan.params.encoder_type": encoder_type}
+    options = {}
+    if encoder_type is not None:
+        options["model.params.layers.cmkan.params.encoder_type"] = encoder_type
     if hidden is not None:
         options["model.params.layers.cmkan.params.hidden_channels"] = hidden
     config = configuration(**options)
     model = ModelSelector.select(config.model).layers.cmkan
+    assert model.encoder_type == (encoder_type or "mst")
+    assert isinstance(model.encoder, MSTParameterGenerator) == (encoder_type is None)
     widths = [31, *config.model.params.layers.cmkan.params.hidden_channels, 31]
     assert widths == ([31, 48, 48, 31] if hidden is None else [31, 48, 64, 48, 32, 31])
     assert len(model.spline_layers) == len(sizes)
@@ -215,10 +220,73 @@ def test_cached_conditioning_chunk_equivalence_and_checkpoint_roundtrip(tmp_path
 
 
 @pytest.mark.parametrize("shape", [(1, 3, 1, 1), (1, 3, 2, 5)])
-def test_tiny_signals(shape):
-    model = SharedCmKAN(3, 3, conditioning_channels=4)
+@pytest.mark.parametrize("encoder_type", ["light", "mst"])
+def test_tiny_signals(shape, encoder_type):
+    model = SharedCmKAN(3, 3, conditioning_channels=4, encoder_type=encoder_type,
+                        mst_features=8, mst_stages=1, mst_head_channels=8)
     x = torch.rand(shape)
     torch.testing.assert_close(model(x), x)
+
+
+def small_mst(channels, out_channels, **kwargs):
+    return SharedCmKAN(channels, out_channels, hidden_channels=[6], encoder_type="mst",
+                       mst_features=8, mst_stages=2, mst_head_channels=16, **kwargs)
+
+
+def test_mst_feature_and_parameter_shapes_with_default_widths():
+    model = SharedCmKAN(31, 31, hidden_channels=[48, 48], encoder_type="mst")
+    generator = model.encoder
+    assert len(generator.heads) == 3
+    assert [h.out_channels for h in generator.heads] == [1592, 2408, 1558]
+    assert not hasattr(model, "conditioning_projection")
+    x = torch.rand(1, 31, 9, 11)
+    features = generator.features(x)
+    assert features.shape == (1, 32, 9, 11)
+    parameters = model.generate_parameters(x)
+    assert parameters.shape == (1, 5558, 9, 11)
+    assert not parameters.count_nonzero()
+    torch.testing.assert_close(model.apply_parameters(x, parameters), x)
+
+
+@pytest.mark.parametrize("channels,out_channels", [(7, 7), (7, 4), (31, 31)])
+@pytest.mark.parametrize("hw", [(1, 1), (9, 11), (7, 13)])
+def test_mst_gradients_reach_backbone_heads_and_splines(channels, out_channels, hw):
+    model = small_mst(channels, out_channels, pixel_chunk_size=17)
+    x = torch.rand(1, channels, *hw)
+    parameters = model.generate_parameters(x)
+    assert parameters.shape == (1, model.size, *hw)
+    assert model.size == sum(8 + i * o + 2 * o
+                             for i, o in [(channels, 6), (6, out_channels)])
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    for _ in range(2):
+        optimizer.zero_grad()
+        y = model(x)
+        assert y.shape == (1, out_channels, *hw)
+        (y - 0.3).square().mean().backward()
+        optimizer.step()
+    generator = model.encoder
+    for module in (generator.stem, generator.shared_head[0], *generator.heads):
+        assert module.weight.grad.abs().sum() > 0
+    assert any(p.grad is not None and p.grad.abs().sum() > 0
+               for p in generator.body.parameters())
+    for layer in model.spline_layers:
+        assert layer.base_parameters.grad[:layer.coef_size].abs().sum() > 0
+    assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+
+
+def test_mst_cached_predictor_and_chunk_equivalence():
+    model = small_mst(5, 5, pixel_chunk_size=7)
+    with torch.no_grad():
+        for head in model.encoder.heads:
+            head.weight.normal_(std=0.01)
+    model.eval()
+    context, x = torch.rand(1, 5, 9, 11), torch.rand(1, 5, 9, 11)
+    parameters = model.generate_parameters(context)
+    prediction = model.predictor(context)
+    torch.testing.assert_close(prediction(x), model.apply_parameters(x, parameters))
+    expected = model(x)
+    model.pixel_chunk_size = 10000
+    torch.testing.assert_close(model(x), expected)
 
 
 @pytest.mark.parametrize("kwargs", [
