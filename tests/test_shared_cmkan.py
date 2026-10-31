@@ -1,10 +1,13 @@
 from pathlib import Path
+import runpy
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
 from hydra import compose, initialize_config_dir
-from omegaconf import OmegaConf
+from omegaconf import MISSING, OmegaConf
 
 from flows.cli.train import train_default
 from flows.core import DataSelector, ModelSelector, PipelineSelector
@@ -12,6 +15,7 @@ from flows.ml.layers.kan.bspline import compute_bspline
 from flows.ml.layers.kan.shared_spline import SharedSplineLayer
 from flows.ml.models.cmkan import SharedCmKAN
 from flows.ml.pipelines.shared_cmkan import SharedCmKANPipeline
+from flows.ml.datasets.ntire import datamodule as ntire_datamodule
 
 
 @pytest.fixture(autouse=True)
@@ -47,6 +51,51 @@ def test_default_ntire_paths_and_optional_root_override():
     for split, folder in (("train", "train"), ("val", "test"), ("test", "test")):
         for domain in ("source", "target"):
             assert overridden.data.params[split][domain] == f"/custom/NTIRE/dataset/{folder}/{domain}"
+
+
+@pytest.mark.parametrize("override", [None, "/custom/NTIRE/dataset"])
+def test_actual_cli_reaches_datamodule_setup_without_dropping_root(tmp_path, monkeypatch, override):
+    source, target = tmp_path / "source", tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    cube = np.full((128, 128, 31), 0.5, dtype=np.float32)
+    np.save(source / "sample.npy", cube)
+    np.save(target / "sample.npy", cube)
+    requested_paths = []
+    original_paired_paths = ntire_datamodule.paired_paths
+
+    def paired_paths(source_path, target_path):
+        requested_paths.append((source_path, target_path))
+        return original_paired_paths(str(source), str(target))
+
+    def fit(model, datamodule, ckpt_path):
+        datamodule.setup("fit")
+        assert datamodule.train_dataset[0][0].shape == (31, 32, 32)
+        assert datamodule.val_dataset[0][0].shape == (31, 128, 128)
+
+    monkeypatch.setattr(ntire_datamodule, "paired_paths", paired_paths)
+    monkeypatch.setattr("flows.cli.train.L.Trainer",
+                        lambda **kwargs: SimpleNamespace(fit=fit))
+    argv = ["main.py", "--config-name", "shared_cmkan", "task=train"]
+    if override is not None:
+        argv.append(f"dataset_root={override}")
+    monkeypatch.setattr(sys, "argv", argv)
+    runpy.run_path(str(Path(__file__).resolve().parents[1] / "main.py"), run_name="__main__")
+    expected_root = override or configuration().dataset_root
+    assert requested_paths == [
+        (f"{expected_root}/train/source", f"{expected_root}/train/target"),
+        (f"{expected_root}/test/source", f"{expected_root}/test/target"),
+    ]
+
+
+def test_missing_root_reproduces_reported_setup_failure():
+    from omegaconf.errors import InterpolationToMissingValueError
+
+    config = configuration()
+    config.dataset_root = MISSING
+    dm = DataSelector.select(config.data)
+    with pytest.raises(InterpolationToMissingValueError, match="dataset_root"):
+        dm.setup("fit")
 
 
 def test_neuron_matches_explicit_shift_before_spline_weighted_sum():
