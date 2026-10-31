@@ -370,7 +370,7 @@ class LightCMEncoder(torch.nn.Module):
     def __init__(self, in_channels:int, out_channels:int):
         super().__init__()
 
-        MID_CHANNELS = 3 + 12
+        MID_CHANNELS = 5 * in_channels
         self.encoder = LightEncoder2D(in_channels, MID_CHANNELS, 3)
 
         self.norm1 = LayerNorm(MID_CHANNELS)

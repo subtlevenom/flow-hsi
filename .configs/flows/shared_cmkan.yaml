@@ -1,0 +1,20 @@
+task: train
+experiment: cmkan.shared-spline.ntire
+save_dir: .experiments
+accelerator: gpu
+devices: [0]
+resume: false
+epochs: 71
+save_freq: 1
+visualize_freq: 5
+preview_size: 128
+val_every_n_epochs: 1
+swa: false
+spectral_channels: 31
+dataset_root: ???
+
+defaults:
+  - model: shared_cmkan
+  - data: ntire_shared_cmkan
+  - pipeline: shared_cmkan
+  - _self_

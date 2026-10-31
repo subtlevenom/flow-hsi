@@ -1,0 +1,21 @@
+name: flow
+params:
+  metadata:
+    - layer: cmkan
+      inputs: [src]
+      outputs: [res]
+  layers:
+    cmkan:
+      model: cmkan.SharedCmKAN
+      params:
+        in_channels: ${spectral_channels}
+        out_channels: ${spectral_channels}
+        hidden_channels:
+          - ${spectral_channels}
+        grid_size: 5
+        spline_order: 3
+        grid_range: [0.0, 1.0]
+        conditioning_channels: 8
+        encoder_type: light
+        pixel_chunk_size: 1024
+        checkpoint_splines: true

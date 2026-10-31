@@ -35,6 +35,100 @@ python main.py sample-image-data -i /data/korepanov/color-transfer/huawei/src -o
 $ python main.py
 $ python main.py task=test
 
+## NTIRE: conditioned shared-spline cmKAN
+
+Starting from `usgs-unet`, `cmkan.SharedCmKAN` implements the neuron
+`y_j = c_j + sum_i W_ji * psi(x_i + b_j)`. Each layer has **one univariate
+B-spline**, shared across its receiving neurons and input edges; `W` is a
+full independent edge-weight matrix, and `b` and `c` are receiving-neuron
+shift and output-bias vectors. There is no learned input calibration, SiLU
+residual, activation after the weighted sum, or output clipping. Successive
+layers supply the outer nonlinear transformations. The spline uses the
+existing cmKAN knot construction and Cox-de Boor recurrence.
+
+The original illumination/wavelet/attention and learned-basis conditioning
+generator is retained. Its output is now a concatenation of **spline
+coefficients, W, b, c for every layer**. A layer with dimensions I -> O
+generates `grid_size + spline_order + O*I + 2*O` values per pixel, rather
+than independent edge splines. A learned base parameter vector plus
+generated offsets defines each local mapping. Thus a curve is shared within
+each layer **at a conditioned pixel**, not forced to be identical across
+all image locations. `predictor(context)` caches the local parameter field
+for applying the same mapping to another signal on the same batch/spatial
+grid, preserving existing cmKAN conditioning semantics.
+
+The default network is 31 -> 31 -> 31. It initializes to identity on [0, 1]
+using Greville spline coefficients, identity W, zero b/c and a zero-offset
+generator head. All parameters train from scratch; **no Huawei/RGB checkpoint
+is loaded or frozen**. The generator projects the spectrum to eight context
+features to limit its width; this projection never replaces the raw neuron
+inputs. `encoder_type=light` uses the existing single-wavelet-scale generator;
+`full` selects its two-scale counterpart. Padding/cropping handles arbitrary
+positive image sizes. Pixel chunking and spline activation checkpointing bound
+individual basis evaluations and reduce saved training activations; the full
+generated parameter map still costs memory.
+
+This repository's NTIRE task is **paired HSI-to-HSI color correction**, not
+RGB-to-HSI reconstruction. Use the existing prepared dataset: paired,
+same-named `.npy` files in HWC order, 31 ordered bands at **400:10:700 nm**:
+
+```text
+<NTIRE_DATASET_ROOT>
+  train/source/<name>.npy
+  train/target/<name>.npy
+  test/source/<name>.npy
+  test/target/<name>.npy
+```
+
+The loader checks paired names/shapes, memory-maps cubes, and extracts aligned
+random 32x32 training patches with flips. Validation uses deterministic 128x128
+center crops to bound the generated parameter field; files must be at least
+128 pixels on each spatial axis by default. Set `data.params.val.crop_size=0`
+for full-cube validation if memory permits, or a smaller crop for smaller files.
+The test split uses full cubes, trimmed to multiples of four by the existing
+loader. Float arrays should already use consistent source/target unit-scale
+normalization (integer arrays retain the existing dtype scaling). A split's
+optional `norm` divides **source only**, not target. This config reuses the
+branch's prepared `train`/`test` split convention; it does not download or
+guess an NTIRE challenge edition or convert raw challenge files.
+
+After installing the repository dependencies, start training with:
+
+```powershell
+python main.py --config-name shared_cmkan task=train "dataset_root=C:\path\to\NTIRE\dataset"
+```
+
+**Replace `C:\path\to\NTIRE\dataset` with your actual prepared dataset root.**
+`dataset_root` is required; there is no machine-specific fallback path.
+For Linux use `dataset_root=/your/actual/NTIRE/dataset`. Defaults are GPU 0,
+71 epochs, AdamW at 2e-4 with cosine decay, and paired MAE + floored MRAE +
+spectral cosine + adjacent-band gradient + integrated CIE Lab + 0.15 SSIM
+loss. Metrics include all-band PSNR/SAM and integrated CIEDE2000.
+Checkpoints are ranked by `val_mrae` in
+`.experiments\cmkan.shared-spline.ntire\logs\checkpoints`; append `resume=true`
+to resume this experiment's `last.ckpt`. Append `accelerator=cpu devices=1`
+for CPU execution.
+
+One `spectral_channels=N` override updates model input/output/hidden widths,
+the loader's shape check and the pipeline. For a different ordered spectral
+grid, explicitly disable the NTIRE-specific color terms with
+`pipeline.params.use_ntire_colorimetry=false pipeline.params.perceptual_weight=0`;
+31-channel count alone does not establish wavelength/colorimetric compatibility.
+The standalone model also accepts unequal input/output dimensions and custom
+`hidden_channels`, but the paired NTIRE pipeline requires equal cube shapes.
+Configure architecture under `model.params.layers.cmkan.params`, including
+`conditioning_channels`, `grid_size`, `spline_order`, `grid_range`,
+`pixel_chunk_size`, and `checkpoint_splines`. B-splines have compact support:
+values shifted beyond the extended knot support yield zero spline activation,
+not extrapolation; choose a range consistent with dataset normalization.
+
+Windows dependency caveat: the existing `requirements.txt` pins NumPy 2.2.6,
+but the torchvision 0.19.0 Windows wheel requires NumPy < 2. This implementation
+was exercised in an isolated Python 3.10.12 environment with PyTorch 2.4.0+cpu,
+torchvision 0.19.0 and an explicit NumPy 1.26.4 resolver override. The repository
+dependency pins are unchanged; use a compatible environment rather than
+assuming a clean Windows installation of those pins will resolve.
+
 ## NTIRE: shared spectral encoder, two independent experiments
 
 The new encoder-decoder baseline is available through two **separate runs**:

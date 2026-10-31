@@ -176,14 +176,10 @@ class USGSUNetPipeline(L.LightningModule):
                 "sharpness_loss": sharpness}
 
     @torch.no_grad()
-    def quality_metrics(self, pred: torch.Tensor, target: torch.Tensor):
-        # PSNR uses all 31 bands and a fixed unit data range. DeltaE is CIEDE2000
-        # in integrated Lab, not an arbitrary 3-band RGB slice.
+    def spectral_quality_metrics(self, pred: torch.Tensor, target: torch.Tensor):
+        # PSNR uses all spectral bands and a fixed unit data range.
         mse = (pred.float() - target.float()).square().flatten(1).mean(dim=1)
         psnr = (-10.0 * torch.log10(mse.clamp_min(1e-12))).mean()
-        de = _delta_E_CIE2000(
-            self.colorimetry(pred), self.colorimetry(target),
-        ).mean().float()
         pred, target = pred.float(), target.float()
         pred_norm, target_norm = pred.norm(dim=1), target.norm(dim=1)
         cosine = (pred * target).sum(dim=1) / (
@@ -193,7 +189,15 @@ class USGSUNetPipeline(L.LightningModule):
         # exactly one zero spectrum scores pi/2 rather than poisoning the mean.
         cosine = torch.where((pred_norm == 0) & (target_norm == 0), 1.0, cosine)
         sam = torch.rad2deg(cosine.clamp(-1.0, 1.0).acos()).mean()
-        return {"psnr": psnr, "de": de, "sam": sam}
+        return {"psnr": psnr, "sam": sam}
+
+    @torch.no_grad()
+    def quality_metrics(self, pred: torch.Tensor, target: torch.Tensor):
+        metrics = self.spectral_quality_metrics(pred, target)
+        metrics["de"] = _delta_E_CIE2000(
+            self.colorimetry(pred), self.colorimetry(target),
+        ).mean().float()
+        return metrics
 
     def log_quality(self, pred, target, prefix):
         for name, value in self.quality_metrics(pred, target).items():
