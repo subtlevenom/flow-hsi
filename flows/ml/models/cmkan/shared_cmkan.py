@@ -7,6 +7,7 @@ from torch.utils.checkpoint import checkpoint
 
 from flows.ml.layers.encoders import CMEncoder, LightCMEncoder
 from flows.ml.layers.kan.shared_spline import SharedSplineLayer
+from flows.ml.layers.mst import MSTParameterGenerator
 
 
 class SharedCmKAN(nn.Module):
@@ -18,12 +19,13 @@ class SharedCmKAN(nn.Module):
         spline_order: int = 3, grid_range: Sequence[float] = (0, 1),
         conditioning_channels: int = 8, encoder_type: str = "light",
         pixel_chunk_size: int = 1024, checkpoint_splines: bool = True,
+        mst_features: int = 32, mst_stages: int = 3, mst_head_channels: int = 64,
     ):
         super().__init__()
         if conditioning_channels < 1 or pixel_chunk_size < 1:
             raise ValueError("conditioning_channels and pixel_chunk_size must be positive.")
-        if encoder_type not in ("light", "full"):
-            raise ValueError("encoder_type must be 'light' or 'full'.")
+        if encoder_type not in ("light", "full", "mst"):
+            raise ValueError("encoder_type must be 'light', 'full' or 'mst'.")
         dimensions = [in_channels, *hidden_channels, out_channels]
         self.in_channels, self.out_channels = in_channels, out_channels
         self.pixel_chunk_size = pixel_chunk_size
@@ -34,6 +36,13 @@ class SharedCmKAN(nn.Module):
         ])
         self.parameter_sizes = tuple(layer.size for layer in self.spline_layers)
         self.size = sum(self.parameter_sizes)
+        self.encoder_type = encoder_type
+        if encoder_type == "mst":
+            # MST++ consumes the raw spectrum; its heads emit every layer's vector.
+            self.encoder = MSTParameterGenerator(
+                in_channels, self.parameter_sizes, mst_features, mst_stages, mst_head_channels,
+            )
+            return
         # This projection is only for context generation; neurons consume x directly.
         self.conditioning_projection = nn.Conv2d(in_channels, conditioning_channels, 1)
         encoder = LightCMEncoder if encoder_type == "light" else CMEncoder
@@ -43,6 +52,8 @@ class SharedCmKAN(nn.Module):
 
     def generate_parameters(self, context: torch.Tensor):
         self._validate_signal(context, self.in_channels)
+        if self.encoder_type == "mst":
+            return self.encoder(context)
         h, w = context.shape[-2:]
         # The original wavelet generator requires multiples of four, while
         # the pointwise mapping itself supports arbitrary positive image sizes.
