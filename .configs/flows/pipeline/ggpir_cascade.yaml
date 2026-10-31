@@ -1,0 +1,15 @@
+name: ggpir_cascade
+params:
+  lr: 2e-4
+  min_lr: 1e-6
+  weight_decay: 0.05
+  pretrain_epochs: 0
+  masked_val_batches: 0
+  mrae_weight: 0.0
+  spectral_weight: 0.0
+  spectral_gradient_weight: 0.0
+  perceptual_weight: 0.0
+  color_weight: 0.0
+  spectral_response: null
+  ssim_weight: 0.15
+  sharpness_weight: 0.0

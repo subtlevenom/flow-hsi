@@ -58,54 +58,35 @@ come from `data.params.train`; validation uses full images. The default device i
 
 ### Encoder and task heads
 
-The model uses a **GazeTR-inspired, per-pixel receptive-field token transformer**,
-not the original image-level gaze regressor. The existing
-`ggpir.SpectralEncoderDecoder` factory entrypoint now constructs this model.
-The encoder has four **full-resolution** receptive-field branches:
+The `ggpir.SpectralEncoderDecoder` factory now builds an **MSAB encoder-decoder
+with concatenated feature skips and an independent full-resolution detail path**.
+It reuses the repository's MST++ spectral-attention blocks, replacing per-pixel
+query fusion and dilated branches.
 
-| Branch | Residual-block dilations | Width |
-|---|---|---|
-| Small | `[1]` | 48 |
-| Medium | `[1, 2]` | 96 |
-| Large | `[1, 2, 3]` | 128 |
-| Extra-large | `[1, 2, 3, 4]` | 160 |
-| Independent detail | two dilation-1 blocks | 48 |
+| Level | Resolution | Width | MSAB blocks |
+|---|---|---|---|
+| Fine analysis | Full | 48 | 2 |
+| Medium analysis | Half | 96 | 2 |
+| Bottleneck | Quarter | 192 | 4 |
+| Medium synthesis | Half | 96 | 2 |
+| Fine synthesis | Full | 48 | 2 |
 
-A stride-1 3x3 stem feeds all branches. Each residual block has two dense
-3x3 convolutions at its listed dilation, GELU between them and a residual
-scale of 0.1. Every feature remains on the original pixel grid; larger
-receptive fields come from block depth and dilation, not downsampling.
-Learned spatial/channel sigmoid gates connect small→medium, small→large,
-medium→large, and small/medium/large→extra-large. Gates start with bias -3,
-so cross-branch contributions are initially small but trainable. The
-independent detail path receives no cross-branch connections.
+Learned stride-2 convolutions form the pyramid. Transposed convolutions
+upsample; each synthesis level concatenates its corresponding analysis features,
+projects the concatenation, and refines it with MSAB. Spectral attention uses
+spatially aggregated channel affinities independently for each image; its
+feed-forward blocks include depthwise spatial convolutions.
 
-Encoder residual blocks have two dense 3x3 convolutions with GELU between
-them and a residual scale of 0.1. Unlike stock ResNet-18, there is no
-max-pooling, aggressive input stride, BatchNorm or image-wide normalization.
-Learned pointwise projections adapt the shared stem to each branch width and
-adapt gated connections between unequal widths. Pointwise token projections
-then align all branch features to 64 token channels. A
-separate 31 -> 64 pixel projection preserves the current spectrum. The pixel,
-four branch, and detail signals at each location become six tokens, with
-learned branch-identity embeddings.
-Two four-head query-transformer blocks fuse these tokens independently at
-every pixel. The initial query combines the pixel token and detail token;
-attention weights therefore depend on the current spectrum and neighborhood.
-No attention mixes different output pixels or uses image-wide statistics.
-The branch feature vectors are not compressed into candidate output spectra.
+The stem also feeds two full-resolution gated local detail blocks without
+downsampling. Detail and synthesis features are concatenated and fused with a
+3x3 convolution plus a stem residual. There is no CLS or normalized single-query
+interface. Each task head adds two local blocks and a 3x3, 48-to-31 projection.
 
-Both task heads use two full-resolution gated local blocks and a 64 -> 31
-projection. There is **no mandatory spatial bottleneck, absolute coordinate
-embedding, Gaussian coefficient head, or output clipping**.
-No pooling, resizing, or multiple-of-four padding is used; arbitrary positive
-spatial sizes are supported. The largest isolated branch has a nominal
-43-pixel receptive field through its four blocks. Hierarchical cross-branch
-gates and the two-block task head increase the maximum nominal receptive field
-to 87 pixels, so use a conservative 44-pixel input halo when comparing tiled
-and full predictions away from true borders. Crop origins need no stride
-alignment. This controls convolutional context; it does not guarantee learned
-accuracy.
+Right/bottom replicate padding to a multiple of four supports arbitrary positive
+sizes, including tiny test inputs. Outputs are cropped back to the original size.
+Because attention is image-conditioned, crop and full-image predictions need not
+match even with a large halo; validation uses full images. No output clipping,
+absolute coordinates, or Gaussian coefficient head is used.
 
 The **pretraining head** predicts all 31 channels directly, without adding the
 input to the output. Full-resolution features see only visible values and explicit
@@ -124,16 +105,14 @@ token-dropping ViT MAE.
 The **fine-tuning head** predicts a residual added to the original source HSI.
 Small nonzero output weights initialize it near identity without blocking
 gradients. It is initialized separately, not transferred as a calibrated-output
-mapping from the reconstruction task. The shared encoder includes the branch
-extractors, detail path and query transformer.
+mapping from the reconstruction task. The shared encoder contains the entire
+analysis/synthesis backbone, skips, and detail path; all are transferred.
 
-Activation checkpointing is enabled for local encoder blocks and fusion.
-`model.params.layers.spectral.params.pixel_chunk_size=4096` bounds each fusion
-operation without cropping the convolutional context; it changes execution,
-not the receptive field. `checkpoint_blocks=false` disables recomputation.
-Full-resolution training still uses substantial memory; reduce the batch size
-if needed. These execution settings do not affect checkpoint compatibility.
-For a cheaper fusion ablation, set `fusion_depth=1`; old U-Net options no longer apply.
+Activation checkpointing is enabled for MSAB and detail blocks.
+`model.params.layers.spectral.params.checkpoint_blocks=false` disables it.
+`stage_blocks=[2,2,4]` controls analysis/bottleneck depth; synthesis mirrors
+the first two depths. `channels=48` sets the base width, doubling per level.
+Old branch, query-fusion, and pixel-chunk options are no longer supported.
 
 ### Transfer, schedule and resume
 
@@ -144,7 +123,7 @@ checkpoint selection; training metrics follow the currently selected domain.
 The best encoder is exported atomically, on rank zero, to:
 
 ```text
-.experiments\spectral.pretrain.gazetr.fullrf.wide.ntire\logs\checkpoints\encoder.pt
+.experiments\spectral.pretrain.msab.unet.ntire\logs\checkpoints\encoder.pt
 ```
 
 The artifact contains only encoder weights, architecture metadata and selection
@@ -158,7 +137,7 @@ explicitly. To deliberately train a random-encoder ablation:
 python main.py --config-name finetune pipeline.params.encoder_checkpoint=null pipeline.params.allow_random_encoder=true experiment=spectral.scratch.ntire
 ```
 
-Fine-tuning freezes the encoder, including query fusion, for the first **500 optimizer updates, capped
+Fine-tuning freezes the shared analysis/synthesis backbone for the first **500 optimizer updates, capped
 at the end of epoch 0**, then fine-tunes the complete model. With fewer than
 500 updates per epoch, it unfreezes at epoch 1. Gradient accumulation does not
 count microbatches as separate optimizer updates. Decoder LR starts at **2e-4**;
@@ -195,8 +174,8 @@ Checkpoint selection remains masked MAE for pretraining and MRAE for restoration
 SAM logs now use degrees, including CSV logs; do not compare new values
 directly with older radian logs (multiply old values by 180/pi).
 
-The runs have separate output directories: `spectral.pretrain.gazetr.fullrf.wide.ntire` and
-`spectral.finetune.gazetr.fullrf.wide.ntire`.
+The runs have separate output directories: `spectral.pretrain.msab.unet.ntire` and
+`spectral.finetune.msab.unet.ntire`.
 Each resumes its own `last.ckpt` by default, including
 optimizer, scheduler, epoch and update count. Full fine-tuning resume does not
 reload the initial encoder artifact, so that artifact is no longer required.
@@ -206,7 +185,7 @@ experiment, not a demonstrated accuracy gain; compare against the scratch
 ablation on held-out scenes.
 
 **Restart both pretraining and fine-tuning for this model.** Encoder metadata
-is now version 6 and identifies the full-resolution dilated query transformer; older encoder artifacts and
+is now version 7 and identifies the MSAB encoder-decoder; older encoder artifacts and
 full checkpoints are rejected explicitly. Historical experiment files are not
 renamed or deleted, and the new directories avoid accidental old-checkpoint
 resume. The public model head and pipeline phase are now `finetune`, and all
@@ -215,6 +194,104 @@ spectral experiment/config commands use `finetune` rather than the old name.
 Both experiments inherit the NTIRE loader settings described below. If host
 RAM is tight, append `data.params.num_workers=0 data.params.pin_memory=false`
 to isolate prefetch/worker pressure before tuning workers upward.
+
+### Controlled architecture and training ablations
+
+For direct paired training of the coarse-to-fine `GGPIRCascade` reference
+from `nick/usgs-mst`, with **no masked pretraining or encoder artifact**:
+
+```powershell
+python main.py --config-name train_ggpir_cascade task=train
+```
+
+This selects quarter/half/full-resolution stages with 3/5/7 Gaussian units and
+cross-scale spectral attention, L1 + 0.15 SSIM, AdamW LR 2e-4 / weight decay
+0.05, and 20-epoch cosine decay to 1e-6. Checkpoints maximize validation PSNR.
+The model reuses this branch's MST implementation; the reference's unresolved
+relative MST import and registry decorator are replaced by the Flow factory.
+It preserves the reference's circular spectral windows and additive scale fusion.
+Training overrides crop/batch to **128 / 4** for this memory-heavy model only;
+the NTIRE dataset file and paths are unchanged. On a smaller GPU use
+`data.params.train.batch_size=1`. Outputs are isolated under
+`.experiments\ggpir.cascade.l1_ssim.ntire`; existing runs are not changed.
+
+The baseline remains `ggpir.SpectralEncoderDecoder`; its version-7 encoder
+artifacts and full checkpoints remain compatible. The following independent
+classes use the same 48/96/192 pyramid, concatenated skips, full-resolution detail
+path, and task heads:
+
+| Hypothesis | Factory class (under `ggpir`) | Pretraining config | Fine-tuning config |
+|---|---|---|---|
+| Local mixing vs image-conditioned spectral attention | `ConvolutionalSpectralEncoderDecoder` | `pretrain_conv` | `finetune_conv` |
+| Explicit global band calibration | `GlobalCalibratedSpectralEncoderDecoder` | `pretrain_global` | `finetune_global` |
+| Iterative residual restoration | `IterativeSpectralEncoderDecoder` | `pretrain_iterative` | `finetune_iterative` |
+
+The convolutional control replaces MSAB attention with a local pointwise mixer
+and depthwise spatial branch, retaining its normalized 4x feed-forward block.
+Its parameter budget stays within 5% of the baseline; it is not a narrow toy
+U-Net. The global variant computes per-band mean and standard deviation from
+the visible source, then applies near-identity feature gain/bias conditioning.
+It never reads target statistics.
+
+The iterative variant uses **three independently parameterized MSAB U-Nets**.
+Intermediate 31-band residual corrections update the input estimate passed to
+the next stage. These correction heads belong to the transferred backbone.
+Hidden source bands are zeroed before the first stage; subsequent stages see
+only visible data plus learned estimates, never true hidden bands. The
+pretraining head still predicts directly; fine-tuning adds its final correction
+to the refined estimate. This tests repeated restoration, but also increases
+capacity and compute by approximately threefold; it is not parameter-matched.
+
+Run each architecture's pretraining before its fine-tuning:
+
+```powershell
+python main.py --config-name pretrain_conv task=train
+python main.py --config-name finetune_conv task=train
+python main.py --config-name pretrain_global task=train
+python main.py --config-name finetune_global task=train
+python main.py --config-name pretrain_iterative task=train
+python main.py --config-name finetune_iterative task=train
+```
+
+All configs inherit the existing NTIRE paths, crop, batch, masking, losses and
+schedule. Each architecture has separate experiment directories and its own
+pretraining artifact path. Cross-architecture transfer/resume is rejected.
+`model.params.layers.spectral.params.iterations=2` changes the iterative stage
+count; use the same value for both phases, **new experiment names**, and point
+fine-tuning at the corresponding new pretraining artifact. Iterative training
+needs more GPU memory; reduce `data.params.train.batch_size` if necessary and
+use gradient accumulation to retain a comparable effective batch.
+
+Three additional configs isolate training hypotheses on the **baseline MSAB
+architecture**:
+
+| Config | Difference from baseline fine-tuning |
+|---|---|
+| `finetune_scratch` | No pretrained encoder; explicitly allows random initialization. All other settings, including the frozen warmup, stay unchanged. |
+| `finetune_fast_encoder` | Encoder LR 2e-4 instead of 2e-5; decoder LR, frozen warmup and losses unchanged. |
+| `finetune_psnr` | Pure all-band MSE; disables MAE and all auxiliary losses, ranks checkpoints by maximum validation PSNR. |
+
+```powershell
+python main.py --config-name finetune_scratch task=train
+python main.py --config-name finetune_fast_encoder task=train
+python main.py --config-name finetune_psnr task=train
+```
+
+The fast-encoder and PSNR runs reuse the baseline `encoder.pt`; scratch does
+not require pretraining. Their output directories are separate, so they do not
+resume or overwrite the baseline. For a later scratch run without frozen
+warmup, override `pipeline.params.freeze_encoder_steps=0` and assign another
+experiment name; that is a second ablation, not the controlled default.
+
+`pipeline.params.mae_weight` defaults to 1 and `mse_weight` to 0, preserving the
+baseline objective. `checkpoint_metric` defaults to `mrae`; selecting `psnr`
+also changes checkpoint mode to **max**, not min. MAE/MSE weights and the checkpoint metric are
+checked on full-checkpoint resume; use a fresh experiment when changing them.
+All runs still log the same unclipped, unit-range, per-image PSNR, MRAE,
+DeltaE, and SAM. Compare paired-restoration validation
+results on the same split, not masked-pretraining PSNR or older clipped metric
+implementations. Use comparable seeds and compute budgets; no variant is
+assumed to improve color fidelity or PSNR before evaluation.
 
 ## Legacy NTIRE: CM U-Net cascades with an optional Gaussian hypernetwork
 

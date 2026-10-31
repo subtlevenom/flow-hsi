@@ -10,16 +10,8 @@ params:
       params:
         head: pretrain
         spectral_channels: 31
-        channels: 64
-        branch_dilations:
-          - [1]
-          - [1, 2]
-          - [1, 2, 3]
-          - [1, 2, 3, 4]
-        branch_channels: [48, 96, 128, 160]
+        channels: 48
+        stage_blocks: [2, 2, 4]
         detail_depth: 2
-        fusion_depth: 2
-        heads: 4
         head_depth: 2
-        pixel_chunk_size: 4096
         checkpoint_blocks: true

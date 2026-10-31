@@ -1,0 +1,11 @@
+defaults:
+  - pretrain
+  - _self_
+experiment: spectral.pretrain.iterative.msab.unet.ntire
+model:
+  params:
+    layers:
+      spectral:
+        model: ggpir.IterativeSpectralEncoderDecoder
+        params:
+          iterations: 3

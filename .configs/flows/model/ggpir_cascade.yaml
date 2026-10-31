@@ -1,0 +1,20 @@
+name: flow
+params:
+  metadata:
+    - layer: cascade
+      inputs:
+        - src
+      outputs:
+        - res
+  layers:
+    cascade:
+      model: ggpir.GGPIRCascade
+      params:
+        in_channels: 31
+        out_channels: 31
+        proj_channels: 3
+        n_ggp_per_scale: [3, 5, 7]
+        gen_blocks: 1
+        gen_stage: 2
+        grad_checkpoint: true
+        cross_scale_attn: true

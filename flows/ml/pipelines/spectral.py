@@ -21,6 +21,9 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
         encoder_lr: float = 2e-5,
         freeze_encoder_steps: int = 500,
         visible_weight: float = 0.1,
+        mae_weight: float = 1.0,
+        mse_weight: float = 0.0,
+        checkpoint_metric: str = "mrae",
         **loss_params,
     ):
         super().__init__(model, pretrain_epochs=0, **loss_params)
@@ -30,6 +33,9 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
             raise ValueError("Require encoder_lr > 0, freeze_encoder_steps >= 0, visible_weight >= 0.")
         if phase == "pretrain" and encoder_checkpoint is not None:
             raise ValueError("Pretraining starts its own encoder; encoder_checkpoint must be null.")
+        if (not all(math.isfinite(v) and v >= 0 for v in (mae_weight, mse_weight))
+                or checkpoint_metric not in ("mrae", "psnr")):
+            raise ValueError("Require finite nonnegative MAE/MSE weights and metric mrae or psnr.")
         if self.network.head_type != phase:
             raise ValueError("The pipeline phase must match the model head.")
         self.phase = phase
@@ -38,6 +44,9 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
         self.encoder_lr = encoder_lr
         self.freeze_encoder_steps = freeze_encoder_steps
         self.visible_weight = visible_weight
+        self.mae_weight = mae_weight
+        self.mse_weight = mse_weight
+        self.checkpoint_metric = checkpoint_metric
         self._resuming = False
         self._best_masked_mae = math.inf
         self.save_hyperparameters(ignore=["model"])
@@ -57,7 +66,19 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
 
     @property
     def checkpoint_monitor(self) -> str:
-        return "val_masked_mae" if self.phase == "pretrain" else "val_mrae"
+        return "val_masked_mae" if self.phase == "pretrain" else f"val_{self.checkpoint_metric}"
+
+    @property
+    def checkpoint_mode(self) -> str:
+        return "max" if not self.pretraining and self.checkpoint_metric == "psnr" else "min"
+
+    def restoration_losses(self, pred, target):
+        terms = super().restoration_losses(pred, target)
+        mse = (pred.float() - target.float()).square().mean()
+        terms["loss"] = (terms["loss"] + (self.mae_weight - 1) * terms["mae"]
+                         + self.mse_weight * mse)
+        terms["mse"] = mse
+        return terms
 
     @property
     def pretraining(self) -> bool:
@@ -85,7 +106,7 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
                 or artifact.get("architecture") != self.network.encoder.architecture()):
             raise ValueError(
                 f"Incompatible encoder artifact: {path}. "
-                "The receptive-field query transformer requires new pretraining."
+                "The MSAB encoder-decoder requires new pretraining."
             )
         self.network.encoder.load_state_dict(artifact["encoder_state_dict"], strict=True)
         Logger.info(f"Loaded pretrained spectral encoder from {path}.")
@@ -194,6 +215,10 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
             "best_masked_mae": min(self._best_masked_mae, float(metric))
             if metric is not None else self._best_masked_mae,
             "freeze_encoder_steps": self.freeze_encoder_steps,
+            "objective_ablation": {
+                "mae_weight": self.mae_weight, "mse_weight": self.mse_weight,
+                "checkpoint_metric": self.checkpoint_metric,
+            },
         }
 
     def on_load_checkpoint(self, checkpoint) -> None:
@@ -204,7 +229,7 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
                 raise ValueError("Resume requires matching spectral encoder and decoder architecture.")
         else:
             raise ValueError(
-                "Legacy checkpoints cannot resume the receptive-field query transformer. "
+                "Legacy checkpoints cannot resume the MSAB encoder-decoder. "
                 "Restart pretraining and fine-tuning in the new experiment directories."
             )
         if (metadata.get("phase") != self.phase
@@ -212,6 +237,12 @@ class SpectralExperimentPipeline(usgs_unet.USGSUNetPipeline):
                 or metadata.get("freeze_encoder_steps") != self.freeze_encoder_steps):
             raise ValueError("Resume requires matching spectral phase, encoder, and freeze schedule.")
         self._best_masked_mae = metadata["best_masked_mae"]
+        objective = metadata.get("objective_ablation", {
+            "mae_weight": 1.0, "mse_weight": 0.0, "checkpoint_metric": "mrae",
+        })
+        if objective != {"mae_weight": self.mae_weight, "mse_weight": self.mse_weight,
+                         "checkpoint_metric": self.checkpoint_metric}:
+            raise ValueError("Resume requires matching objective ablation and checkpoint metric.")
         self._resuming = True
 
     def configure_optimizers(self):

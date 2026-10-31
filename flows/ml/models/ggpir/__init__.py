@@ -12,3 +12,8 @@ from .ggpir import HSNet
 from .usgs_expert import USGSExpertPyramid, USGSExpertLevel, USGSExpertNet
 from .usgs_unet import ParallelHyperspectralUNets
 from .spectral_encoder_decoder import SpectralEncoderDecoder
+from .ggpir_cascade import GGPIRCascade
+from .spectral_variants import (
+    ConvolutionalSpectralEncoderDecoder, GlobalCalibratedSpectralEncoderDecoder,
+    IterativeSpectralEncoderDecoder,
+)

@@ -1,0 +1,12 @@
+defaults:
+  - train
+  - override model: ggpir_cascade
+  - override pipeline: ggpir_cascade
+  - _self_
+experiment: ggpir.cascade.l1_ssim.ntire
+epochs: 20
+data:
+  params:
+    train:
+      batch_size: 4
+      crop_size: 128

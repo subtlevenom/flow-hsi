@@ -14,7 +14,7 @@ from torchmetrics.functional.image import structural_similarity_index_measure
 from flows.core import ModelSelector, PipelineSelector
 from flows.cli.train import train_default
 from flows.ml.models.ggpir.spectral_encoder_decoder import (
-    ChannelLayerNorm, LocalBlock, PixelQueryBlock, ResidualConvBlock, SpectralEncoderDecoder,
+    ChannelLayerNorm, LocalBlock, SpectralEncoderDecoder,
 )
 from flows.ml.pipelines.spectral import SpectralExperimentPipeline
 
@@ -31,8 +31,7 @@ def cpu_workload():
 def network(head="pretrain", **options):
     params = dict(
         channels=8,
-        branch_dilations=((1,), (1, 2), (1, 2, 3), (1, 2, 3, 4)),
-        branch_channels=(8, 12, 16, 20), heads=2, pixel_chunk_size=128,
+        stage_blocks=(1, 1, 1),
     )
     params.update(options)
     return SpectralEncoderDecoder(head=head, **params)
@@ -89,64 +88,42 @@ def test_per_pixel_layernorm_is_independent_of_other_pixels():
     torch.testing.assert_close(norm(x)[..., 0, 0], norm(changed)[..., 0, 0])
 
 
-def test_full_resolution_branches_and_pixel_query_fusion():
+def test_msab_pyramid_skips_and_full_resolution_detail():
     model = network()
     x = torch.rand(1, 31, 17, 19)
     observed = []
     handles = [
-        path[-1].register_forward_hook(lambda module, inputs, output: observed.append(output.shape))
-        for path in [*model.encoder.branches, model.encoder.detail]
+        path.register_forward_hook(lambda module, inputs, output: observed.append(output.shape))
+        for path in [model.encoder.detail, *model.encoder.analysis, *model.encoder.synthesis]
     ]
     features = model.encoder(x)
     for handle in handles:
         handle.remove()
     assert features.shape == (1, 8, 17, 19)
     assert observed == [
-        (1, 8, 17, 19), (1, 12, 17, 19), (1, 16, 17, 19),
-        (1, 20, 17, 19), (1, 8, 17, 19),
+        (1, 8, 20, 20), (1, 8, 20, 20), (1, 16, 10, 10),
+        (1, 32, 5, 5), (1, 16, 10, 10), (1, 8, 20, 20),
     ]
-    assert [len(path) for path in model.encoder.branches] == [1, 2, 3, 4]
-    assert [[block.body[0].dilation[0] for block in path]
-            for path in model.encoder.branches] == [[1], [1, 2], [1, 2, 3], [1, 2, 3, 4]]
-    assert all(isinstance(path[0], ResidualConvBlock) for path in model.encoder.branches)
-    assert model.encoder.branch_embedding.shape == (6, 8)
-    assert len(model.encoder.fusion) == 2
-    assert all(isinstance(block, PixelQueryBlock) for block in model.encoder.fusion)
+    assert [len(path.blocks) for path in model.encoder.analysis] == [1, 1, 1]
+    assert [fuse.in_channels for fuse in model.encoder.skip_fusion] == [32, 16]
     assert all(isinstance(block, LocalBlock) for block in model.decoder.blocks)
     assert network("finetune").decoder.output.weight.count_nonzero() > 0
 
 
-def test_pixel_query_attention_does_not_mix_pixels_and_uses_context():
-    block = PixelQueryBlock(8, 2).eval()
-    query = torch.rand(3, 8)
-    tokens = torch.rand(3, 6, 8)
-    expected = block(query, tokens)
-    changed = tokens.clone()
-    changed[1, 2] += torch.arange(8).float()
-    actual = block(query, changed)
-    torch.testing.assert_close(actual[[0, 2]], expected[[0, 2]])
-    assert not torch.allclose(actual[1], expected[1])
-    assert not torch.allclose(block(query + torch.arange(8), tokens), expected)
-
-
 @pytest.mark.parametrize("head", ["pretrain", "finetune"])
-def test_common_pixels_are_invariant_for_unaligned_crops_and_other_images(head):
+def test_predictions_are_independent_of_other_images(head):
     model = network(head).eval()
     x = torch.rand(1, 31, 192, 196)
     with torch.no_grad():
         full = model(x)
-        patch = model(x[..., 7:183, 7:187])
         batched = model(torch.cat([x, torch.rand_like(x)]))
-    torch.testing.assert_close(patch[..., 48:-48, 48:-48],
-                               full[..., 55:135, 55:139], atol=2e-6, rtol=2e-5)
     torch.testing.assert_close(batched[:1], full, atol=2e-6, rtol=2e-5)
 
 
-def test_chunking_and_checkpointing_preserve_predictions_and_gradients():
+def test_checkpointing_preserves_predictions_and_gradients():
     model = network().train()
     plain = network(checkpoint_blocks=False).train()
     plain.load_state_dict(model.state_dict())
-    plain.encoder.pixel_chunk_size = 10000
     x = torch.rand(2, 31, 13, 15)
     expected = plain(x)
     actual = model(x)
@@ -159,24 +136,23 @@ def test_chunking_and_checkpointing_preserve_predictions_and_gradients():
 
 
 @pytest.mark.parametrize("head", ["pretrain", "finetune"])
-def test_training_crop_196_matches_full_256_common_center(head):
+def test_training_crop_196_and_full_256_have_finite_predictions(head):
     model = network(head).eval()
     x = torch.rand(1, 31, 256, 256)
     with torch.no_grad():
         full = model(x)
         patch = model(x[..., 27:223, 27:223])
-    torch.testing.assert_close(patch[..., 64:132, 64:132],
-                               full[..., 91:159, 91:159], atol=2e-6, rtol=2e-5)
+    assert patch.shape == (1, 31, 196, 196)
+    assert torch.isfinite(full).all() and torch.isfinite(patch).all()
 
 
-def test_output_uses_neighbor_spectra_but_has_bounded_spatial_receptive_field():
+def test_output_uses_local_spectra_and_image_conditioned_context():
     model = network().eval()
     x = torch.rand(1, 31, 128, 128, requires_grad=True)
     model(x)[0, 0, 64, 64].backward()
     assert x.grad[0, 1:, 64, 64].abs().sum() > 0
     assert x.grad[..., 64, 65].abs().sum() > 0
-    assert x.grad[..., :16, :].count_nonzero() == 0
-    assert x.grad[..., 112:, :].count_nonzero() == 0
+    assert x.grad[..., :16, :].abs().sum() > 0
 
 
 def test_finetune_head_is_identity_residual_and_pretrain_has_no_input_bypass():
@@ -191,14 +167,10 @@ def test_finetune_head_is_identity_residual_and_pretrain_has_no_input_bypass():
 
 @pytest.mark.parametrize("options", [
     {"head_depth": 0}, {"head_depth": 1.5}, {"detail_depth": 0},
-    {"fusion_depth": 0}, {"branch_dilations": []},
-    {"branch_dilations": [[1], [0], [1], [1]]},
-    {"branch_dilations": [[1], [1], [1]]},
-    {"branch_channels": [1]}, {"branch_channels": [8, 0, 8, 8]},
-    {"branch_channels": [8, 8, 8]},
+    {"stage_blocks": []}, {"stage_blocks": [1, 0, 1]},
+    {"stage_blocks": [1, 1]}, {"stage_blocks": [1, True, 1]},
     {"checkpoint_blocks": 1},
-    {"channels": 0}, {"channels": 7}, {"heads": 0},
-    {"pixel_chunk_size": 0}, {"spectral_channels": 1},
+    {"channels": 0}, {"spectral_channels": 1},
 ])
 def test_model_options_reject_invalid_values(options):
     with pytest.raises(ValueError):
@@ -232,6 +204,23 @@ def test_previous_unet_encoder_artifacts_are_rejected(tmp_path):
         module.load_encoder(str(path))
 
 
+def test_previous_query_encoder_and_full_checkpoint_are_rejected(tmp_path):
+    module = pipeline("finetune")
+    architecture = {**module.network.encoder.architecture(), "version": 6,
+                    "type": "full_resolution_dilated_query_transformer"}
+    path = tmp_path / "query.pt"
+    torch.save({"format": "flow-hsi.spectral-encoder.v1",
+                "architecture": architecture, "encoder_state_dict": {}}, path)
+    with pytest.raises(ValueError, match="requires new pretraining"):
+        module.load_encoder(str(path))
+    module._trainer = SimpleNamespace(callback_metrics={})
+    checkpoint = {}
+    module.on_save_checkpoint(checkpoint)
+    checkpoint["spectral_experiment"]["model_architecture"]["encoder"] = architecture
+    with pytest.raises(ValueError, match="matching spectral encoder and decoder"):
+        module.on_load_checkpoint(checkpoint)
+
+
 @pytest.mark.parametrize("head", ["pretrain", "finetune"])
 def test_model_masks_every_path_without_hidden_target_bypass(head):
     model = network(head)
@@ -243,7 +232,7 @@ def test_model_masks_every_path_without_hidden_target_bypass(head):
     torch.testing.assert_close(
         model(x, mask), model(other, mask),
     )
-    assert model.encoder.architecture()["version"] == 6
+    assert model.encoder.architecture()["version"] == 7
 
 
 def test_mask_embedding_distinguishes_hidden_from_dark_and_all_visible_is_compatible():
@@ -501,24 +490,24 @@ def test_freeze_is_capped_at_one_epoch(tmp_path):
     assert [entry["frozen"] for entry in record.records] == [True, True, False, False]
 
 
-def test_query_fusion_follows_encoder_freeze_and_unfreeze(tmp_path):
+def test_synthesis_attention_follows_backbone_freeze_and_unfreeze(tmp_path):
     module = pipeline("finetune", allow_random_encoder=True, freeze_encoder_steps=1)
-    head = module.network.encoder.fusion[0]
-    before = head.query.weight.detach().clone()
+    head = module.network.encoder.synthesis[0].blocks[0][0]
+    before = head.to_q.weight.detach().clone()
 
     class RecordFusion(Callback):
         def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
             if trainer.global_step == 1:
-                torch.testing.assert_close(head.query.weight, before)
-                assert head.query.weight.grad is None
+                torch.testing.assert_close(head.to_q.weight, before)
+                assert head.to_q.weight.grad is None
 
     run = trainer(tmp_path, callbacks=[RecordFusion()], enable_checkpointing=False)
     run.fit(module, loader(), loader())
-    assert not torch.equal(head.query.weight, before)
+    assert not torch.equal(head.to_q.weight, before)
     optimizer = run.optimizers[0]
     encoder_ids = {id(p) for p in optimizer.param_groups[0]["params"]}
     assert all(id(p) in encoder_ids for p in head.parameters())
-    assert optimizer.state[head.query.weight]["step"] == 3
+    assert optimizer.state[head.to_q.weight]["step"] == 3
 
 
 def test_freeze_counts_optimizer_updates_with_accumulation(tmp_path):
@@ -582,16 +571,16 @@ def test_experiment_config_and_factory(phase, epochs):
     module = PipelineSelector.select(ModelSelector.select(cfg.model), cfg.pipeline)
     assert isinstance(module, SpectralExperimentPipeline)
     assert module.checkpoint_monitor == ("val_masked_mae" if phase == "pretrain" else "val_mrae")
-    assert len(module.network.encoder.branches) == 4
-    assert module.network.encoder.channels == 64
-    assert module.network.encoder.branch_channels == (48, 96, 128, 160)
-    assert module.network.encoder.architecture()["version"] == 6
+    assert len(module.network.encoder.analysis) == 3
+    assert module.network.encoder.channels == 48
+    assert module.network.encoder.stage_blocks == (2, 2, 4)
+    assert module.network.encoder.architecture()["version"] == 7
     x = torch.rand(1, 31, 17, 19)
     assert module(x).shape == x.shape
     assert module.model(src=x)["res"].shape == x.shape
     if phase != "pretrain":
         assert len(module.network.decoder.blocks) == 2
-        assert cfg.experiment == "spectral.finetune.gazetr.fullrf.wide.ntire"
+        assert cfg.experiment == "spectral.finetune.msab.unet.ntire"
 
 
 def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
@@ -621,9 +610,7 @@ def test_two_experiments_through_real_ntire_entrypoint(tmp_path):
         cfg.data.params.train.crop_size = 8
         params = cfg.model.params.layers.spectral.params
         params.channels = 8
-        params.branch_dilations = [[1], [1], [1], [1]]
-        params.branch_channels = [8, 12, 16, 20]
-        params.heads = 2
+        params.stage_blocks = [1, 1, 1]
         train_default(cfg)
         logs = tmp_path / cfg.experiment / "logs"
         assert (logs / "checkpoints" / "last.ckpt").is_file()

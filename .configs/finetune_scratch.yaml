@@ -1,0 +1,8 @@
+defaults:
+  - finetune
+  - _self_
+experiment: spectral.finetune.scratch.msab.unet.ntire
+pipeline:
+  params:
+    encoder_checkpoint: null
+    allow_random_encoder: true

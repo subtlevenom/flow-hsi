@@ -1,0 +1,9 @@
+defaults:
+  - pretrain
+  - _self_
+experiment: spectral.pretrain.global.msab.unet.ntire
+model:
+  params:
+    layers:
+      spectral:
+        model: ggpir.GlobalCalibratedSpectralEncoderDecoder

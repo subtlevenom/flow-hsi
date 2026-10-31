@@ -1,0 +1,12 @@
+defaults:
+  - finetune
+  - _self_
+experiment: spectral.finetune.global.msab.unet.ntire
+model:
+  params:
+    layers:
+      spectral:
+        model: ggpir.GlobalCalibratedSpectralEncoderDecoder
+pipeline:
+  params:
+    encoder_checkpoint: ${save_dir}/spectral.pretrain.global.msab.unet.ntire/logs/checkpoints/encoder.pt

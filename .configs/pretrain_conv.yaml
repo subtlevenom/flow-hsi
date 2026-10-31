@@ -1,0 +1,9 @@
+defaults:
+  - pretrain
+  - _self_
+experiment: spectral.pretrain.conv.unet.ntire
+model:
+  params:
+    layers:
+      spectral:
+        model: ggpir.ConvolutionalSpectralEncoderDecoder

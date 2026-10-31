@@ -44,7 +44,7 @@ def train_default(config: DictConfig) -> None:
             monitor=monitor,
             save_top_k=3,
             save_last=True,
-            mode='min',
+            mode=getattr(pipeline, 'checkpoint_mode', 'min'),
             every_n_epochs=config.get('save_freq', 1),
         ),
         RichModelSummary(),

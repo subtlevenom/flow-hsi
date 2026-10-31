@@ -1,0 +1,7 @@
+defaults:
+  - finetune
+  - _self_
+experiment: spectral.finetune.fast_encoder.msab.unet.ntire
+pipeline:
+  params:
+    encoder_lr: 2e-4

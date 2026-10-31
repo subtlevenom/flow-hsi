@@ -1,0 +1,16 @@
+defaults:
+  - finetune
+  - _self_
+experiment: spectral.finetune.psnr.msab.unet.ntire
+pipeline:
+  params:
+    mae_weight: 0.0
+    mse_weight: 1.0
+    mrae_weight: 0.0
+    spectral_weight: 0.0
+    spectral_gradient_weight: 0.0
+    perceptual_weight: 0.0
+    ssim_weight: 0.0
+    sharpness_weight: 0.0
+    color_weight: 0.0
+    checkpoint_metric: psnr
