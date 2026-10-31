@@ -57,9 +57,26 @@ all image locations. `predictor(context)` caches the local parameter field
 for applying the same mapping to another signal on the same batch/spatial
 grid, preserving existing cmKAN conditioning semantics.
 
-The default network is 31 -> 31 -> 31. It initializes to identity on [0, 1]
-using Greville spline coefficients, identity W, zero b/c and a zero-offset
-generator head. All parameters train from scratch; **no Huawei/RGB checkpoint
+The default uses three shared-neuron transformations,
+`spectral_channels -> 48 -> 48 -> spectral_channels` (31 -> 48 -> 48 -> 31
+for NTIRE). This is a cost-conscious engineering starting point, not a
+benchmark-validated optimum: the learned splines and conditioning generator
+already provide substantial capacity, while every extra or wider layer adds
+generated per-pixel dense weights. Per pixel the generator emits
+1,592 + 2,408 + 1,558 = **5,558** values (previous 31 -> 31 -> 31: 2,062).
+This float32 parameter field is about 22 MiB for a 32x32 training patch,
+347 MiB for a 128x128 validation crop and 5.1 GiB for a full 482x512 cube,
+before activations. Learned weights: about 0.28M (light generator) or 1.41M
+(full generator). Five transformations remain selectable, for example
+31 -> 48 -> 64 -> 48 -> 32 -> 31 with
+`"model.params.layers.cmkan.params.hidden_channels=[48,64,48,32]"`; that emits
+10,646 values per pixel (~42 MiB at 32x32, 665 MiB at 128x128, 9.8 GiB at
+482x512) and has 0.49M/2.27M learned weights. Reduce widths or
+validation/test crops if memory is tight.
+
+The network initializes to identity on [0, 1] using Greville spline
+coefficients, rectangular identity W (extra hidden units start at zero), zero
+b/c and a zero-offset generator head. All parameters train from scratch; **no Huawei/RGB checkpoint
 is loaded or frozen**. The generator projects the spectrum to eight context
 features to limit its width; this projection never replaces the raw neuron
 inputs. `encoder_type=light` uses the existing single-wavelet-scale generator;

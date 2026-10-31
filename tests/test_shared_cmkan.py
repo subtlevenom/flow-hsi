@@ -165,6 +165,32 @@ def test_generator_shapes_composition_and_backward(channels, out_channels, encod
     assert model.encoder.basis.grad.abs().sum() > 0
 
 
+@pytest.mark.parametrize("hidden,sizes", [
+    (None, (1592, 2408, 1558)),
+    ("[48,64,48,32]", (1592, 3208, 3176, 1608, 1062)),
+])
+@pytest.mark.parametrize("encoder_type", ["light", "full"])
+def test_configured_depth_generator_shapes_and_backward(hidden, sizes, encoder_type):
+    options = {"model.params.layers.cmkan.params.encoder_type": encoder_type}
+    if hidden is not None:
+        options["model.params.layers.cmkan.params.hidden_channels"] = hidden
+    config = configuration(**options)
+    model = ModelSelector.select(config.model).layers.cmkan
+    widths = [31, *config.model.params.layers.cmkan.params.hidden_channels, 31]
+    assert widths == ([31, 48, 48, 31] if hidden is None else [31, 48, 64, 48, 32, 31])
+    assert len(model.spline_layers) == len(sizes)
+    assert model.parameter_sizes == sizes and model.size == sum(sizes)
+    x = torch.rand(1, 31, 6, 7, requires_grad=True)
+    parameters = model.generate_parameters(x)
+    assert parameters.shape == (1, sum(sizes), 6, 7)
+    result = model.apply_parameters(x, parameters)
+    torch.testing.assert_close(result, x)
+    (result - 0.5).square().mean().backward()
+    assert torch.isfinite(x.grad).all()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all()
+               for p in model.parameters() if p.requires_grad)
+
+
 def test_cached_conditioning_chunk_equivalence_and_checkpoint_roundtrip(tmp_path):
     model = SharedCmKAN(5, 5, hidden_channels=[5], conditioning_channels=4,
                         pixel_chunk_size=7)

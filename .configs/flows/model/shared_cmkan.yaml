@@ -11,7 +11,8 @@ params:
         in_channels: ${spectral_channels}
         out_channels: ${spectral_channels}
         hidden_channels:
-          - ${spectral_channels}
+          - 48
+          - 48
         grid_size: 5
         spline_order: 3
         grid_range: [0.0, 1.0]
