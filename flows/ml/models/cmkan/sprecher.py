@@ -20,6 +20,7 @@ class SprecherNet(nn.Module):
         max_shift: float = 0.5, ffn_hidden: int = 32,
         mst_features: int = 32, mst_stages: int = 3, mst_head_channels: int = 64,
         pixel_chunk_size: int = 64, checkpoint_splines: bool = True,
+        block_chunk_size: int = 1,
     ):
         super().__init__()
         if not layer_widths or min(input_dim, output_dim, ffn_hidden, pixel_chunk_size) < 1:
@@ -30,7 +31,8 @@ class SprecherNet(nn.Module):
         dimensions = [input_dim, *layer_widths]
         self.sprecher_layers = nn.ModuleList([
             SprecherLayer(i, o, grid_size=grid_size, spline_order=spline_order,
-                          psi_range=psi_range, xi_range=xi_range, max_shift=max_shift)
+                          psi_range=psi_range, xi_range=xi_range, max_shift=max_shift,
+                          block_chunk_size=block_chunk_size)
             for i, o in zip(dimensions, dimensions[1:])
         ])
         self.parameter_sizes = tuple(layer.size for layer in self.sprecher_layers)

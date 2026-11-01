@@ -96,6 +96,59 @@ but need coverage/scale regularization and can lose detail or collapse.
 Six exponentials may or may not beat four local cubic coefficients on a GPU;
 benchmark before switching. No Gaussian family has been substituted here.
 
+### Optional Sprecher block batching
+
+Sprecher can batch independent output blocks with
+`model.params.layers.cmkan.params.block_chunk_size=4` (or 8). The default
+remains **1**, preserving the current execution/memory settings.
+Explicit batched tensor operations handle each block's own knots, generated
+Psi/Xi coefficients, Lambda and epsilon; no branches or parameters are tied,
+omitted, or reordered. Existing scalar-block state keys and checkpoint shapes
+remain unchanged. Batched evaluation works with layer checkpointing, cached
+context and pixel chunking. It avoids a per-block Python evaluation loop,
+but still loops over bounded groups and retains all 63 branches per block.
+
+Fresh CPU benchmarks of the one-layer 31->31 Sprecher model (8x8 input,
+float32, one thread, full MST generator and FFN, checkpointing enabled,
+median three samples after warmup):
+
+| Pixel chunk | Block chunk | Full forward/backward | Parameter application inference |
+|---:|---:|---:|---:|
+| 7 | 1 | 3.61 s | 0.94 s |
+| 7 | 8 | 2.26 s | 0.88 s |
+| 64 (default) | 1 (default) | 2.22 s | 0.81 s |
+| 64 | 4 | 2.03 s | 0.84 s |
+
+Batching helped small chunks substantially but gave only about 8% training
+improvement at default pixel chunks, and did not improve default-chunk CPU
+inference. CUDA was unavailable; GPU kernel-launch benefits are unmeasured.
+Try the option on the actual GPU rather than assuming an epoch-speed gain:
+
+```powershell
+python main.py --config-name sprecher task=train model.params.layers.cmkan.params.block_chunk_size=4
+```
+
+Per-call inner argument/basis storage scales with block group size: four
+blocks at 64 pixels need roughly 19 MiB just for the active four-coefficient
+bases, versus 4.8 MiB for one block, plus indices and autograd intermediates.
+Checkpointing avoids saving all these activations across the image, but
+recomputes them during backward. Increasing pixel and block chunks together
+can exhaust memory. The 620-values/pixel generated curve map is unchanged.
+
+A separate matched-shape CPU curve microbenchmark (`[64,63,31]` arguments,
+six fixed Gaussian centers/scales with generated amplitudes versus local cubic)
+measured Gaussian/cubic forward-backward at 0.018/0.030 s and inference at
+0.0076/0.0216 s. This is **not** a full Gaussian-network benchmark or evidence
+of equivalent approximation quality. Six Gaussians change the curve family;
+no activation was replaced. Fixed centers are cheapest but must cover the
+shifted spectral domain; context-generated centers can follow the local color
+neighborhood, but add channels and can collapse. Bound centers and widths,
+keep a strictly positive minimum width, and consider a linear baseline if
+linear tails rather than vanishing tails are desired. In either case the exact
+Sprecher architecture still needs `n*(2n+1)*m = 60,543` inner evaluations per
+pixel. Replacing splines alone cannot eliminate that dominant scaling.
+No live training process or automatic resume was changed.
+
 ## NTIRE: exact-form Sprecher network
 
 The new `sprecher` run implements the requested scalar block literally:

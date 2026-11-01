@@ -4,19 +4,36 @@ import torch
 def evaluate_local_spline(values, grid, coefficients, order):
     """Evaluate a shared knot grid using only order+1 active coefficients.
 
-    Coefficients broadcast over values' leading dimensions. Invalid edge
+    Coefficients broadcast over values' leading dimensions. A batch of knot
+    grids uses values' first dimension for independent curves. Invalid edge
     coefficients are zero, preserving the original finite-support recurrence.
     """
-    knots = grid.reshape(-1).to(device=values.device, dtype=values.dtype)
-    span = torch.searchsorted(knots, values.contiguous(), right=True) - 1
+    batched = grid.numel() != grid.shape[-1]
+    knots = grid.to(device=values.device, dtype=values.dtype)
+    if batched:
+        knots = knots.reshape(values.shape[0], -1)
+        span = torch.searchsorted(
+            knots, values.reshape(values.shape[0], -1).contiguous(), right=True,
+        ).reshape_as(values) - 1
+    else:
+        knots = knots.reshape(-1)
+        span = torch.searchsorted(knots, values.contiguous(), right=True) - 1
+    knot_count = knots.shape[-1]
     indices = span[..., None] - order + torch.arange(order + 1, device=values.device)
 
     def knot(index):
-        bounded = index.clamp(0, knots.numel() - 1)
+        bounded = index.clamp(0, knot_count - 1)
+        if batched:
+            shape = (values.shape[0], *([1] * (index.ndim - 1)))
+            table = knots.reshape(*shape[:-1], knot_count).expand(*index.shape[:-1], knot_count)
+            return (table.gather(-1, bounded)
+                    + index.clamp(max=0) * (knots[:, 1] - knots[:, 0]).reshape(shape)
+                    + (index - knot_count + 1).clamp(min=0)
+                    * (knots[:, -1] - knots[:, -2]).reshape(shape))
         # Virtual knots only serve bases with nonexistent, zero coefficients.
         return (knots[bounded]
                 + index.clamp(max=0) * (knots[1] - knots[0])
-                + (index - knots.numel() + 1).clamp(min=0) * (knots[-1] - knots[-2]))
+                + (index - knot_count + 1).clamp(min=0) * (knots[-1] - knots[-2]))
 
     if order == 3:
         # Unroll cubic recurrence; use actual knots, including their rounding,

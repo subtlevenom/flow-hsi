@@ -21,4 +21,5 @@ params:
         mst_stages: 3
         mst_head_channels: 64
         pixel_chunk_size: 64
+        block_chunk_size: 1
         checkpoint_splines: true

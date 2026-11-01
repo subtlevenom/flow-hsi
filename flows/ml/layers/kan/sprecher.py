@@ -63,15 +63,45 @@ class SprecherBlock(nn.Module):
 class SprecherLayer(nn.Module):
     """m independent scalar Sprecher blocks in parallel, mapping n -> m."""
 
-    def __init__(self, input_dim: int, output_dim: int, **kwargs):
+    def __init__(self, input_dim: int, output_dim: int, block_chunk_size: int = 1, **kwargs):
         super().__init__()
-        if output_dim < 1:
-            raise ValueError("output_dim must be positive.")
+        if min(output_dim, block_chunk_size) < 1:
+            raise ValueError("output_dim and block_chunk_size must be positive.")
+        self.block_chunk_size = block_chunk_size
         self.blocks = nn.ModuleList([
             SprecherBlock(input_dim, **kwargs) for _ in range(output_dim)
         ])
         self.size = sum(block.size for block in self.blocks)
 
     def forward(self, x, offsets):
+        if x.ndim != 2 or x.shape[1] != self.blocks[0].input_dim:
+            raise ValueError(f"Expected [N, {self.blocks[0].input_dim}] signals.")
+        if offsets.shape != (x.shape[0], self.size):
+            raise ValueError(f"Expected [N, {self.size}] curve offsets.")
         pieces = offsets.split([block.size for block in self.blocks], dim=-1)
-        return torch.stack([block(x, part) for block, part in zip(self.blocks, pieces)], dim=-1)
+        outputs = []
+        for start in range(0, len(self.blocks), self.block_chunk_size):
+            blocks = self.blocks[start:start + self.block_chunk_size]
+            if self.block_chunk_size == 1:
+                outputs.append(blocks[0](x, pieces[start])[:, None])
+                continue
+            first = blocks[0]
+
+            psi, xi = torch.stack(pieces[start:start + len(blocks)]).split(first.coef_size, -1)
+            psi = psi + torch.stack([block.psi_base for block in blocks])[:, None]
+            xi = xi + torch.stack([block.xi_base for block in blocks])[:, None]
+            epsilon = torch.stack([block.epsilon for block in blocks])
+            q = torch.stack([block.q for block in blocks])
+            shifted = x[None, :, None, :] + (epsilon[:, None] * q)[:, None, :, None]
+            inner = evaluate_local_spline(
+                shifted, torch.stack([block.psi_grid for block in blocks]),
+                psi[:, :, None, None], first.spline_order,
+            )
+            lambdas = torch.stack([block.lambdas.T for block in blocks])
+            sums = (inner * lambdas[:, None]).sum(-1)
+            outer = evaluate_local_spline(
+                sums, torch.stack([block.xi_grid for block in blocks]),
+                xi[:, :, None], first.spline_order,
+            )
+            outputs.append(outer.sum(-1).T)
+        return torch.cat(outputs, dim=-1)
