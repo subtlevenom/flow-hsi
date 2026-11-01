@@ -52,11 +52,12 @@ A **Sprecher layer** runs m scalar blocks in parallel to map n to m.
 `cmkan.SprecherNet` composes layers sequentially, then uses the actual
 cmKAN encoder `FFN` from `flows/ml/layers/encoders/cm_encoder.py`:
 1x1 projection, 3x3 depthwise convolution, ReLU, 1x1 output projection.
-The default is **31 -> 8 -> 8 -> FFN(32 hidden) -> 31**, preserving the
+The default is **31 -> 31 -> FFN(32 hidden) -> 31**: one Sprecher layer
+with 31 independent scalar blocks, preserving the
 HSI-to-HSI NTIRE task. The convolutional FFN and spatial conditioning mean
 the complete image network is not solely a pointwise theorem representation.
-This modest starting width is a compute-conscious recommendation, not a
-benchmark-selected optimum.
+This single-layer width is an experiment, not a benchmark-selected optimum
+or a presumed improvement over the previous two-layer `[8,8]` setting.
 
 MST++ uses the original spectrum as context for **all layers**, not each
 intermediate signal. Its feature backbone is the same repository MST adaptation
@@ -82,11 +83,12 @@ return zero, not extrapolation. Adjust ranges to the data; no implicit clipping
 or normalization is inserted. Finite learned splines with a shared Xi do
 **not** inherit a universal-representation theorem guarantee.
 
-The 16 default scalar blocks generate just **320 values/pixel** (160 per
-layer): float32 maps cost 1.25 MiB at 32x32, 20 MiB at 128x128 and about
-301 MiB at 482x512. Lambda has 16,712 learned entries plus 16 epsilon scalars.
-But exact branches still require 16,712 inner spline evaluations per pixel;
-all inner 10-coefficient bases would occupy about 653 MiB per 32x32 sample
+The 31 default scalar blocks generate **620 values/pixel** in one layer:
+float32 maps cost 2.42 MiB at 32x32, 38.75 MiB at 128x128 and about
+584 MiB at 482x512. Lambda has 60,543 learned entries plus 31 epsilon scalars
+(each block's matrix is `[31,63]`). Exact branches require 60,543 inner
+spline evaluations per pixel, about 3.62 times the previous `[8,8]` setting;
+all inner 10-coefficient bases would occupy about 2.31 GiB per 32x32 sample
 if retained together, before recursion intermediates and outer bases.
 Default 64-pixel chunks bound one largest block's inner basis to about 4.8 MiB;
 layer checkpointing avoids retaining all these training bases, trading compute

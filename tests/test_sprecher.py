@@ -145,22 +145,40 @@ def test_config_and_bounded_training(tmp_path):
     OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
     model = ModelSelector.select(config.model).layers.cmkan
     assert model.input_dim == model.output_dim == 31
-    assert model.size == 320
-    assert [len(layer.blocks) for layer in model.sprecher_layers] == [8, 8]
-    assert [layer.blocks[0].branches for layer in model.sprecher_layers] == [63, 17]
+    assert model.parameter_sizes == (620,) and model.size == 620
+    assert [len(layer.blocks) for layer in model.sprecher_layers] == [31]
+    assert [layer.blocks[0].branches for layer in model.sprecher_layers] == [63]
+    assert len(model.encoder.heads) == 31
+    assert all(head.out_channels == 20 for head in model.encoder.heads)
+    blocks = model.sprecher_layers[0].blocks
+    assert all(block.lambdas.shape == (31, 63) for block in blocks)
+    assert sum(block.lambdas.numel() for block in blocks) == 60543
+    assert sum(block.epsilon_logit.numel() for block in blocks) == 31
+    assert model.output_ffn.pointwise1.in_channels == 31
+    assert model.output_ffn.pointwise1.out_channels == 32
+    assert model.output_ffn.pointwise2.out_channels == 31
+    x = torch.rand(1, 31, 3, 5)
+    curves = model.generate_parameters(x)
+    assert curves.shape == (1, 620, 3, 5)
+    model.apply_parameters(x, curves).square().mean().backward()
+    for block, head in zip(blocks, model.encoder.heads):
+        assert block.lambdas.grad.abs().sum() > 0
+        assert block.epsilon_logit.grad.abs() > 0
+        assert head.weight.grad[:10].abs().sum() > 0
+        assert head.weight.grad[10:].abs().sum() > 0
     for split in ("train", "test"):
         for domain in ("source", "target"):
             folder = tmp_path / "dataset" / split / domain
             folder.mkdir(parents=True)
             np.save(folder / "sample.npy", np.random.default_rng(3).uniform(
-                0.1, 0.9, (32, 32, 31),
+                0.1, 0.9, (8, 8, 31),
             ).astype("float32"))
     config = configuration([
         f"dataset_root={(tmp_path / 'dataset').as_posix()}",
         f"save_dir={(tmp_path / 'experiments').as_posix()}",
         "accelerator=cpu", "devices=1", "epochs=1",
         "data.params.num_workers=0", "data.params.pin_memory=false",
-        "data.params.train.crop_size=32", "data.params.val.crop_size=32",
+        "data.params.train.crop_size=8", "data.params.val.crop_size=8",
         "model.params.layers.cmkan.params.mst_features=8",
         "model.params.layers.cmkan.params.mst_stages=1",
         "model.params.layers.cmkan.params.mst_head_channels=8",
@@ -175,4 +193,4 @@ def test_config_and_bounded_training(tmp_path):
                                 "model.params.layers.cmkan.params.spline_order=2"])
     other = ModelSelector.select(overridden.model).layers.cmkan
     assert other.input_dim == other.output_dim == 7
-    assert other.size == 16 * 2 * 7
+    assert other.size == 31 * 2 * 7
