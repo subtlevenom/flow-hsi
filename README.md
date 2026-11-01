@@ -35,7 +35,88 @@ python main.py sample-image-data -i /data/korepanov/color-transfer/huawei/src -o
 $ python main.py
 $ python main.py task=test
 
-## NTIRE: conditioned shared-spline cmKAN
+## NTIRE: exact-form Sprecher network
+
+The new `sprecher` run implements the requested scalar block literally:
+`f(x) = sum_{q=0}^{2n} Xi(sum_{p=1}^{n} Lambda[p,q] * Psi(x_p + epsilon*q))`.
+Inputs use zero-based tensor indexing for the mathematical indices p=1..n;
+q includes both endpoints, giving **2n+1 branches**, never a capped
+approximation. This is the requested shared-Xi variant, not a claim that every
+Sprecher representation in the literature uses the same outer curve.
+A block owns exactly **two B-spline curves**: Psi shared across every p/q,
+and Xi shared across every q. Lambda is a learned `[n, 2n+1]` matrix
+(not generated); one learned epsilon scalar serves every q in that block.
+Different blocks have independent Lambda, epsilon and both curve vectors.
+
+A **Sprecher layer** runs m scalar blocks in parallel to map n to m.
+`cmkan.SprecherNet` composes layers sequentially, then uses the actual
+cmKAN encoder `FFN` from `flows/ml/layers/encoders/cm_encoder.py`:
+1x1 projection, 3x3 depthwise convolution, ReLU, 1x1 output projection.
+The default is **31 -> 8 -> 8 -> FFN(32 hidden) -> 31**, preserving the
+HSI-to-HSI NTIRE task. The convolutional FFN and spatial conditioning mean
+the complete image network is not solely a pointwise theorem representation.
+This modest starting width is a compute-conscious recommendation, not a
+benchmark-selected optimum.
+
+MST++ uses the original spectrum as context for **all layers**, not each
+intermediate signal. Its feature backbone is the same repository MST adaptation
+described below, with one zero-initialized 20-channel head per scalar block:
+10 Psi and 10 Xi coefficient offsets, using `grid_size=7`, `spline_order=3`.
+Each block has independent learned base coefficients; generated offsets modify
+them per conditioned pixel. There are no generated weights/shifts/biases.
+`predictor(context)` caches the two curves for each block and applies the same
+mapping to another signal on the same spatial grid. Odd sizes, including 1x1,
+are supported. No pretrained weights are loaded.
+
+To keep normalized spectra inside meaningful spline support, epsilon is
+parameterized as `max_shift * sigmoid(epsilon_logit) / (2n)`, so it is strictly
+positive and `epsilon*(2n) < max_shift` (default 0.5; initial total shift 0.25).
+Psi's base interval is `[-1,2]`, containing normalized [0,1] inputs plus the
+bounded shift; Xi's is `[-2,2]`. Psi initially reproduces identity; Xi initially
+reproduces `t/(2n+1)`, and Lambda starts at `1/n`. This scaling is in the
+curve coefficients, not an extra averaging operation outside the formula.
+The final FFN has its normal initialization: **the full network does not
+initialize to identity**. Lambda is unconstrained and intermediate outputs can
+leave these intervals during learning. Beyond extended knot support splines
+return zero, not extrapolation. Adjust ranges to the data; no implicit clipping
+or normalization is inserted. Finite learned splines with a shared Xi do
+**not** inherit a universal-representation theorem guarantee.
+
+The 16 default scalar blocks generate just **320 values/pixel** (160 per
+layer): float32 maps cost 1.25 MiB at 32x32, 20 MiB at 128x128 and about
+301 MiB at 482x512. Lambda has 16,712 learned entries plus 16 epsilon scalars.
+But exact branches still require 16,712 inner spline evaluations per pixel;
+all inner 10-coefficient bases would occupy about 653 MiB per 32x32 sample
+if retained together, before recursion intermediates and outer bases.
+Default 64-pixel chunks bound one largest block's inner basis to about 4.8 MiB;
+layer checkpointing avoids retaining all these training bases, trading compute
+for memory. MST++ activations, output FFN and curve maps still cost memory.
+Use smaller validation crops/batches when needed; full-cube inference may be slow.
+
+```powershell
+python main.py --config-name sprecher task=train
+```
+
+This inherits the existing NTIRE dataset root and training/pipeline defaults
+described below, with experiment `cmkan.sprecher.ntire`. The configured root
+must exist on the training machine; append `"dataset_root=C:\path\to\NTIRE\dataset"`
+for another location. Architecture controls are under
+`model.params.layers.cmkan.params`, for example:
+
+```powershell
+python main.py --config-name sprecher task=train "model.params.layers.cmkan.params.layer_widths=[8,8,8]"
+```
+
+`input_dim` and `output_dim` are configurable in the standalone network;
+`spectral_channels=N` updates both and the NTIRE loader/pipeline (the same
+non-31 colorimetry opt-outs below apply). `grid_size`, `spline_order`,
+`psi_range`, `xi_range`, `max_shift`, `ffn_hidden`, MST widths/stages,
+`pixel_chunk_size` and `checkpoint_splines` remain configurable.
+The previous `shared_cmkan` run is retained for compatibility, not silently
+reinterpreted as a Sprecher block. Synthetic smoke tests do not establish
+quality on real NTIRE data.
+
+## NTIRE: conditioned shared-spline cmKAN (previous architecture)
 
 Starting from `usgs-unet`, `cmkan.SharedCmKAN` implements the neuron
 `y_j = c_j + sum_i W_ji * psi(x_i + b_j)`. Each layer has **one univariate

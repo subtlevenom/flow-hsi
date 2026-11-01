@@ -1,0 +1,5 @@
+defaults:
+  - shared_cmkan
+  - override flows/model@model: sprecher
+  - _self_
+experiment: cmkan.sprecher.ntire

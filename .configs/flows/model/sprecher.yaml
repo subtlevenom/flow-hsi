@@ -1,0 +1,24 @@
+name: flow
+params:
+  metadata:
+    - layer: cmkan
+      inputs: [src]
+      outputs: [res]
+  layers:
+    cmkan:
+      model: cmkan.SprecherNet
+      params:
+        input_dim: ${spectral_channels}
+        output_dim: ${spectral_channels}
+        layer_widths: [8, 8]
+        grid_size: 7
+        spline_order: 3
+        psi_range: [-1.0, 2.0]
+        xi_range: [-2.0, 2.0]
+        max_shift: 0.5
+        ffn_hidden: 32
+        mst_features: 32
+        mst_stages: 3
+        mst_head_channels: 64
+        pixel_chunk_size: 64
+        checkpoint_splines: true
