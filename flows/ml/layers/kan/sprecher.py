@@ -4,7 +4,7 @@ from typing import Sequence
 import torch
 from torch import nn
 
-from .bspline import compute_bspline
+from .bspline import evaluate_local_spline
 from .shared_spline import SharedSplineLayer
 
 
@@ -44,12 +44,9 @@ class SprecherBlock(nn.Module):
         return self.max_shift * self.epsilon_logit.sigmoid() / (self.branches - 1)
 
     def curve(self, values, coefficients, grid):
-        bases = compute_bspline(
-            values.reshape(-1, 1), grid.to(dtype=values.dtype), self.spline_order,
-        ).reshape(*values.shape, self.coef_size)
-        return (bases * coefficients.reshape(
+        return evaluate_local_spline(values, grid, coefficients.reshape(
             coefficients.shape[0], *([1] * (values.ndim - 1)), self.coef_size,
-        )).sum(dim=-1)
+        ), self.spline_order)
 
     def forward(self, x, offsets):
         if x.ndim != 2 or x.shape[1] != self.input_dim:

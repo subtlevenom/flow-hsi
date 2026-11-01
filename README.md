@@ -35,6 +35,67 @@ python main.py sample-image-data -i /data/korepanov/color-transfer/huawei/src -o
 $ python main.py
 $ python main.py task=test
 
+## Spline evaluation performance
+
+Both `SharedCmKAN` and Sprecher now use local-support Cox-de Boor evaluation:
+only `spline_order+1` active coefficients are gathered per argument (four for
+cubic), instead of materializing every basis coefficient on every edge.
+The cubic recurrence is unrolled using the **actual stored knots**, not a
+uniform-grid approximation. Other orders retain a local recurrence.
+Finite support, knot endpoints, generated-offset/base initialization and model
+state names/shapes are preserved; older matching-architecture checkpoints load
+unchanged. Numerical rounding may differ at floating-point precision. This
+does not alter either model's formula or its activation family.
+
+Bounded CPU measurements (PyTorch 2.4, one thread, batch 1, median of three
+timed runs after warmup, float32, default checkpointing/chunking):
+
+| Path | Dense reference | Local evaluator |
+|---|---:|---:|
+| Shared 31->48->48->31, 32x32, full forward/backward | 9.41 s | 2.36 s |
+| Same, parameter application forward/backward | 9.29 s | 2.24 s |
+| Same, parameter application inference | 2.86 s | 0.93 s |
+| Sprecher 31->31, 8x8, full forward/backward | 6.20 s | 2.24 s |
+| Same, parameter application inference | 1.82 s | 0.81 s |
+
+The shared model's MST generator forward alone measured 0.047 s; dense spline
+application, not the feature backbone, dominated this CPU experiment.
+For an isolated `[64,48,48]` shifted-edge cubic evaluation, saved autograd
+tensor payload fell from 56.25 to 33.19 MiB (not process peak memory).
+CUDA was unavailable: these are **not GPU throughput predictions** or NTIRE
+training/model-quality benchmarks. No active training process was changed.
+
+Local evaluation still has argument/index/gather tensors and launch overhead.
+The shared generator still materializes 5,564 values/pixel, including dense W;
+local spline evaluation does not eliminate that map. Sprecher still executes
+independent scalar blocks in Python and retains all exact branches.
+Checkpointing recomputes curves during backward; reducing checkpointing can
+improve speed only if memory permits. Chunk size trades launch overhead against
+activation memory. Tune these on the actual GPU, not from CPU speed alone.
+Existing runs do not hot-reload this implementation; use it for a future run
+or an explicitly chosen compatible checkpoint, not a blind resume from an
+experiment folder containing multiple architectures.
+
+An **alternative requiring an explicit activation-family change** is a
+conditioned Gaussian curve
+`g(t)=sum_{r=1}^R a_r(context)*exp(-0.5*((t-mu_r)/sigma_r)^2)`.
+With six fixed centers/scales covering the intended domain, only six amplitudes
+per curve are generated: a 31-block two-curve Sprecher layer emits 372 values
+instead of 620; the three-layer shared model emits 5,552 instead of 5,564
+because generated dense weights still dominate. Fixed positive scales avoid
+division by tiny values; choose coverage beyond the normalized shifted domain.
+Gaussian tails approach zero smoothly rather than having compact support.
+If centers/scales must also be generated, six terms require 18 parameters per
+curve (1,116 for Sprecher); bound centers to the intended domain and use a
+positive lower scale bound plus softplus or bounded sigmoid parameterization.
+Normalize/clamp extreme standardized distances before squaring to avoid
+overflow, with that intentional tail change documented. A learned linear
+baseline can preserve extrapolation at the cost of two additional parameters
+per curve. These curves suit context-conditioned local color neighborhoods,
+but need coverage/scale regularization and can lose detail or collapse.
+Six exponentials may or may not beat four local cubic coefficients on a GPU;
+benchmark before switching. No Gaussian family has been substituted here.
+
 ## NTIRE: exact-form Sprecher network
 
 The new `sprecher` run implements the requested scalar block literally:

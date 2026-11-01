@@ -3,7 +3,7 @@ from typing import Sequence
 import torch
 from torch import nn
 
-from .bspline import compute_bspline
+from .bspline import evaluate_local_spline
 from .kan_layer import generate_control_points
 
 
@@ -57,9 +57,7 @@ class SharedSplineLayer(nn.Module):
             parameters = parameters + offsets
         coefficients, weights, shifts, biases = self.unpack(parameters)
         shifted = x[:, None, :] + shifts[:, :, None]
-        # Flatten edges solely to reuse cmKAN's existing Cox-de Boor recurrence.
-        bases = compute_bspline(
-            shifted.reshape(-1, 1), self.grid.to(dtype=x.dtype), self.spline_order,
-        ).reshape(x.shape[0], self.out_dim, self.in_dim, self.coef_size)
-        activated = (bases * coefficients[:, None, None, :]).sum(dim=-1)
+        activated = evaluate_local_spline(
+            shifted, self.grid, coefficients[:, None, None, :], self.spline_order,
+        )
         return biases + (weights * activated).sum(dim=-1)

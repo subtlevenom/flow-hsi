@@ -1,5 +1,54 @@
 import torch
 
+
+def evaluate_local_spline(values, grid, coefficients, order):
+    """Evaluate a shared knot grid using only order+1 active coefficients.
+
+    Coefficients broadcast over values' leading dimensions. Invalid edge
+    coefficients are zero, preserving the original finite-support recurrence.
+    """
+    knots = grid.reshape(-1).to(device=values.device, dtype=values.dtype)
+    span = torch.searchsorted(knots, values.contiguous(), right=True) - 1
+    indices = span[..., None] - order + torch.arange(order + 1, device=values.device)
+
+    def knot(index):
+        bounded = index.clamp(0, knots.numel() - 1)
+        # Virtual knots only serve bases with nonexistent, zero coefficients.
+        return (knots[bounded]
+                + index.clamp(max=0) * (knots[1] - knots[0])
+                + (index - knots.numel() + 1).clamp(min=0) * (knots[-1] - knots[-2]))
+
+    if order == 3:
+        # Unroll cubic recurrence; use actual knots, including their rounding,
+        # rather than assuming an exactly uniform cardinal spline.
+        t0, t1, t2, t3, t4, t5 = knot(
+            span[..., None] + torch.arange(-2, 4, device=values.device),
+        ).unbind(-1)
+        a = (t3 - values) / (t3 - t2)
+        b = (values - t2) / (t3 - t2)
+        c = (t3 - values) / (t3 - t1) * a
+        d = (values - t1) / (t3 - t1) * a + (t4 - values) / (t4 - t2) * b
+        e = (values - t2) / (t4 - t2) * b
+        bases = torch.stack((
+            (t3 - values) / (t3 - t0) * c,
+            (values - t0) / (t3 - t0) * c + (t4 - values) / (t4 - t1) * d,
+            (values - t1) / (t4 - t1) * d + (t5 - values) / (t5 - t2) * e,
+            (values - t2) / (t5 - t2) * e,
+        ), -1)
+    else:
+        bases = torch.ones_like(values)[..., None]
+        for degree in range(1, order + 1):
+            current = indices[..., order - degree:]
+            left = (values[..., None] - knot(current)) / (knot(current + degree) - knot(current))
+            right = (knot(current + degree + 1) - values[..., None]) / (
+                knot(current + degree + 1) - knot(current + 1))
+            zeros = torch.zeros_like(bases[..., :1])
+            bases = left * torch.cat((zeros, bases), -1) + right * torch.cat((bases, zeros), -1)
+    valid = (indices >= 0) & (indices < coefficients.shape[-1])
+    expanded = coefficients.expand(*values.shape, coefficients.shape[-1])
+    active = expanded.gather(-1, indices.clamp(0, coefficients.shape[-1] - 1))
+    return (bases * active * valid).sum(-1)
+
 # Helper functions for computing B splines over a grid
 def compute_bspline(x: torch.Tensor, grid: torch.Tensor, k: int):
     """
