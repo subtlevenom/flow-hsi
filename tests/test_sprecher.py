@@ -190,7 +190,8 @@ def test_config_and_bounded_training(tmp_path):
     assert all(torch.isfinite(v).all() for v in state["state_dict"].values())
     overridden = configuration(["spectral_channels=7",
                                 "model.params.layers.cmkan.params.grid_size=5",
-                                "model.params.layers.cmkan.params.spline_order=2"])
+                                "model.params.layers.cmkan.params.spline_order=2",
+                                "model.params.layers.cmkan.params.implementation=loop"])
     other = ModelSelector.select(overridden.model).layers.cmkan
     assert other.input_dim == other.output_dim == 7
     assert other.size == 31 * 2 * 7
