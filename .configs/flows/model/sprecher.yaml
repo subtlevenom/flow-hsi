@@ -20,11 +20,6 @@ params:
         mst_features: 32
         mst_stages: 3
         mst_head_channels: 64
-        pixel_chunk_size: 256
-        block_chunk_size: 1
-        # uniform: closed-form cubic B-splines over all blocks at once (same
-        # math/state as "loop"). shared_shift: one epsilon per layer, the
-        # inner basis is shared by all blocks and contracted by one matmul.
-        implementation: uniform
-        shared_shift: false
+        pixel_chunk_size: 64
+        block_chunk_size: null
         checkpoint_splines: true

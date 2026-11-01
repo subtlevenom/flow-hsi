@@ -37,6 +37,24 @@ def test_local_broadcast_and_gradcheck():
                                    (values, coefficients))
 
 
+@pytest.mark.parametrize("shape", [(10,), (1, 1, 1, 10), (2, 1, 1, 10),
+                                    (1, 3, 1, 10), (2, 3, 4, 10)])
+def test_compact_gathers_preserve_coefficient_broadcasting(shape):
+    grid = generate_control_points(-1, 2, 1, 1, 3, 7).double()
+    values = torch.rand(2, 3, 4, dtype=torch.double, requires_grad=True)
+    # A noncontiguous view must also propagate into its original storage.
+    storage = torch.randn(*shape[:-1], 20, dtype=torch.double, requires_grad=True)
+    coefficients = storage[..., ::2]
+    local = evaluate_local_spline(values, grid, coefficients, 3)
+    dense = (compute_bspline(values.reshape(-1, 1), grid, 3)
+             .reshape(*values.shape, 10) * coefficients).sum(-1)
+    torch.testing.assert_close(local, dense)
+    a = torch.autograd.grad(local.square().sum(), (values, storage), retain_graph=True)
+    b = torch.autograd.grad(dense.square().sum(), (values, storage))
+    for left, right in zip(a, b):
+        torch.testing.assert_close(left, right)
+
+
 def test_shared_layer_generated_argument_and_base_gradients():
     layer = SharedSplineLayer(3, 4, grid_size=7).double()
     x = torch.rand(5, 3, dtype=torch.double, requires_grad=True)

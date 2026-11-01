@@ -96,41 +96,53 @@ but need coverage/scale regularization and can lose detail or collapse.
 Six exponentials may or may not beat four local cubic coefficients on a GPU;
 benchmark before switching. No Gaussian family has been substituted here.
 
-### Optional Sprecher block batching
+### Exact all-block Sprecher batching
 
-Sprecher can batch independent output blocks with
-`model.params.layers.cmkan.params.block_chunk_size=4` (or 8). The default
-remains **1**, preserving the current execution/memory settings.
+Sprecher now evaluates all independent output blocks together by default
+(`block_chunk_size: null`). Like the original
+[cmKAN implementation](https://github.com/gosha20777/cmKAN/blob/main/cm_kan/ml/layers/cm_kan/cm_kan.py),
+it rearranges pixel and curve dimensions for batched tensor operations.
 Explicit batched tensor operations handle each block's own knots, generated
 Psi/Xi coefficients, Lambda and epsilon; no branches or parameters are tied,
 omitted, or reordered. Existing scalar-block state keys and checkpoint shapes
 remain unchanged. Batched evaluation works with layer checkpointing, cached
-context and pixel chunking. It avoids a per-block Python evaluation loop,
-but still loops over bounded groups and retains all 63 branches per block.
+context and pixel chunking. All 63 branches per block remain. Coefficient and
+knot gathers flatten arguments sharing the same table rather than expanding
+tables over every branch/channel; backward scatters into compact tables.
+The existing local Cox-de Boor recurrence still uses actual knots, including
+float32 rounding and nonuniform loaded grids. The previous `uniform` and
+`shared_shift` options have been removed: there is no curve approximation or
+shared epsilon.
 
-Fresh CPU benchmarks of the one-layer 31->31 Sprecher model (8x8 input,
-float32, one thread, full MST generator and FFN, checkpointing enabled,
-median three samples after warmup):
+RTX 4090 measurements with PyTorch 2.4.0+cu121, batch 1, a 32x32 crop,
+31->31 Sprecher layer, full three-stage MST generator and FFN,
+bf16-mixed precision, checkpointing enabled, median of three synchronized
+samples after warmup:
 
-| Pixel chunk | Block chunk | Full forward/backward | Parameter application inference |
-|---:|---:|---:|---:|
-| 7 | 1 | 3.61 s | 0.94 s |
-| 7 | 8 | 2.26 s | 0.88 s |
-| 64 (default) | 1 (default) | 2.22 s | 0.81 s |
-| 64 | 4 | 2.03 s | 0.84 s |
+| Execution | Full forward/backward | Full inference |
+|---|---:|---:|
+| Original scalar blocks, 64-pixel chunks | 3.047 s | 0.627 s |
+| Original evaluator with all 31 blocks batched | 0.455 s | not measured |
+| Compact gathers, all 31 blocks batched, 64-pixel chunks | 0.451 s | 0.186 s |
 
-Batching helped small chunks substantially but gave only about 8% training
-improvement at default pixel chunks, and did not improve default-chunk CPU
-inference. CUDA was unavailable; GPU kernel-launch benefits are unmeasured.
-Try the option on the actual GPU rather than assuming an epoch-speed gain:
+Batching accounts for most of the approximately 6.8x training and 3.4x
+inference speedup over the original scalar configuration. These are model
+timings, not epoch timings or evidence of a quality change. On a GPU comparison
+with independent shifts and nonuniform knots, outputs matched exactly and
+the maximum absolute gradient difference was below 5e-7.
+
+The default retains 64-pixel chunks. Float32 full-model measurements with
+256/512/1024-pixel chunks took 0.460/0.476/0.503 s for forward/backward and
+used approximately 4.2/8.3/16.5 GiB peak allocated memory, versus 0.441 s and
+1.1 GiB at 64 pixels. Evaluating all pixels at once was therefore slower and
+less memory-efficient. For a lower-memory block batch, set a positive size:
 
 ```powershell
 python main.py --config-name sprecher task=train model.params.layers.cmkan.params.block_chunk_size=4
 ```
 
-Per-call inner argument/basis storage scales with block group size: four
-blocks at 64 pixels need roughly 19 MiB just for the active four-coefficient
-bases, versus 4.8 MiB for one block, plus indices and autograd intermediates.
+Per-call inner argument/basis storage scales with pixel and block group sizes,
+plus indices and autograd intermediates.
 Checkpointing avoids saving all these activations across the image, but
 recomputes them during backward. Increasing pixel and block chunks together
 can exhaust memory. The 620-values/pixel generated curve map is unchanged.

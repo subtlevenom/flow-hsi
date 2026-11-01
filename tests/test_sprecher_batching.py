@@ -17,8 +17,9 @@ def cpu_workload():
 
 
 @pytest.mark.parametrize("batch_size", [2, 4, 8])
-def test_batched_blocks_match_independent_curves_arguments_and_gradients(batch_size):
-    layer = SprecherLayer(3, 5).double()
+@pytest.mark.parametrize("order", [2, 3, 4])
+def test_batched_blocks_match_independent_curves_arguments_and_gradients(batch_size, order):
+    layer = SprecherLayer(3, 5, block_chunk_size=1, spline_order=order).double()
     with torch.no_grad():
         for index, block in enumerate(layer.blocks):
             block.psi_base.add_(torch.randn_like(block.psi_base) * 0.05)
@@ -44,7 +45,7 @@ def test_batched_blocks_match_independent_curves_arguments_and_gradients(batch_s
 
 def test_batched_cascade_checkpoint_cache_chunks_and_old_state():
     model = SprecherNet(7, 4, layer_widths=[5, 3], mst_features=8, mst_stages=1,
-                        mst_head_channels=8, pixel_chunk_size=7).double()
+                        mst_head_channels=8, pixel_chunk_size=7, block_chunk_size=1).double()
     # Strict load of the unchanged scalar layout; batching adds no state.
     state = model.state_dict()
     other = SprecherNet(7, 4, layer_widths=[5, 3], mst_features=8, mst_stages=1,
@@ -102,58 +103,13 @@ def test_batched_knots_endpoints_and_support(order):
         torch.testing.assert_close(x, y)
 
 
-def _exact_uniform_grids(layer):
-    with torch.no_grad():
-        for index, block in enumerate(layer.blocks):
-            block.psi_base.add_(torch.randn_like(block.psi_base) * 0.1)
-            block.xi_base.add_(torch.randn_like(block.xi_base) * 0.1)
-            block.lambdas.add_(torch.randn_like(block.lambdas) * 0.05)
-            block.epsilon_logit.fill_(index * 0.3 - 0.5)
-            for grid in (block.psi_grid, block.xi_grid):
-                grid.copy_(torch.linspace(grid[..., 0].item(), grid[..., -1].item(),
-                                          grid.shape[-1], dtype=grid.dtype))
-
-
-def test_uniform_matches_loop_values_and_gradients():
-    loop = SprecherLayer(5, 4).double()
-    _exact_uniform_grids(loop)
-    uniform = SprecherLayer(5, 4, implementation="uniform").double()
-    uniform.load_state_dict(loop.state_dict(), strict=True)
-    # Includes inputs beyond both knot ends, where curves vanish.
-    x = torch.cat((torch.rand(16, 5, dtype=torch.double),
-                   torch.tensor([[-3., 5., -1., 2., 1.99]], dtype=torch.double))).requires_grad_()
-    offsets = (torch.randn(17, loop.size, dtype=torch.double) * 0.05).requires_grad_()
-    expected = loop(x, offsets)
-    actual = uniform(x, offsets)
-    torch.testing.assert_close(actual, expected)
-    a = torch.autograd.grad(actual.square().sum(), (x, offsets, *uniform.parameters()))
-    b = torch.autograd.grad(expected.square().sum(), (x, offsets, *loop.parameters()))
-    for left, right in zip(a, b):
-        torch.testing.assert_close(left, right)
-
-
-def test_shared_shift_matches_loop_with_equal_epsilon():
-    loop = SprecherLayer(4, 3).double()
-    _exact_uniform_grids(loop)
-    shared = SprecherLayer(4, 3, implementation="uniform", shared_shift=True).double()
-    shared.load_state_dict(loop.state_dict(), strict=False)
-    with torch.no_grad():
-        shared.epsilon_logit.fill_(0.7)
-        for block in loop.blocks:
-            block.epsilon_logit.fill_(0.7)
-    x = torch.rand(9, 4, dtype=torch.double)
-    offsets = torch.randn(9, loop.size, dtype=torch.double) * 0.05
-    torch.testing.assert_close(shared(x, offsets), loop(x, offsets))
-    shared(x, offsets).square().sum().backward()
-    assert shared.epsilon_logit.grad.abs() > 0
-    assert all(block.lambdas.grad.abs().sum() > 0 for block in shared.blocks)
-    assert all(not block.epsilon_logit.requires_grad for block in shared.blocks)
-
-
-def test_implementation_options_rejected():
-    with pytest.raises(ValueError, match="implementation"):
-        SprecherLayer(3, 4, implementation="fast")
-    with pytest.raises(ValueError, match="shared_shift"):
-        SprecherLayer(3, 4, shared_shift=True)
-    with pytest.raises(ValueError, match="spline_order=3"):
-        SprecherLayer(3, 4, implementation="uniform", spline_order=2)
+def test_default_batches_all_blocks_without_changing_state():
+    scalar = SprecherLayer(3, 5, block_chunk_size=1).double()
+    batched = SprecherLayer(3, 5).double()
+    batched.load_state_dict(scalar.state_dict(), strict=True)
+    assert batched.block_chunk_size == 5
+    assert scalar.state_dict().keys() == batched.state_dict().keys()
+    assert all(block.epsilon_logit.requires_grad for block in batched.blocks)
+    x = torch.rand(7, 3, dtype=torch.double)
+    offsets = torch.randn(7, batched.size, dtype=torch.double) * 0.01
+    torch.testing.assert_close(batched(x, offsets), scalar(x, offsets))

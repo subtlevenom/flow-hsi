@@ -25,8 +25,8 @@ def evaluate_local_spline(values, grid, coefficients, order):
         bounded = index.clamp(0, knot_count - 1)
         if batched:
             shape = (values.shape[0], *([1] * (index.ndim - 1)))
-            table = knots.reshape(*shape[:-1], knot_count).expand(*index.shape[:-1], knot_count)
-            return (table.gather(-1, bounded)
+            selected = knots.gather(-1, bounded.reshape(values.shape[0], -1)).reshape_as(index)
+            return (selected
                     + index.clamp(max=0) * (knots[:, 1] - knots[:, 0]).reshape(shape)
                     + (index - knot_count + 1).clamp(min=0)
                     * (knots[:, -1] - knots[:, -2]).reshape(shape))
@@ -62,8 +62,18 @@ def evaluate_local_spline(values, grid, coefficients, order):
             zeros = torch.zeros_like(bases[..., :1])
             bases = left * torch.cat((zeros, bases), -1) + right * torch.cat((bases, zeros), -1)
     valid = (indices >= 0) & (indices < coefficients.shape[-1])
-    expanded = coefficients.expand(*values.shape, coefficients.shape[-1])
-    active = expanded.gather(-1, indices.clamp(0, coefficients.shape[-1] - 1))
+    # Flatten the arguments sharing one coefficient vector before gathering.
+    # Expanding over every argument makes gather's backward allocate a dense
+    # [blocks, pixels, branches, channels, coefficients] gradient.
+    shape = (1,) * (values.ndim + 1 - coefficients.ndim) + coefficients.shape
+    prefix = len(shape) - 1
+    while prefix and shape[prefix - 1] == 1:
+        prefix -= 1
+    table = coefficients.reshape(*shape[:prefix], shape[-1]).expand(
+        *values.shape[:prefix], shape[-1],
+    )
+    bounded = indices.clamp(0, coefficients.shape[-1] - 1)
+    active = table.gather(-1, bounded.reshape(*values.shape[:prefix], -1)).reshape_as(indices)
     return (bases * active * valid).sum(-1)
 
 # Helper functions for computing B splines over a grid

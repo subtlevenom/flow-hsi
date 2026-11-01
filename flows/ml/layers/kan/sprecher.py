@@ -1,51 +1,11 @@
 import math
-from typing import Sequence
+from typing import Optional, Sequence
 
 import torch
 from torch import nn
-import torch.nn.functional as F
 
 from .bspline import evaluate_local_spline
 from .shared_spline import SharedSplineLayer
-
-IMPLEMENTATIONS = ("loop", "uniform")
-
-
-def _uniform_cubic_parts(values, grid, coef_count):
-    """Closed-form cardinal cubic B-spline weights on a uniform knot grid.
-
-    Returns padded coefficient positions [..., 4] and their weights [..., 4].
-    Positions index coefficients left/right padded by four zeros, which
-    reproduces the zero value outside the knot range of evaluate_local_spline.
-    """
-    start = grid[..., 0]
-    step = (grid[..., -1] - start) / (grid.shape[-1] - 1)
-    u = ((values - start) / step).clamp(-1, coef_count + 3)
-    span = u.detach().floor()
-    f = u - span
-    g = 1 - f
-    f2 = f * f
-    f3 = f2 * f
-    weights = torch.stack((g * g * g, 3 * f3 - 6 * f2 + 4,
-                           -3 * f3 + 3 * f2 + 3 * f + 1, f3), -1) / 6
-    positions = span.long()[..., None] + torch.arange(1, 5, device=values.device)
-    return positions, weights
-
-
-def uniform_cubic_spline(values, grid, coefficients):
-    """Evaluate per-row cubic splines: values [..., M], coefficients [..., C]."""
-    coef_count = coefficients.shape[-1]
-    positions, weights = _uniform_cubic_parts(values, grid, coef_count)
-    padded = F.pad(coefficients, (4, 4))
-    active = padded.gather(-1, positions.flatten(-2)).view_as(weights)
-    return (weights * active).sum(-1)
-
-
-def uniform_cubic_basis(values, grid, coef_count):
-    """Dense cubic B-spline basis [..., C] on a uniform knot grid."""
-    positions, weights = _uniform_cubic_parts(values, grid, coef_count)
-    dense = weights.new_zeros(*values.shape, coef_count + 8)
-    return dense.scatter(-1, positions, weights)[..., 4:coef_count + 4]
 
 
 class SprecherBlock(nn.Module):
@@ -103,69 +63,26 @@ class SprecherBlock(nn.Module):
 class SprecherLayer(nn.Module):
     """m independent scalar Sprecher blocks in parallel, mapping n -> m.
 
-    implementation="loop" evaluates blocks with the generic knot-search
-    recurrence (block_chunk_size at a time). implementation="uniform" evaluates
-    all blocks at once with closed-form cubic B-splines; it assumes the
-    uniform knot grids built at construction and spline_order=3.
-    shared_shift=True (uniform only) uses one epsilon for all blocks, so the
-    inner basis is computed once per pixel and contracted with all lambdas by
-    a single batched matmul (~m times fewer spline evaluations).
+    All blocks are evaluated together by default. A positive block_chunk_size
+    bounds the batch for lower peak memory without changing any parameters.
     """
 
-    def __init__(self, input_dim: int, output_dim: int, block_chunk_size: int = 1,
-                 implementation: str = "loop", shared_shift: bool = False, **kwargs):
+    def __init__(self, input_dim: int, output_dim: int,
+                 block_chunk_size: Optional[int] = None, **kwargs):
         super().__init__()
-        if min(output_dim, block_chunk_size) < 1:
+        if output_dim < 1 or (block_chunk_size is not None and block_chunk_size < 1):
             raise ValueError("output_dim and block_chunk_size must be positive.")
-        if implementation not in IMPLEMENTATIONS:
-            raise ValueError(f"implementation must be one of {IMPLEMENTATIONS}.")
-        if shared_shift and implementation != "uniform":
-            raise ValueError("shared_shift requires implementation='uniform'.")
-        self.block_chunk_size = block_chunk_size
-        self.implementation = implementation
-        self.shared_shift = shared_shift
+        self.block_chunk_size = output_dim if block_chunk_size is None else block_chunk_size
         self.blocks = nn.ModuleList([
             SprecherBlock(input_dim, **kwargs) for _ in range(output_dim)
         ])
-        if implementation == "uniform" and self.blocks[0].spline_order != 3:
-            raise ValueError("implementation='uniform' requires spline_order=3.")
-        if shared_shift:
-            self.epsilon_logit = nn.Parameter(torch.tensor(0.0))
-            for block in self.blocks:
-                block.epsilon_logit.requires_grad_(False)
         self.size = sum(block.size for block in self.blocks)
-
-    def _uniform(self, x, offsets):
-        first = self.blocks[0]
-        m, coef = len(self.blocks), first.coef_size
-        psi, xi = offsets.view(-1, m, 2, coef).unbind(2)
-        psi = psi + torch.stack([block.psi_base for block in self.blocks])
-        xi = xi + torch.stack([block.xi_base for block in self.blocks])
-        lambdas = torch.stack([block.lambdas for block in self.blocks])  # [m, n, Q]
-        if self.shared_shift:
-            epsilon = (first.max_shift * self.epsilon_logit.sigmoid()
-                       / (first.branches - 1))
-            shifted = x[:, None, :] + epsilon * first.q[None, :, None]  # [N, Q, n]
-            basis = uniform_cubic_basis(shifted, first.psi_grid.reshape(-1), coef)
-            # mixed[N, m, Q, C] = sum_p lambda[m, p, Q] * B_C(x_p + eps Q)
-            mixed = torch.einsum("nqpc,mpq->nmqc", basis, lambdas)
-            sums = (mixed * psi[:, :, None, :]).sum(-1)
-        else:
-            epsilon = torch.stack([block.epsilon for block in self.blocks])
-            shifted = x[:, None, None, :] + (epsilon[:, None] * first.q)[None, :, :, None]
-            inner = uniform_cubic_spline(
-                shifted.flatten(-2), first.psi_grid.reshape(-1), psi,
-            ).view_as(shifted)  # [N, m, Q, n]
-            sums = (inner * lambdas.transpose(1, 2)[None]).sum(-1)
-        return uniform_cubic_spline(sums, first.xi_grid.reshape(-1), xi).sum(-1)
 
     def forward(self, x, offsets):
         if x.ndim != 2 or x.shape[1] != self.blocks[0].input_dim:
             raise ValueError(f"Expected [N, {self.blocks[0].input_dim}] signals.")
         if offsets.shape != (x.shape[0], self.size):
             raise ValueError(f"Expected [N, {self.size}] curve offsets.")
-        if self.implementation == "uniform":
-            return self._uniform(x, offsets)
         pieces = offsets.split([block.size for block in self.blocks], dim=-1)
         outputs = []
         for start in range(0, len(self.blocks), self.block_chunk_size):
