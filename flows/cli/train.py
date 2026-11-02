@@ -67,6 +67,7 @@ def train_default(config: DictConfig) -> None:
         logger=logger,
         default_root_dir=os.path.join(config.save_dir, config.experiment),
         max_epochs=config.epochs,
+        limit_train_batches=config.get('limit_train_batches', 1.0),
         precision="bf16-mixed" if use_cuda and torch.cuda.is_bf16_supported() else 32,
         accelerator=accelerator,
         devices=config.get('devices', 1),

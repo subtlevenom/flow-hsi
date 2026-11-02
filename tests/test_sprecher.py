@@ -145,22 +145,27 @@ def test_config_and_bounded_training(tmp_path):
     OmegaConf.to_container(config, resolve=True, throw_on_missing=True)
     model = ModelSelector.select(config.model).layers.cmkan
     assert model.input_dim == model.output_dim == 31
-    assert model.parameter_sizes == (620,) and model.size == 620
-    assert [len(layer.blocks) for layer in model.sprecher_layers] == [31]
-    assert [layer.blocks[0].branches for layer in model.sprecher_layers] == [63]
-    assert len(model.encoder.heads) == 31
+    assert model.signal_dim == 8
+    assert model.input_projection.in_channels == 31
+    assert model.input_projection.out_channels == 8
+    assert model.encoder.stem.in_channels == 31
+    assert model.parameter_sizes == (160,) and model.size == 160
+    assert [len(layer.blocks) for layer in model.sprecher_layers] == [8]
+    assert [layer.blocks[0].branches for layer in model.sprecher_layers] == [17]
+    assert len(model.encoder.heads) == 8
     assert all(head.out_channels == 20 for head in model.encoder.heads)
     blocks = model.sprecher_layers[0].blocks
-    assert all(block.lambdas.shape == (31, 63) for block in blocks)
-    assert sum(block.lambdas.numel() for block in blocks) == 60543
-    assert sum(block.epsilon_logit.numel() for block in blocks) == 31
-    assert model.output_ffn.pointwise1.in_channels == 31
+    assert all(block.lambdas.shape == (8, 17) for block in blocks)
+    assert sum(block.lambdas.numel() for block in blocks) == 1088
+    assert sum(block.epsilon_logit.numel() for block in blocks) == 8
+    assert model.output_ffn.pointwise1.in_channels == 8
     assert model.output_ffn.pointwise1.out_channels == 32
     assert model.output_ffn.pointwise2.out_channels == 31
     x = torch.rand(1, 31, 3, 5)
     curves = model.generate_parameters(x)
-    assert curves.shape == (1, 620, 3, 5)
+    assert curves.shape == (1, 160, 3, 5)
     model.apply_parameters(x, curves).square().mean().backward()
+    assert model.input_projection.weight.grad.abs().sum() > 0
     for block, head in zip(blocks, model.encoder.heads):
         assert block.lambdas.grad.abs().sum() > 0
         assert block.epsilon_logit.grad.abs() > 0
@@ -173,10 +178,13 @@ def test_config_and_bounded_training(tmp_path):
             np.save(folder / "sample.npy", np.random.default_rng(3).uniform(
                 0.1, 0.9, (8, 8, 31),
             ).astype("float32"))
+            np.save(folder / "another.npy", np.random.default_rng(4).uniform(
+                0.1, 0.9, (8, 8, 31),
+            ).astype("float32"))
     config = configuration([
         f"dataset_root={(tmp_path / 'dataset').as_posix()}",
         f"save_dir={(tmp_path / 'experiments').as_posix()}",
-        "accelerator=cpu", "devices=1", "epochs=1",
+        "accelerator=cpu", "devices=1", "epochs=2", "limit_train_batches=1",
         "data.params.num_workers=0", "data.params.pin_memory=false",
         "data.params.train.crop_size=8", "data.params.val.crop_size=8",
         "model.params.layers.cmkan.params.mst_features=8",
@@ -186,11 +194,63 @@ def test_config_and_bounded_training(tmp_path):
     train_default(config)
     path = tmp_path / "experiments" / config.experiment / "logs" / "checkpoints" / "last.ckpt"
     state = torch.load(path, weights_only=False)
-    assert state["global_step"] == 1
+    assert state["global_step"] == 2
+    assert state["epoch"] == 1
     assert all(torch.isfinite(v).all() for v in state["state_dict"].values())
     overridden = configuration(["spectral_channels=7",
                                 "model.params.layers.cmkan.params.grid_size=5",
                                 "model.params.layers.cmkan.params.spline_order=2"])
     other = ModelSelector.select(overridden.model).layers.cmkan
     assert other.input_dim == other.output_dim == 7
-    assert other.size == 31 * 2 * 7
+    assert other.size == 8 * 2 * 7
+
+
+def test_projected_signal_cache_chunks_gradients_and_state():
+    model = SprecherNet(31, 31, layer_widths=[8], signal_dim=8, mst_features=8,
+                        mst_stages=1, mst_head_channels=8, pixel_chunk_size=3).double()
+    x = torch.rand(1, 31, 3, 5, dtype=torch.double, requires_grad=True)
+    context = torch.rand_like(x, requires_grad=True)
+    parameters = model.generate_parameters(context)
+    expected = model.apply_parameters(x, parameters)
+    assert expected.shape == x.shape
+    model.pixel_chunk_size = 100
+    actual = model.apply_parameters(x, parameters)
+    torch.testing.assert_close(actual, expected)
+    actual.square().mean().backward()
+    assert x.grad.abs().sum() > 0
+    assert model.input_projection.weight.grad.abs().sum() > 0
+    assert all(head.weight.grad.abs().sum() > 0 for head in model.encoder.heads)
+    model.eval()
+    torch.testing.assert_close(model.predictor(context)(x),
+                               model.apply_parameters(x, model.generate_parameters(context)))
+    restored = SprecherNet(31, 31, layer_widths=[8], signal_dim=8, mst_features=8,
+                           mst_stages=1, mst_head_channels=8).double().eval()
+    restored.load_state_dict(model.state_dict(), strict=True)
+    torch.testing.assert_close(restored(x), model(x))
+    legacy = SprecherNet(31, 31, layer_widths=[8], mst_features=8,
+                         mst_stages=1, mst_head_channels=8)
+    assert isinstance(legacy.input_projection, torch.nn.Identity)
+    assert not any(key.startswith("input_projection.") for key in legacy.state_dict())
+    with pytest.raises(ValueError, match="signal_dim"):
+        SprecherNet(31, 31, signal_dim=0)
+
+
+def test_limited_epochs_draw_new_reproducible_subsets_from_full_dataset():
+    def subsets():
+        dm = ntire.DataModule(train={"batch_size": 4}, num_workers=0, seed=43,
+                              pin_memory=False)
+        dm.train_dataset = torch.utils.data.TensorDataset(torch.arange(200))
+        loader = dm.train_dataloader()
+        result = []
+        for _ in range(3):
+            iterator = iter(loader)
+            result.append(torch.cat([next(iterator)[0] for _ in range(5)]))
+        return result
+
+    first, repeated = subsets(), subsets()
+    for a, b in zip(first, repeated):
+        torch.testing.assert_close(a, b)
+        assert a.unique().numel() == 20
+        assert a.max() >= 20
+    assert not torch.equal(first[0], first[1])
+    assert not torch.equal(first[1], first[2])

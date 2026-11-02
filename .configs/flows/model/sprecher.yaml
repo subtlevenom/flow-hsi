@@ -10,7 +10,8 @@ params:
       params:
         input_dim: ${spectral_channels}
         output_dim: ${spectral_channels}
-        layer_widths: [31]
+        signal_dim: 8
+        layer_widths: [8]
         grid_size: 7
         spline_order: 3
         psi_range: [-1.0, 2.0]

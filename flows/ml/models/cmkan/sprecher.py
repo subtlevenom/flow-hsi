@@ -21,14 +21,20 @@ class SprecherNet(nn.Module):
         mst_features: int = 32, mst_stages: int = 3, mst_head_channels: int = 64,
         pixel_chunk_size: int = 64, checkpoint_splines: bool = True,
         block_chunk_size: Optional[int] = None,
+        signal_dim: Optional[int] = None,
     ):
         super().__init__()
         if not layer_widths or min(input_dim, output_dim, ffn_hidden, pixel_chunk_size) < 1:
             raise ValueError("Dimensions/chunk size must be positive and layer_widths nonempty.")
         self.input_dim, self.output_dim = input_dim, output_dim
+        if signal_dim is not None and signal_dim < 1:
+            raise ValueError("signal_dim must be positive.")
+        self.signal_dim = input_dim if signal_dim is None else signal_dim
+        self.input_projection = (nn.Identity() if signal_dim is None else
+                                 nn.Conv2d(input_dim, self.signal_dim, 1))
         self.pixel_chunk_size = pixel_chunk_size
         self.checkpoint_splines = checkpoint_splines
-        dimensions = [input_dim, *layer_widths]
+        dimensions = [self.signal_dim, *layer_widths]
         self.sprecher_layers = nn.ModuleList([
             SprecherLayer(i, o, grid_size=grid_size, spline_order=spline_order,
                           psi_range=psi_range, xi_range=xi_range, max_shift=max_shift,
@@ -52,7 +58,7 @@ class SprecherNet(nn.Module):
         b, _, h, w = x.shape
         if parameters.shape != (b, self.size, h, w):
             raise ValueError("Generated curves must match the signal batch and spatial grid.")
-        signals = x.permute(0, 2, 3, 1).reshape(-1, self.input_dim)
+        signals = self.input_projection(x).permute(0, 2, 3, 1).reshape(-1, self.signal_dim)
         offsets = parameters.permute(0, 2, 3, 1).reshape(-1, self.size)
         outputs = []
         for start in range(0, signals.shape[0], self.pixel_chunk_size):

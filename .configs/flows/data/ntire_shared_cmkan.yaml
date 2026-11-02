@@ -7,8 +7,8 @@ params:
   train:
     source: ${dataset_root}/train/source
     target: ${dataset_root}/train/target
-    batch_size: 1
-    crop_size: 32
+    batch_size: 2
+    crop_size: 64
   val:
     source: ${dataset_root}/test/source
     target: ${dataset_root}/test/target

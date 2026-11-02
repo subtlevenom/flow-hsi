@@ -161,7 +161,7 @@ Sprecher architecture still needs `n*(2n+1)*m = 60,543` inner evaluations per
 pixel. Replacing splines alone cannot eliminate that dominant scaling.
 No live training process or automatic resume was changed.
 
-## NTIRE: exact-form Sprecher network
+## NTIRE: conditioned Sprecher-inspired network
 
 The new `sprecher` run implements the requested scalar block literally:
 `f(x) = sum_{q=0}^{2n} Xi(sum_{p=1}^{n} Lambda[p,q] * Psi(x_p + epsilon*q))`.
@@ -178,12 +178,16 @@ A **Sprecher layer** runs m scalar blocks in parallel to map n to m.
 `cmkan.SprecherNet` composes layers sequentially, then uses the actual
 cmKAN encoder `FFN` from `flows/ml/layers/encoders/cm_encoder.py`:
 1x1 projection, 3x3 depthwise convolution, ReLU, 1x1 output projection.
-The default is **31 -> 31 -> FFN(32 hidden) -> 31**: one Sprecher layer
-with 31 independent scalar blocks, preserving the
+The default main path is **31 -> learned 1x1 projection to 8 -> Sprecher 8->8
+-> FFN(32 hidden) -> 31**: one Sprecher layer
+with eight independent scalar blocks, preserving the
 HSI-to-HSI NTIRE task. The convolutional FFN and spatial conditioning mean
 the complete image network is not solely a pointwise theorem representation.
-This single-layer width is an experiment, not a benchmark-selected optimum
-or a presumed improvement over the previous two-layer `[8,8]` setting.
+The `signal_dim: 8` projection changes only the signal branch; the MST++
+hypernetwork still receives all 31 original bands. Projection outputs are not
+clipped or normalized. This bottleneck is an experiment, not a
+benchmark-selected optimum. Set `signal_dim: null` to omit the projection
+and retain the original model/state layout.
 
 MST++ uses the original spectrum as context for **all layers**, not each
 intermediate signal. Its feature backbone is the same repository MST adaptation
@@ -209,17 +213,37 @@ return zero, not extrapolation. Adjust ranges to the data; no implicit clipping
 or normalization is inserted. Finite learned splines with a shared Xi do
 **not** inherit a universal-representation theorem guarantee.
 
-The 31 default scalar blocks generate **620 values/pixel** in one layer:
-float32 maps cost 2.42 MiB at 32x32, 38.75 MiB at 128x128 and about
-584 MiB at 482x512. Lambda has 60,543 learned entries plus 31 epsilon scalars
-(each block's matrix is `[31,63]`). Exact branches require 60,543 inner
-spline evaluations per pixel, about 3.62 times the previous `[8,8]` setting;
-all inner 10-coefficient bases would occupy about 2.31 GiB per 32x32 sample
-if retained together, before recursion intermediates and outer bases.
-Default 64-pixel chunks bound one largest block's inner basis to about 4.8 MiB;
+The eight default scalar blocks generate **160 values/pixel** in one layer:
+float32 maps cost 0.625 MiB at 32x32 and 10 MiB at 128x128.
+Lambda has 1,088 learned entries plus eight epsilon scalars
+(each block's matrix is `[8,17]`). There are 16 spline curves,
+1,088 inner evaluations and 136 outer evaluations per pixel, versus 62
+curves and 62,496 total evaluations in the previous 31->31 main path.
+Default 64-pixel chunks bound the all-block spline calculation;
 layer checkpointing avoids retaining all these training bases, trading compute
 for memory. MST++ activations, output FFN and curve maps still cost memory.
 Use smaller validation crops/batches when needed; full-cube inference may be slow.
+
+Existing checkpoints without the projection are not compatible with this
+bottleneck configuration. Start a separate experiment with `resume=false`,
+or restore the original `signal_dim: null` and layer widths to resume an old
+run. The bottleneck does not correct the current formula's missing outer
+branch shift, branch-dependent mixing weights or unconstrained inner spline;
+it preserves that Sprecher-inspired variant.
+
+Sprecher training defaults to batch size 1 and random 32x32 crops. Set
+`data.params.train.batch_size` to change the batch size and
+`limit_train_batches=1000` to cap an epoch at 1,000 training batches.
+The default `limit_train_batches=1.0` uses the full training loader; an integer
+is a batch count, whereas a float in `(0, 1]` is a fraction of the loader.
+The whole training dataset is shuffled each epoch, so capped epochs use a
+fresh random subset without replacement within that epoch, plus new random
+crops/flips. Validation is not capped. With no gradient accumulation, 1,000
+batches are 1,000 optimizer steps and at batch size 8 use up to 8,000 samples.
+The cap does not extend an epoch beyond the available batches. Shorter epochs
+also make the epoch-based learning-rate schedule and validation run more
+frequently per optimizer step; adjust `epochs` to preserve the desired total
+training budget.
 
 ```powershell
 python main.py --config-name sprecher task=train
