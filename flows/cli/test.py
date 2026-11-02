@@ -20,6 +20,12 @@ from flows.tools.utils import text
 def main(config: DictConfig) -> None:
     text.print_config(config)
 
+    ckpt_path = os.path.join(config.save_dir, config.experiment, 'logs/checkpoints/last.ckpt')
+    if not os.path.exists(ckpt_path):
+        if config.get('require_checkpoint', False):
+            raise FileNotFoundError(f"Test checkpoint does not exist: {ckpt_path}")
+        ckpt_path = None
+
     dm = DataSelector.select(config.data)
     model = ModelSelector.select(config.model)
     pipeline = PipelineSelector.select(model, config.pipeline)
@@ -43,11 +49,6 @@ def main(config: DictConfig) -> None:
             ),
         ],
     )
-
-    ckpt_path = os.path.join(config.save_dir, config.experiment, 'logs/checkpoints/last.ckpt')
-
-    if not os.path.exists(ckpt_path):
-        ckpt_path = None
 
     trainer.test(
         model=pipeline, 

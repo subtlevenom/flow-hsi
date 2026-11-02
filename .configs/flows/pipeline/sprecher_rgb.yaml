@@ -1,0 +1,5 @@
+name: sprecher_rgb
+params:
+  lr: 0.0002
+  weight_decay: 0.00001
+  ssim_weight: 0.15

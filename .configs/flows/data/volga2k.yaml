@@ -1,0 +1,22 @@
+name: volga2k
+params:
+  train:
+    source: ${dataset_root}/train/source
+    target: ${dataset_root}/train/target
+    batch_size: 2
+    crop_size: 128
+  val:
+    source: ${dataset_root}/val/source
+    target: ${dataset_root}/val/target
+    batch_size: 1
+    crop_size: 256
+  test:
+    source: ${dataset_root}/test/source
+    target: ${dataset_root}/test/target
+    batch_size: 1
+    crop_size: 0
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 2
+  pin_memory: true
+  seed: 43

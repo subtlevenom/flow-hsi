@@ -1,0 +1,17 @@
+defaults:
+  - sprecher
+  - override flows/data@data: volga2k
+  - override flows/pipeline@pipeline: sprecher_rgb
+  - _self_
+
+experiment: cmkan.sprecher.volga2k
+dataset_root: /data/korepanov/datasets/volga2k/dataset
+spectral_channels: 3
+require_checkpoint: true
+model:
+  params:
+    layers:
+      cmkan:
+        params:
+          signal_dim: null
+          layer_widths: [4]

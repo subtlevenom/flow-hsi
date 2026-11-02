@@ -1,6 +1,6 @@
 import sys, inspect
 import lightning as L
-from . import kfold, cave_hsi, icvl, huawei, hydra, ntire
+from . import kfold, cave_hsi, icvl, huawei, hydra, ntire, volga2k
 
 
 def create_dataset(name, params) -> L.LightningDataModule:

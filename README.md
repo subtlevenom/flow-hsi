@@ -161,6 +161,41 @@ Sprecher architecture still needs `n*(2n+1)*m = 60,543` inner evaluations per
 pixel. Replacing splines alone cannot eliminate that dominant scaling.
 No live training process or automatic resume was changed.
 
+## Volga2K: paired RGB Sprecher training and testing
+
+```bash
+python main.py --config-name sprecher_volga2k task=train
+python main.py --config-name sprecher_volga2k task=test
+```
+
+The root defaults to `/data/korepanov/datasets/volga2k/dataset`; override it
+with `dataset_root=...`. Each of `train`, `val`, and `test` must contain
+`source/` and `target/` directories with matching JPG/JPEG/PNG filenames.
+Images are decoded as RGB and normalized to [0, 1]. The canonical loader is
+`flows.ml.datasets.volga2k`; `huawei.DataModule` remains a compatibility import
+of this loader. Its previous hardcoded crops, source-noise augmentation, and
+random validation crops are no longer used. The legacy `huawei.dataset.Dataset`
+transform-based API remains available for direct callers.
+
+The main path is **RGB 3 -> Sprecher 3-to-8 -> FFN(32 hidden) -> RGB 3**,
+without the hyperspectral input bottleneck. The MST-like hypernetwork also
+receives RGB. Training starts from scratch in the separate experiment
+`.experiments/cmkan.sprecher.volga2k`; do not resume an NTIRE checkpoint.
+The RGB pipeline preserves the generator's initialization and trains all
+parameters with MAE + 0.15 SSIM loss, monitoring `val_loss` for checkpoints.
+It logs RGB PSNR (unit range, unclipped predictions) and CIEDE2000
+(sRGB converted to Lab after clamping), not hyperspectral SAM/MRAE.
+
+Defaults are batch 2 with aligned random 64x64 training crops and paired
+flips, batch 1 with deterministic 128x128 center validation crops, and batch 1
+with full-resolution test images. Validation uses the actual `val` split.
+Full-frame testing requires substantially more memory and time; for a
+bounded **center-crop evaluation**, use
+`data.params.test.crop_size=256` (these scores are not full-image scores).
+Use `limit_train_batches=1000` to cap each shuffled training epoch if needed.
+Testing loads `logs/checkpoints/last.ckpt` and fails explicitly if it is
+missing instead of evaluating random weights.
+
 ## NTIRE: conditioned Sprecher-inspired network
 
 The new `sprecher` run implements the requested scalar block literally:
